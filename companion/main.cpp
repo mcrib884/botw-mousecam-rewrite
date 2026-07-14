@@ -1210,6 +1210,12 @@ const int WND_W = 900;
 const int WND_H = 880;
 
 struct UIRects {
+    Rect rConnPanel;
+    Rect rMemPanel;
+    Rect rTelePanel;
+    Rect rSetPanel;
+    Rect rBindPanel;
+
     Rect rInj, rReinj, rRst;
     Rect rScrollHelper, rOrbitCam, rIndepSens, rSensH, rSensV;
     Rect rDrops[5], rDropMenu;
@@ -1236,33 +1242,39 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
         return;
     }
 
-    int pad = 15;
-    int panelW = w - pad * 2;
+    const int pad = 15;
+    const int panelW = w - pad * 2;
+    const int spacing = 10;
     int curY = 10;
+
     r.rDarkBtn = Rect(w / 2 - 20, 15, 14, 14);
     r.rLightBtn = Rect(w / 2 + 5, 15, 14, 14);
     
     // CONNECTION PANEL
+    const int connH = 85;
+    r.rConnPanel = Rect(pad, curY, panelW, connH);
     r.rInj = Rect(pad + panelW - 260, curY + 45, 80, 26);
     r.rReinj = Rect(pad + panelW - 175, curY + 45, 80, 26);
     r.rRst = Rect(pad + panelW - 90, curY + 45, 80, 26);
-    
     r.rPath = Rect(pad + 10, curY + 50, 115, 20);
     r.rPathReset = g_config.cemu_path_override.empty() ? Rect(0,0,0,0) : Rect(pad + 130, curY + 50, 18, 20);
-
-    // I3: Status indicator dot next to title
     r.rStatusDot = Rect(pad + panelW - 25, curY + 15, 12, 12);
     
-    int connH = 85;
-    curY += connH + 10;
+    curY += connH + spacing;
     
     // MEMORY ADDRESSES
-    curY += 125;
+    const int memH = 115;
+    r.rMemPanel = Rect(pad, curY, panelW, memH);
+    curY += memH + spacing;
     
     // VECTORS
-    curY += 125;
+    const int teleH = 115;
+    r.rTelePanel = Rect(pad, curY, panelW, teleH);
+    curY += teleH + spacing;
     
     // CAMERA SETTINGS
+    const int setH = g_config.use_independent_sens ? 130 : 100;
+    r.rSetPanel = Rect(pad, curY, panelW, setH);
     int gap = (panelW - 515) / 2;
     if (gap < 5) gap = 5;
     r.rScrollHelper = Rect(pad + 5, curY + 35, 135, 20);
@@ -1275,11 +1287,11 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
     } else {
         r.rSensV = Rect(0,0,0,0);
     }
-    
-    int setH = g_config.use_independent_sens ? 130 : 100;
-    curY += setH + 10;
+    curY += setH + spacing;
     
     // MOUSE BINDINGS
+    const int bindH = 120;
+    r.rBindPanel = Rect(pad, curY, panelW, bindH);
     int bw = (panelW - 30) / 2;
     r.rDrops[0] = Rect(pad + 10, curY + 35, bw, 24);
     r.rDrops[1] = Rect(pad + 20 + bw, curY + 35, bw, 24);
@@ -1291,14 +1303,13 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
         int cx = pad + (g_openDropdown == 1 || g_openDropdown == 3 ? 20 + bw : 10) + 80;
         int cy = (g_openDropdown < 2 ? 35 : g_openDropdown < 4 ? 60 : 85) + curY;
         int count = 18;
-        r.rDropMenu = Rect(cx, cy + 24, bw - 80, count * 18); // offset by 24 to not occlude button!
+        r.rDropMenu = Rect(cx, cy + 24, bw - 80, count * 18);
     } else {
         r.rDropMenu = Rect(0,0,0,0);
     }
+    curY += bindH + spacing;
 
-    curY += 130;
-
-    // LOG header area: position the [Clear] button
+    // LOG
     r.rClearLog = Rect(pad + panelW - 60, curY + 10, 45, 18);
     r.rLog = Rect(pad, curY, panelW, std::max(10, h - curY - 10));
     
@@ -1475,15 +1486,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         UIRects ui;
         CalculateUIRects(ui, logicalW, logicalH);
         
-        int curY = 10;
         int pad = 15;
-        int panelW = w - pad * 2;
 
         // --- CONNECTION PANEL ---
-        int connH = 85;
-        Rect rConn(pad, curY, panelW, connH);
-        DrawRoundedRect(g, rConn, 8, &borderPen, &panelBrush);
-        g.DrawString(L"CONNECTION", -1, &fontSec, PointF(pad + 10, curY + 10), &textBrush);
+        DrawRoundedRect(g, ui.rConnPanel, 8, &borderPen, &panelBrush);
+        g.DrawString(L"CONNECTION", -1, &fontSec, PointF(pad + 10, ui.rConnPanel.Y + 10), &textBrush);
         // Draw theme buttons
         SolidBrush btnDark(LerpColor(Color(255, 20, 20, 25), Color(255, 50, 50, 55), g_animDarkBtn));
         SolidBrush btnLight(LerpColor(Color(255, 235, 235, 240), Color(255, 255, 255, 255), g_animLightBtn));
@@ -1499,7 +1506,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         
         SolidBrush statusBrush(g_targetInjected ? g_theme.success : g_theme.error);
         g.FillEllipse(&statusBrush, ui.rStatusDot); // I3: use cached rect instead of hardcoded coords
-        g.DrawString(g_statusText.c_str(), -1, &fontBody, PointF(pad + 120, curY + 11), &textBrush);
+        g.DrawString(g_statusText.c_str(), -1, &fontBody, PointF(pad + 120, ui.rConnPanel.Y + 11), &textBrush);
         
         SolidBrush btnInj(g_downInject ? Color(255,50,80,120) : LerpColor(g_theme.accent, Color(255,70,100,150), g_animInject));
         SolidBrush btnReinj(g_downReinject ? Color(255,50,80,120) : LerpColor(g_theme.accent, Color(255,70,100,150), g_animReinject));
@@ -1530,12 +1537,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         }
 
 
-        curY += connH + 10;
-
         // --- MEMORY ADDRESSES ---
-        Rect rMem(pad, curY, panelW, 115);
-        DrawRoundedRect(g, rMem, 8, &borderPen, &panelBrush);
-        g.DrawString(L"MEMORY ADDRESSES", -1, &fontSec, PointF(pad + 10, curY + 10), &textBrush);
+        DrawRoundedRect(g, ui.rMemPanel, 8, &borderPen, &panelBrush);
+        g.DrawString(L"MEMORY ADDRESSES", -1, &fontSec, PointF(pad + 10, ui.rMemPanel.Y + 10), &textBrush);
         
         auto getAddrStr = [&](uint64_t addr, const wchar_t* foundStr) -> std::wstring {
             if (!g_targetInjected) return L"Not injected yet";
@@ -1544,8 +1548,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         };
         
         auto drawMemLine = [&](const wchar_t* label, const std::wstring& val, int yOffset) {
-            g.DrawString(label, -1, &fontBody, PointF(pad + 10, curY + yOffset), &textBrush);
-            g.DrawString(val.c_str(), -1, &fontBody, PointF(pad + 140, curY + yOffset), &textBrush);
+            g.DrawString(label, -1, &fontBody, PointF(pad + 10, ui.rMemPanel.Y + yOffset), &textBrush);
+            g.DrawString(val.c_str(), -1, &fontBody, PointF(pad + 140, ui.rMemPanel.Y + yOffset), &textBrush);
         };
         
         drawMemLine(L"GameRomCamera:", getAddrStr(g_addrGameRomCamera, L"Found"), 35);
@@ -1560,56 +1564,49 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         if (!g_targetInjected) swprintf_s(wbuf, L"Not injected yet");
         else swprintf_s(wbuf, L"%u", g_writersFound);
         drawMemLine(L"Writers NOP'd:", std::wstring(wbuf), 95);
-        curY += 125;
 
         // --- VECTORS ---
-        Rect rTele(pad, curY, panelW, 115);
-        DrawRoundedRect(g, rTele, 8, &borderPen, &panelBrush);
-        g.DrawString(L"VECTORS", -1, &fontSec, PointF(pad + 10, curY + 10), &textBrush);
+        DrawRoundedRect(g, ui.rTelePanel, 8, &borderPen, &panelBrush);
+        g.DrawString(L"VECTORS", -1, &fontSec, PointF(pad + 10, ui.rTelePanel.Y + 10), &textBrush);
         
         auto drawVecLine = [&](const wchar_t* label, float vx, float vy, float vz, int yOffset) {
-            g.DrawString(label, -1, &fontBody, PointF(pad + 10, curY + yOffset), &textBrush);
+            g.DrawString(label, -1, &fontBody, PointF(pad + 10, ui.rTelePanel.Y + yOffset), &textBrush);
             wchar_t xb[32], yb[32], zb[32];
             swprintf_s(xb, L"X: %.2f", vx); swprintf_s(yb, L"Y: %.2f", vy); swprintf_s(zb, L"Z: %.2f", vz);
-            g.DrawString(xb, -1, &fontBody, PointF(pad + 100, curY + yOffset), &textBrush);
-            g.DrawString(yb, -1, &fontBody, PointF(pad + 200, curY + yOffset), &textBrush);
-            g.DrawString(zb, -1, &fontBody, PointF(pad + 300, curY + yOffset), &textBrush);
+            g.DrawString(xb, -1, &fontBody, PointF(pad + 100, ui.rTelePanel.Y + yOffset), &textBrush);
+            g.DrawString(yb, -1, &fontBody, PointF(pad + 200, ui.rTelePanel.Y + yOffset), &textBrush);
+            g.DrawString(zb, -1, &fontBody, PointF(pad + 300, ui.rTelePanel.Y + yOffset), &textBrush);
         };
         
         drawVecLine(L"Position:", g_liveCamPosX, g_liveCamPosY, g_liveCamPosZ, 35);
         drawVecLine(L"Focus:", g_liveCamFocX, g_liveCamFocY, g_liveCamFocZ, 50);
         
-        g.DrawString(L"FOV:", -1, &fontBody, PointF(pad + 10, curY + 65), &textBrush);
+        g.DrawString(L"FOV:", -1, &fontBody, PointF(pad + 10, ui.rTelePanel.Y + 65), &textBrush);
         wchar_t fovb[32]; swprintf_s(fovb, L"%.2f\x00B0", g_liveCamFOV);
-        g.DrawString(fovb, -1, &fontBody, PointF(pad + 100, curY + 65), &textBrush);
+        g.DrawString(fovb, -1, &fontBody, PointF(pad + 100, ui.rTelePanel.Y + 65), &textBrush);
         
         drawVecLine(L"Pivot:", g_pSharedMemory?g_pSharedMemory->m_telePivotX:0, g_pSharedMemory?g_pSharedMemory->m_telePivotY:0, g_pSharedMemory?g_pSharedMemory->m_telePivotZ:0, 80);
         
         float mX = 0, mY = 0, mZ = 0;
         if (g_magneDetourActive && g_pSharedMemory) { mX = g_pSharedMemory->m_teleMagneTargetX; mY = g_pSharedMemory->m_teleMagneTargetY; mZ = g_pSharedMemory->m_teleMagneTargetZ; }
         drawVecLine(L"MTarget:", mX, mY, mZ, 95);
-        curY += 125;
 
         // --- CAMERA SETTINGS ---
-        int setH = g_config.use_independent_sens ? 130 : 100;
-        Rect rSet(pad, curY, panelW, setH);
-        DrawRoundedRect(g, rSet, 8, &borderPen, &panelBrush);
-        g.DrawString(L"CAMERA SETTINGS", -1, &fontSec, PointF(pad + 10, curY + 10), &textBrush);
+        DrawRoundedRect(g, ui.rSetPanel, 8, &borderPen, &panelBrush);
+        g.DrawString(L"CAMERA SETTINGS", -1, &fontSec, PointF(pad + 10, ui.rSetPanel.Y + 10), &textBrush);
         
         DrawToggle(g, ui.rScrollHelper.X, ui.rScrollHelper.Y, g_animScrollHelper, L"Scroll Wheel Weapon Select", ff);
         DrawToggle(g, ui.rOrbitCam.X, ui.rOrbitCam.Y, g_animOrbitCam, L"Full Orbit Camera", ff);
         DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff);
         
-        DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, panelW - 40, g_config.sensitivity_x, 0.1f, 5.0f, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
+        DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, 0.1f, 5.0f, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
         if (g_config.use_independent_sens) {
-            DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, panelW - 40, g_config.sensitivity_y, 0.1f, 5.0f, g_animSensV, L"Sensitivity (V)", ff);
+            DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, 0.1f, 5.0f, g_animSensV, L"Sensitivity (V)", ff);
         }
-        curY += setH + 10;
 
         // --- MOUSE BINDINGS ---
-        Rect rBind(pad, curY, panelW, 120);
-        DrawRoundedRect(g, rBind, 8, &borderPen, &panelBrush);
-        g.DrawString(L"MOUSE BINDINGS", -1, &fontSec, PointF(pad + 10, curY + 10), &textBrush);
+        DrawRoundedRect(g, ui.rBindPanel, 8, &borderPen, &panelBrush);
+        g.DrawString(L"MOUSE BINDINGS", -1, &fontSec, PointF(pad + 10, ui.rBindPanel.Y + 10), &textBrush);
         
         DrawDropdown(g, ui.rDrops[0].X, ui.rDrops[0].Y, ui.rDrops[0].Width, L"Left:", g_config.mouse_bindings[0], 0, g_animDrop[0], ff);
         DrawDropdown(g, ui.rDrops[1].X, ui.rDrops[1].Y, ui.rDrops[1].Width, L"Right:", g_config.mouse_bindings[1], 1, g_animDrop[1], ff);
@@ -1617,13 +1614,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         DrawDropdown(g, ui.rDrops[3].X, ui.rDrops[3].Y, ui.rDrops[3].Width, L"Mouse 4:", g_config.mouse_bindings[3], 3, g_animDrop[3], ff);
         DrawDropdown(g, ui.rDrops[4].X, ui.rDrops[4].Y, ui.rDrops[4].Width, L"Mouse 5:", g_config.mouse_bindings[4], 4, g_animDrop[4], ff);
         
-        curY += 130;
-
         // --- LOG ---
         Rect rLog = ui.rLog;
         SolidBrush consoleBrush(g_theme.consoleBg);
         DrawRoundedRect(g, rLog, 8, &borderPen, &consoleBrush);
-        g.DrawString(L"LOG", -1, &fontSec, PointF(pad + 10, curY + 10), &textBrush);
+        g.DrawString(L"LOG", -1, &fontSec, PointF(pad + 10, ui.rLog.Y + 10), &textBrush);
         
         // UX3: Shortcuts info text below LOG header
         SolidBrush mutedText(g_theme.textMuted);
@@ -1632,7 +1627,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 #else
         const wchar_t* shortcutsText = L"F2: Toggle Camera";
 #endif
-        g.DrawString(shortcutsText, -1, &smallFont, PointF(pad + 10, curY + 26), &mutedText);
+        g.DrawString(shortcutsText, -1, &smallFont, PointF(pad + 10, ui.rLog.Y + 26), &mutedText);
 
         // UX6: [Clear] button on right side of LOG header
         {
@@ -1681,8 +1676,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         int logicalW = rc.right / dpiScale;
         int logicalH = rc.bottom / dpiScale;
         UIRects ui; CalculateUIRects(ui, logicalW, logicalH);
-        int pad = 15 * dpiScale;
-        int curY = 10 * dpiScale;
         
         if (g_openDropdown != -1) {
             if (ui.rDropMenu.Contains(x, y)) {
@@ -1758,8 +1751,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         int logicalW = rc.right / dpiScale;
         int logicalH = rc.bottom / dpiScale;
         UIRects ui; CalculateUIRects(ui, logicalW, logicalH);
-        int pad = 15 * dpiScale;
-        int curY = 10 * dpiScale;
         
         if (!g_trackingMouse) {
             TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, 0 };
@@ -1823,8 +1814,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             else if (ui.rRst.Contains(x, y) && g_targetInjected) tip = L"Reset AOB scanner to re-scan memory signatures";
             else if (ui.rDarkBtn.Contains(x, y)) tip = L"Dark theme";
             else if (ui.rLightBtn.Contains(x, y)) tip = L"Light theme";
-            else if (x > pad + 120 && x < pad + 150 && y > curY + 30 && y < curY + 60) tip = L"Address in memory storing Camera XYZ.";
-            else if (x > pad + 120 && x < pad + 150 && y > curY + 45 && y < curY + 75) tip = L"Used to control Magnesis properly.";
+            else if (x > ui.rMemPanel.X + 10 && x < ui.rMemPanel.X + 250 && y > ui.rMemPanel.Y + 30 && y < ui.rMemPanel.Y + 45) tip = L"Address in memory storing Camera XYZ.";
+            else if (x > ui.rMemPanel.X + 10 && x < ui.rMemPanel.X + 250 && y > ui.rMemPanel.Y + 45 && y < ui.rMemPanel.Y + 60) tip = L"Used to control Magnesis properly.";
             if (tip) ShowTooltip(hWnd, tip, x, y);
             else if (g_tooltipActive) ShowTooltip(hWnd, nullptr, 0, 0);
         }
@@ -1848,8 +1839,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         int logicalW = rc.right / dpiScale;
         int logicalH = rc.bottom / dpiScale;
         UIRects ui; CalculateUIRects(ui, logicalW, logicalH);
-        int pad = 15 * dpiScale;
-        int curY = 10 * dpiScale;
         
         if (g_downPath) {
             g_downPath = false;
