@@ -1124,7 +1124,11 @@ static void UpdateTelemetryGui() {
         g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
         g_logReadIdx = 0;
     } else {
-        if (g_pSharedMemory->m_statusAddrGameRomCamera != 0 && g_addrGameRomCamera == 0) LogToConsole(L"[INFO] Found GameRomCamera");
+        if (g_pSharedMemory->m_statusAddrGameRomCamera != 0 && g_addrGameRomCamera == 0) {
+            LogToConsole(L"[INFO] Found GameRomCamera");
+        } else if (g_pSharedMemory->m_statusAddrGameRomCamera == 0 && g_addrGameRomCamera != 0) {
+            LogToConsole(L"[WARNING] GameRomCamera lost! Re-scanning memory...");
+        }
         if (g_pSharedMemory->m_statusAddrMagneTarget != 0 && g_addrMagneTarget == 0) LogToConsole(L"[INFO] Found Magne Target Sig");
         if (g_pSharedMemory->m_statusAddrShortcutMenu != 0 && g_addrShortcutMenu == 0) LogToConsole(L"[INFO] Found ShortcutMenu");
         if (g_pSharedMemory->m_statusAddrMenuState != 0 && g_addrMenuState == 0) LogToConsole(L"[INFO] Found MenuState");
@@ -1151,7 +1155,10 @@ static void UpdateTelemetryGui() {
         }
         while (g_logReadIdx < writeIdx) {
             uint32_t idx = g_logReadIdx % 8;
-            std::string logMsg(g_pSharedMemory->m_logQueue[idx]);
+            char localLog[129];
+            memcpy(localLog, g_pSharedMemory->m_logQueue[idx], 128);
+            localLog[128] = '\0'; // Guarantee null termination
+            std::string logMsg(localLog);
             std::wstring wLogMsg = Utf8ToWstr(logMsg);
             LogToConsole(wLogMsg.c_str());
             g_logReadIdx++;
@@ -1263,12 +1270,27 @@ static int g_cachedWidth = 0;
 static int g_cachedHeight = 0;
 static bool g_cachedIndepSens = false;
 
+static bool g_collapsedMem = false;
+static bool g_collapsedTele = false;
+static bool g_collapsedSet = false;
+static bool g_collapsedBind = false;
+static bool g_collapsedLog = false;
+
+static bool g_cachedCollapsedMem = false;
+static bool g_cachedCollapsedTele = false;
+static bool g_cachedCollapsedSet = false;
+static bool g_cachedCollapsedBind = false;
+static bool g_cachedCollapsedLog = false;
+
 static void InvalidateUIRectsCache() { g_cachedWidth = 0; }
 
 static void CalculateUIRects(UIRects& r, int w, int h) {
     // I4: Cache check — skip recalculation if nothing relevant changed
     bool indepSens = g_config.use_independent_sens;
-    if (w == g_cachedWidth && h == g_cachedHeight && indepSens == g_cachedIndepSens && g_openDropdown == -1) {
+    if (w == g_cachedWidth && h == g_cachedHeight && indepSens == g_cachedIndepSens && g_openDropdown == -1 &&
+        g_collapsedMem == g_cachedCollapsedMem && g_collapsedTele == g_cachedCollapsedTele &&
+        g_collapsedSet == g_cachedCollapsedSet && g_collapsedBind == g_cachedCollapsedBind &&
+        g_collapsedLog == g_cachedCollapsedLog) {
         r = g_cachedUIRects;
         return;
     }
@@ -1294,63 +1316,90 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
     curY += connH + spacing;
     
     // MEMORY ADDRESSES
-    const int memH = 115;
+    const int memH = g_collapsedMem ? 30 : 115;
     r.rMemPanel = Rect(pad, curY, panelW, memH);
     curY += memH + spacing;
     
     // VECTORS
-    const int teleH = 115;
+    const int teleH = g_collapsedTele ? 30 : 115;
     r.rTelePanel = Rect(pad, curY, panelW, teleH);
     curY += teleH + spacing;
     
     // CAMERA SETTINGS
-    const int setH = g_config.use_independent_sens ? 180 : 150;
+    const int setH = g_collapsedSet ? 30 : (g_config.use_independent_sens ? 180 : 150);
     r.rSetPanel = Rect(pad, curY, panelW, setH);
-    r.rScrollHelper = Rect(pad + 10, curY + 35, panelW - 20, 20);
-    r.rOrbitCam = Rect(pad + 10, curY + 60, panelW - 20, 20);
-    r.rIndepSens = Rect(pad + 10, curY + 85, panelW - 20, 20);
-    
-    r.rSensH = Rect(pad + 10, curY + 115, panelW - 40, 24);
-    if (g_config.use_independent_sens) {
-        r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
-    } else {
+    if (g_collapsedSet) {
+        r.rScrollHelper = Rect(0,0,0,0);
+        r.rOrbitCam = Rect(0,0,0,0);
+        r.rIndepSens = Rect(0,0,0,0);
+        r.rSensH = Rect(0,0,0,0);
         r.rSensV = Rect(0,0,0,0);
+    } else {
+        r.rScrollHelper = Rect(pad + 10, curY + 35, panelW - 20, 20);
+        r.rOrbitCam = Rect(pad + 10, curY + 60, panelW - 20, 20);
+        r.rIndepSens = Rect(pad + 10, curY + 85, panelW - 20, 20);
+        r.rSensH = Rect(pad + 10, curY + 115, panelW - 40, 24);
+        if (g_config.use_independent_sens) {
+            r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
+        } else {
+            r.rSensV = Rect(0,0,0,0);
+        }
     }
     curY += setH + spacing;
     
     // MOUSE BINDINGS
-    const int bindH = 120;
+    const int bindH = g_collapsedBind ? 30 : 120;
     r.rBindPanel = Rect(pad, curY, panelW, bindH);
-    int bw = (panelW - 30) / 2;
-    r.rDrops[0] = Rect(pad + 10, curY + 35, bw, 24);
-    r.rDrops[1] = Rect(pad + 20 + bw, curY + 35, bw, 24);
-    r.rDrops[2] = Rect(pad + 10, curY + 60, bw, 24);
-    r.rDrops[3] = Rect(pad + 20 + bw, curY + 60, bw, 24);
-    r.rDrops[4] = Rect(pad + 10, curY + 85, bw, 24);
-    
-    if (g_openDropdown != -1) {
-        int cx = pad + (g_openDropdown == 1 || g_openDropdown == 3 ? 20 + bw : 10) + 80;
-        int cy = (g_openDropdown < 2 ? 35 : g_openDropdown < 4 ? 60 : 85) + curY;
-        int count = 18;
-        r.rDropMenu = Rect(cx, cy + 24, bw - 80, count * 18);
-    } else {
+    if (g_collapsedBind) {
+        for (int i = 0; i < 5; ++i) r.rDrops[i] = Rect(0,0,0,0);
         r.rDropMenu = Rect(0,0,0,0);
+    } else {
+        int bw = (panelW - 30) / 2;
+        r.rDrops[0] = Rect(pad + 10, curY + 35, bw, 24);
+        r.rDrops[1] = Rect(pad + 20 + bw, curY + 35, bw, 24);
+        r.rDrops[2] = Rect(pad + 10, curY + 60, bw, 24);
+        r.rDrops[3] = Rect(pad + 20 + bw, curY + 60, bw, 24);
+        r.rDrops[4] = Rect(pad + 10, curY + 85, bw, 24);
+        
+        if (g_openDropdown != -1) {
+            int cx = pad + (g_openDropdown == 1 || g_openDropdown == 3 ? 20 + bw : 10) + 80;
+            int cy = (g_openDropdown < 2 ? 35 : g_openDropdown < 4 ? 60 : 85) + curY;
+            int count = 18;
+            r.rDropMenu = Rect(cx, cy + 24, bw - 80, count * 18);
+        } else {
+            r.rDropMenu = Rect(0,0,0,0);
+        }
     }
     curY += bindH + spacing;
 
     // LOG
-    r.rClearLog = Rect(pad + panelW - 60, curY + 10, 45, 18);
-    r.rLog = Rect(pad, curY, panelW, std::max(10, h - curY - 10));
+    const int logH = g_collapsedLog ? 30 : std::max(10, h - curY - 10);
+    r.rLog = Rect(pad, curY, panelW, logH);
+    if (g_collapsedLog) {
+        r.rClearLog = Rect(0,0,0,0);
+    } else {
+        r.rClearLog = Rect(pad + panelW - 60, curY + 10, 45, 18);
+    }
     
     // Cache for next time
-    g_cachedUIRects = r;
     g_cachedWidth = w;
     g_cachedHeight = h;
     g_cachedIndepSens = indepSens;
+    g_cachedCollapsedMem = g_collapsedMem;
+    g_cachedCollapsedTele = g_collapsedTele;
+    g_cachedCollapsedSet = g_collapsedSet;
+    g_cachedCollapsedBind = g_collapsedBind;
+    g_cachedCollapsedLog = g_collapsedLog;
+    g_cachedUIRects = r;
 }
 
 static void UpdateConsoleEditPosition(HWND hWnd) {
     if (!g_hConsoleEdit) return;
+    if (g_collapsedLog) {
+        ShowWindow(g_hConsoleEdit, SW_HIDE);
+        return;
+    }
+    ShowWindow(g_hConsoleEdit, SW_SHOW);
     RECT rc; GetClientRect(hWnd, &rc);
     float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
     if (dpiScale <= 0) dpiScale = 1.0f;
@@ -1673,110 +1722,122 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 
         // --- MEMORY ADDRESSES ---
         DrawRoundedRect(g, ui.rMemPanel, 8, &borderPen, &panelBrush);
-        g.DrawString(L"MEMORY ADDRESSES", -1, &fontSec, PointF(pad + 10, ui.rMemPanel.Y + 10), &textBrush);
+        std::wstring memTitle = g_collapsedMem ? L"\u25b6  MEMORY ADDRESSES" : L"\u25bc  MEMORY ADDRESSES";
+        g.DrawString(memTitle.c_str(), -1, &fontSec, PointF(pad + 10, ui.rMemPanel.Y + 8), &textBrush);
         
-        auto getAddrStr = [&](uint64_t addr, const wchar_t* foundStr) -> std::wstring {
-            if (!g_targetInjected) return L"Not injected yet";
-            if (addr == 0) return L"Scanning...";
-            return std::wstring(foundStr);
-        };
-        
-        auto drawMemLine = [&](const wchar_t* label, const std::wstring& val, int yOffset) {
-            g.DrawString(label, -1, &fontBody, PointF(pad + 10, ui.rMemPanel.Y + yOffset), &textBrush);
-            g.DrawString(val.c_str(), -1, &fontBody, PointF(pad + 140, ui.rMemPanel.Y + yOffset), &textBrush);
-        };
-        
-        drawMemLine(L"GameRomCamera:", getAddrStr(g_addrGameRomCamera, L"Found"), 35);
-        drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found"), 50);
-        
-        wchar_t valBuf1[64], valBuf2[64];
-        swprintf_s(valBuf1, L"Value: %d", g_liveShortcutMenu); swprintf_s(valBuf2, L"Value: %d", g_liveMenuState);
-        drawMemLine(L"Shortcut Menu:", getAddrStr(g_addrShortcutMenu, valBuf1), 65);
-        drawMemLine(L"Menu State:", getAddrStr(g_addrMenuState, valBuf2), 80);
-        
-        wchar_t wbuf[64];
-        if (!g_targetInjected) swprintf_s(wbuf, L"Not injected yet");
-        else swprintf_s(wbuf, L"%u", g_writersFound);
-        drawMemLine(L"Writers NOP'd:", std::wstring(wbuf), 95);
+        if (!g_collapsedMem) {
+            auto getAddrStr = [&](uint64_t addr, const wchar_t* foundStr) -> std::wstring {
+                if (!g_targetInjected) return L"Not injected yet";
+                if (addr == 0) return L"Scanning...";
+                return std::wstring(foundStr);
+            };
+            
+            auto drawMemLine = [&](const wchar_t* label, const std::wstring& val, int yOffset) {
+                g.DrawString(label, -1, &fontBody, PointF(pad + 10, ui.rMemPanel.Y + yOffset), &textBrush);
+                g.DrawString(val.c_str(), -1, &fontBody, PointF(pad + 140, ui.rMemPanel.Y + yOffset), &textBrush);
+            };
+            
+            drawMemLine(L"GameRomCamera:", getAddrStr(g_addrGameRomCamera, L"Found"), 35);
+            drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found"), 50);
+            
+            wchar_t valBuf1[64], valBuf2[64];
+            swprintf_s(valBuf1, L"Value: %d", g_liveShortcutMenu); swprintf_s(valBuf2, L"Value: %d", g_liveMenuState);
+            drawMemLine(L"Shortcut Menu:", getAddrStr(g_addrShortcutMenu, valBuf1), 65);
+            drawMemLine(L"Menu State:", getAddrStr(g_addrMenuState, valBuf2), 80);
+            
+            wchar_t wbuf[64];
+            if (!g_targetInjected) swprintf_s(wbuf, L"Not injected yet");
+            else swprintf_s(wbuf, L"%u", g_writersFound);
+            drawMemLine(L"Writers NOP'd:", std::wstring(wbuf), 95);
+        }
 
         // --- VECTORS ---
         DrawRoundedRect(g, ui.rTelePanel, 8, &borderPen, &panelBrush);
-        g.DrawString(L"VECTORS", -1, &fontSec, PointF(pad + 10, ui.rTelePanel.Y + 10), &textBrush);
+        std::wstring teleTitle = g_collapsedTele ? L"\u25b6  VECTORS" : L"\u25bc  VECTORS";
+        g.DrawString(teleTitle.c_str(), -1, &fontSec, PointF(pad + 10, ui.rTelePanel.Y + 8), &textBrush);
         
-        auto drawVecLine = [&](const wchar_t* label, float vx, float vy, float vz, int yOffset) {
-            g.DrawString(label, -1, &fontBody, PointF(pad + 10, ui.rTelePanel.Y + yOffset), &textBrush);
-            wchar_t xb[32], yb[32], zb[32];
-            swprintf_s(xb, L"X: %.2f", vx); swprintf_s(yb, L"Y: %.2f", vy); swprintf_s(zb, L"Z: %.2f", vz);
-            g.DrawString(xb, -1, &fontBody, PointF(pad + 100, ui.rTelePanel.Y + yOffset), &textBrush);
-            g.DrawString(yb, -1, &fontBody, PointF(pad + 200, ui.rTelePanel.Y + yOffset), &textBrush);
-            g.DrawString(zb, -1, &fontBody, PointF(pad + 300, ui.rTelePanel.Y + yOffset), &textBrush);
-        };
-        
-        drawVecLine(L"Position:", g_liveCamPosX, g_liveCamPosY, g_liveCamPosZ, 35);
-        drawVecLine(L"Focus:", g_liveCamFocX, g_liveCamFocY, g_liveCamFocZ, 50);
-        
-        g.DrawString(L"FOV:", -1, &fontBody, PointF(pad + 10, ui.rTelePanel.Y + 65), &textBrush);
-        wchar_t fovb[32]; swprintf_s(fovb, L"%.2f\x00B0", g_liveCamFOV);
-        g.DrawString(fovb, -1, &fontBody, PointF(pad + 100, ui.rTelePanel.Y + 65), &textBrush);
-        
-        drawVecLine(L"Pivot:", g_pSharedMemory?g_pSharedMemory->m_telePivotX:0, g_pSharedMemory?g_pSharedMemory->m_telePivotY:0, g_pSharedMemory?g_pSharedMemory->m_telePivotZ:0, 80);
-        
-        float mX = 0, mY = 0, mZ = 0;
-        if (g_magneDetourActive && g_pSharedMemory) { mX = g_pSharedMemory->m_teleMagneTargetX; mY = g_pSharedMemory->m_teleMagneTargetY; mZ = g_pSharedMemory->m_teleMagneTargetZ; }
-        drawVecLine(L"MTarget:", mX, mY, mZ, 95);
+        if (!g_collapsedTele) {
+            auto drawVecLine = [&](const wchar_t* label, float vx, float vy, float vz, int yOffset) {
+                g.DrawString(label, -1, &fontBody, PointF(pad + 10, ui.rTelePanel.Y + yOffset), &textBrush);
+                wchar_t xb[32], yb[32], zb[32];
+                swprintf_s(xb, L"X: %.2f", vx); swprintf_s(yb, L"Y: %.2f", vy); swprintf_s(zb, L"Z: %.2f", vz);
+                g.DrawString(xb, -1, &fontBody, PointF(pad + 100, ui.rTelePanel.Y + yOffset), &textBrush);
+                g.DrawString(yb, -1, &fontBody, PointF(pad + 200, ui.rTelePanel.Y + yOffset), &textBrush);
+                g.DrawString(zb, -1, &fontBody, PointF(pad + 300, ui.rTelePanel.Y + yOffset), &textBrush);
+            };
+            
+            drawVecLine(L"Position:", g_liveCamPosX, g_liveCamPosY, g_liveCamPosZ, 35);
+            drawVecLine(L"Focus:", g_liveCamFocX, g_liveCamFocY, g_liveCamFocZ, 50);
+            
+            g.DrawString(L"FOV:", -1, &fontBody, PointF(pad + 10, ui.rTelePanel.Y + 65), &textBrush);
+            wchar_t fovb[32]; swprintf_s(fovb, L"%.2f\x00B0", g_liveCamFOV);
+            g.DrawString(fovb, -1, &fontBody, PointF(pad + 100, ui.rTelePanel.Y + 65), &textBrush);
+            
+            drawVecLine(L"Pivot:", g_pSharedMemory?g_pSharedMemory->m_telePivotX:0, g_pSharedMemory?g_pSharedMemory->m_telePivotY:0, g_pSharedMemory?g_pSharedMemory->m_telePivotZ:0, 80);
+            
+            float mX = 0, mY = 0, mZ = 0;
+            if (g_magneDetourActive && g_pSharedMemory) { mX = g_pSharedMemory->m_teleMagneTargetX; mY = g_pSharedMemory->m_teleMagneTargetY; mZ = g_pSharedMemory->m_teleMagneTargetZ; }
+            drawVecLine(L"MTarget:", mX, mY, mZ, 95);
+        }
 
         // --- CAMERA SETTINGS ---
         DrawRoundedRect(g, ui.rSetPanel, 8, &borderPen, &panelBrush);
-        g.DrawString(L"CAMERA SETTINGS", -1, &fontSec, PointF(pad + 10, ui.rSetPanel.Y + 10), &textBrush);
+        std::wstring setTitle = g_collapsedSet ? L"\u25b6  CAMERA SETTINGS" : L"\u25bc  CAMERA SETTINGS";
+        g.DrawString(setTitle.c_str(), -1, &fontSec, PointF(pad + 10, ui.rSetPanel.Y + 8), &textBrush);
         
-        DrawToggle(g, ui.rScrollHelper.X, ui.rScrollHelper.Y, g_animScrollHelper, L"Scroll Wheel Weapon Select", ff);
-        DrawToggle(g, ui.rOrbitCam.X, ui.rOrbitCam.Y, g_animOrbitCam, L"Full Orbit Camera", ff);
-        DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff);
-        
-        DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
-        if (g_config.use_independent_sens) {
-            DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Sensitivity (V)", ff);
+        if (!g_collapsedSet) {
+            DrawToggle(g, ui.rScrollHelper.X, ui.rScrollHelper.Y, g_animScrollHelper, L"Scroll Wheel Weapon Select", ff);
+            DrawToggle(g, ui.rOrbitCam.X, ui.rOrbitCam.Y, g_animOrbitCam, L"Full Orbit Camera", ff);
+            DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff);
+            
+            DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
+            if (g_config.use_independent_sens) {
+                DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Sensitivity (V)", ff);
+            }
         }
 
         // --- MOUSE BINDINGS ---
         DrawRoundedRect(g, ui.rBindPanel, 8, &borderPen, &panelBrush);
-        g.DrawString(L"MOUSE BINDINGS", -1, &fontSec, PointF(pad + 10, ui.rBindPanel.Y + 10), &textBrush);
+        std::wstring bindTitle = g_collapsedBind ? L"\u25b6  MOUSE BINDINGS" : L"\u25bc  MOUSE BINDINGS";
+        g.DrawString(bindTitle.c_str(), -1, &fontSec, PointF(pad + 10, ui.rBindPanel.Y + 8), &textBrush);
         
-        DrawDropdown(g, ui.rDrops[0].X, ui.rDrops[0].Y, ui.rDrops[0].Width, L"Left:", g_config.mouse_bindings[0], 0, g_animDrop[0], ff);
-        DrawDropdown(g, ui.rDrops[1].X, ui.rDrops[1].Y, ui.rDrops[1].Width, L"Right:", g_config.mouse_bindings[1], 1, g_animDrop[1], ff);
-        DrawDropdown(g, ui.rDrops[2].X, ui.rDrops[2].Y, ui.rDrops[2].Width, L"Middle:", g_config.mouse_bindings[2], 2, g_animDrop[2], ff);
-        DrawDropdown(g, ui.rDrops[3].X, ui.rDrops[3].Y, ui.rDrops[3].Width, L"Mouse 4:", g_config.mouse_bindings[3], 3, g_animDrop[3], ff);
-        DrawDropdown(g, ui.rDrops[4].X, ui.rDrops[4].Y, ui.rDrops[4].Width, L"Mouse 5:", g_config.mouse_bindings[4], 4, g_animDrop[4], ff);
+        if (!g_collapsedBind) {
+            DrawDropdown(g, ui.rDrops[0].X, ui.rDrops[0].Y, ui.rDrops[0].Width, L"Left:", g_config.mouse_bindings[0], 0, g_animDrop[0], ff);
+            DrawDropdown(g, ui.rDrops[1].X, ui.rDrops[1].Y, ui.rDrops[1].Width, L"Right:", g_config.mouse_bindings[1], 1, g_animDrop[1], ff);
+            DrawDropdown(g, ui.rDrops[2].X, ui.rDrops[2].Y, ui.rDrops[2].Width, L"Middle:", g_config.mouse_bindings[2], 2, g_animDrop[2], ff);
+            DrawDropdown(g, ui.rDrops[3].X, ui.rDrops[3].Y, ui.rDrops[3].Width, L"Mouse 4:", g_config.mouse_bindings[3], 3, g_animDrop[3], ff);
+            DrawDropdown(g, ui.rDrops[4].X, ui.rDrops[4].Y, ui.rDrops[4].Width, L"Mouse 5:", g_config.mouse_bindings[4], 4, g_animDrop[4], ff);
+        }
         
         // --- LOG ---
         Rect rLog = ui.rLog;
         SolidBrush consoleBrush(g_theme.consoleBg);
         DrawRoundedRect(g, rLog, 8, &borderPen, &consoleBrush);
-        g.DrawString(L"LOG", -1, &fontSec, PointF(pad + 10, ui.rLog.Y + 10), &textBrush);
+        std::wstring logTitle = g_collapsedLog ? L"\u25b6  LOG" : L"\u25bc  LOG";
+        g.DrawString(logTitle.c_str(), -1, &fontSec, PointF(pad + 10, ui.rLog.Y + 8), &textBrush);
         
-        // UX3: Shortcuts info text below LOG header
-        SolidBrush mutedText(g_theme.textMuted);
+        if (!g_collapsedLog) {
+            // UX3: Shortcuts info text below LOG header
+            SolidBrush mutedText(g_theme.textMuted);
 #ifdef _DEBUG
-        const wchar_t* shortcutsText = L"F2: Toggle Camera | F5: AOB Dump";
+            const wchar_t* shortcutsText = L"F2: Toggle Camera | F5: AOB Dump";
 #else
-        const wchar_t* shortcutsText = L"F2: Toggle Camera";
+            const wchar_t* shortcutsText = L"F2: Toggle Camera";
 #endif
-        g.DrawString(shortcutsText, -1, &smallFont, PointF(pad + 10, ui.rLog.Y + 26), &mutedText);
+            g.DrawString(shortcutsText, -1, &smallFont, PointF(pad + 10, ui.rLog.Y + 26), &mutedText);
 
-        // UX6: [Clear] button on right side of LOG header
-        {
-            Color clearNormal = g_theme.border;
-            Color clearHover = g_config.use_light_theme ? Color(255, 200, 200, 200) : Color(255, 80, 80, 90);
-            SolidBrush clearBg(LerpColor(clearNormal, clearHover, g_animClearLog));
-            DrawRoundedRect(g, ui.rClearLog, 3, nullptr, &clearBg);
-            g.DrawString(L"Clear", -1, &smallFont, RectF((REAL)ui.rClearLog.X, (REAL)ui.rClearLog.Y, (REAL)ui.rClearLog.Width, (REAL)ui.rClearLog.Height), &sfCenter, &textBrush);
+            // UX6: [Clear] button on right side of LOG header
+            {
+                Color clearNormal = g_theme.border;
+                Color clearHover = g_config.use_light_theme ? Color(255, 200, 200, 200) : Color(255, 80, 80, 90);
+                SolidBrush clearBg(LerpColor(clearNormal, clearHover, g_animClearLog));
+                DrawRoundedRect(g, ui.rClearLog, 3, nullptr, &clearBg);
+                g.DrawString(L"Clear", -1, &smallFont, RectF((REAL)ui.rClearLog.X, (REAL)ui.rClearLog.Y, (REAL)ui.rClearLog.Width, (REAL)ui.rClearLog.Height), &sfCenter, &textBrush);
+            }
+            
+            g.SetClip(Rect(rLog.X + 5, rLog.Y + 30, rLog.Width - 10, rLog.Height - 35));
+            g.ResetClip();
         }
-        
-        g.SetClip(Rect(rLog.X + 5, rLog.Y + 30, rLog.Width - 10, rLog.Height - 35));
-        int logY = rLog.Y + 30;
-        int maxItems = (rLog.Height - 30) / 16;
-
-        g.ResetClip();
 
 
 
@@ -1796,6 +1857,43 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         int logicalW = rc.right / dpiScale;
         int logicalH = rc.bottom / dpiScale;
         UIRects ui; CalculateUIRects(ui, logicalW, logicalH);
+        
+        // Rollup/rolldown header colliders (title height is 30px)
+        if (Rect(ui.rMemPanel.X, ui.rMemPanel.Y, ui.rMemPanel.Width, 30).Contains(x, y)) {
+            g_collapsedMem = !g_collapsedMem;
+            InvalidateUIRectsCache();
+            UpdateConsoleEditPosition(hWnd);
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
+        if (Rect(ui.rTelePanel.X, ui.rTelePanel.Y, ui.rTelePanel.Width, 30).Contains(x, y)) {
+            g_collapsedTele = !g_collapsedTele;
+            InvalidateUIRectsCache();
+            UpdateConsoleEditPosition(hWnd);
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
+        if (Rect(ui.rSetPanel.X, ui.rSetPanel.Y, ui.rSetPanel.Width, 30).Contains(x, y)) {
+            g_collapsedSet = !g_collapsedSet;
+            InvalidateUIRectsCache();
+            UpdateConsoleEditPosition(hWnd);
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
+        if (Rect(ui.rBindPanel.X, ui.rBindPanel.Y, ui.rBindPanel.Width, 30).Contains(x, y)) {
+            g_collapsedBind = !g_collapsedBind;
+            InvalidateUIRectsCache();
+            UpdateConsoleEditPosition(hWnd);
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
+        if (Rect(ui.rLog.X, ui.rLog.Y, ui.rLog.Width, 30).Contains(x, y)) {
+            g_collapsedLog = !g_collapsedLog;
+            InvalidateUIRectsCache();
+            UpdateConsoleEditPosition(hWnd);
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
         
         if (ui.rDarkBtn.Contains(x, y)) { g_config.use_light_theme = false; ApplyTheme(); SaveConfig(); InvalidateUIRectsCache(); InvalidateRect(hWnd, nullptr, FALSE); return 0; }
         if (ui.rLightBtn.Contains(x, y)) { g_config.use_light_theme = true; ApplyTheme(); SaveConfig(); InvalidateUIRectsCache(); InvalidateRect(hWnd, nullptr, FALSE); return 0; }
@@ -1993,6 +2091,51 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         return 0;
     }
 
+
+    case WM_SETCURSOR: {
+        POINT pt; GetCursorPos(&pt);
+        ScreenToClient(hWnd, &pt);
+        float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
+        if (dpiScale <= 0) dpiScale = 1.0f;
+        pt.x /= dpiScale; pt.y /= dpiScale;
+
+        RECT rc; GetClientRect(hWnd, &rc);
+        int logicalW = rc.right / dpiScale;
+        int logicalH = rc.bottom / dpiScale;
+        UIRects ui; CalculateUIRects(ui, logicalW, logicalH);
+
+        bool overClickable = false;
+        if (Rect(ui.rMemPanel.X, ui.rMemPanel.Y, ui.rMemPanel.Width, 30).Contains(pt.x, pt.y) ||
+            Rect(ui.rTelePanel.X, ui.rTelePanel.Y, ui.rTelePanel.Width, 30).Contains(pt.x, pt.y) ||
+            Rect(ui.rSetPanel.X, ui.rSetPanel.Y, ui.rSetPanel.Width, 30).Contains(pt.x, pt.y) ||
+            Rect(ui.rBindPanel.X, ui.rBindPanel.Y, ui.rBindPanel.Width, 30).Contains(pt.x, pt.y) ||
+            Rect(ui.rLog.X, ui.rLog.Y, ui.rLog.Width, 30).Contains(pt.x, pt.y)) {
+            overClickable = true;
+        }
+
+        if (ui.rInj.Contains(pt.x, pt.y) ||
+            (g_targetInjected && ui.rReinj.Contains(pt.x, pt.y)) ||
+            (g_targetInjected && ui.rRst.Contains(pt.x, pt.y)) ||
+            ui.rDarkBtn.Contains(pt.x, pt.y) ||
+            ui.rLightBtn.Contains(pt.x, pt.y) ||
+            ui.rPath.Contains(pt.x, pt.y) ||
+            (!g_config.cemu_path_override.empty() && ui.rPathReset.Contains(pt.x, pt.y)) ||
+            ui.rScrollHelper.Contains(pt.x, pt.y) ||
+            ui.rOrbitCam.Contains(pt.x, pt.y) ||
+            ui.rIndepSens.Contains(pt.x, pt.y) ||
+            ui.rClearLog.Contains(pt.x, pt.y)) {
+            overClickable = true;
+        }
+        for (int i = 0; i < 5; ++i) {
+            if (ui.rDrops[i].Contains(pt.x, pt.y)) overClickable = true;
+        }
+
+        if (overClickable) {
+            SetCursor(LoadCursor(nullptr, IDC_HAND));
+            return TRUE;
+        }
+        break;
+    }
 
     case WM_GETMINMAXINFO: {
         MINMAXINFO* mmi = (MINMAXINFO*)lParam;
