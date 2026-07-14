@@ -1336,6 +1336,111 @@ static bool g_hoverSensH = false, g_hoverSensV = false;
 static int g_hoverDrop = -1;
 static int g_hoverDropMenuRow = -1;
 
+static LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_CREATE: {
+        CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        g_hoverDropMenuRow = -1;
+        return 0;
+    }
+    case WM_ACTIVATE: {
+        if (LOWORD(wParam) == WA_INACTIVE) {
+            DestroyWindow(hWnd);
+        }
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        int x = LOWORD(lParam), y = HIWORD(lParam);
+        float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
+        if (dpiScale <= 0) dpiScale = 1.0f;
+        x /= dpiScale; y /= dpiScale;
+        int row = y / 18;
+        if (row >= 0 && row < 18) {
+            if (g_hoverDropMenuRow != row) {
+                g_hoverDropMenuRow = row;
+                InvalidateRect(hWnd, nullptr, FALSE);
+            }
+        } else {
+            if (g_hoverDropMenuRow != -1) {
+                g_hoverDropMenuRow = -1;
+                InvalidateRect(hWnd, nullptr, FALSE);
+            }
+        }
+        return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        int x = LOWORD(lParam), y = HIWORD(lParam);
+        float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
+        if (dpiScale <= 0) dpiScale = 1.0f;
+        x /= dpiScale; y /= dpiScale;
+        int row = y / 18;
+        if (row >= 0 && row < 18) {
+            int dropdownIdx = (int)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+            const ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
+            g_config.mouse_bindings[dropdownIdx] = buttons[row].val;
+            g_ki.mouse_bindings[dropdownIdx] = buttons[row].val;
+            SaveConfig();
+            WriteConfigToSharedMemory();
+        }
+        DestroyWindow(hWnd);
+        return 0;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        RECT rc; GetClientRect(hWnd, &rc);
+        int w = rc.right, h = rc.bottom;
+        float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
+        if (dpiScale <= 0.0f) dpiScale = 1.0f;
+        int logicalW = w / dpiScale;
+        int logicalH = h / dpiScale;
+
+        HDC memDC = CreateCompatibleDC(hdc);
+        HBITMAP memBitmap = CreateCompatibleBitmap(hdc, w, h);
+        HGDIOBJ oldBmp = SelectObject(memDC, memBitmap);
+
+        Graphics g(memDC);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+        g.ScaleTransform(dpiScale, dpiScale);
+
+        SolidBrush bgBrush(g_theme.bg);
+        g.FillRectangle(&bgBrush, 0, 0, logicalW, logicalH);
+        Pen borderPen(g_theme.border);
+        g.DrawRectangle(&borderPen, 0, 0, logicalW - 1, logicalH - 1);
+
+        FontFamily ff(L"Segoe UI");
+        Font fontBody(&ff, 12, FontStyleRegular, UnitPixel);
+        SolidBrush textBrush(g_theme.text);
+
+        const ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
+        for (int i = 0; i < 18; ++i) {
+            if (g_hoverDropMenuRow == i) {
+                SolidBrush hov(Color(255, 30, 30, 40));
+                g.FillRectangle(&hov, 0, i * 18, logicalW, 18);
+            }
+            std::wstring s(buttons[i].name, buttons[i].name + strlen(buttons[i].name));
+            g.DrawString(s.c_str(), -1, &fontBody, PointF(5, (REAL)i * 18), &textBrush);
+        }
+
+        BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+        SelectObject(memDC, oldBmp);
+        DeleteObject(memBitmap);
+        DeleteDC(memDC);
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+    case WM_DESTROY: {
+        g_openDropdown = -1;
+        HWND parent = GetParent(hWnd);
+        if (parent) InvalidateRect(parent, nullptr, FALSE);
+        return 0;
+    }
+    }
+    return DefWindowProc(hWnd, message, wParam, lParam);
+}
+
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
@@ -1642,21 +1747,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 
         g.ResetClip();
 
-        // Draw active dropdown overlay if any
-        if (g_openDropdown != -1) {
-            g.FillRectangle(&bgBrush, ui.rDropMenu);
-            g.DrawRectangle(&borderPen, ui.rDropMenu);
-            
-            const ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
-            for (int i=0; i<18; ++i) {
-                if (g_hoverDropMenuRow == i) {
-                    SolidBrush hov(Color(255, 30, 30, 40));
-                    g.FillRectangle(&hov, ui.rDropMenu.X, ui.rDropMenu.Y + i * 18, ui.rDropMenu.Width, 18);
-                }
-                std::wstring s(buttons[i].name, buttons[i].name + strlen(buttons[i].name));
-                g.DrawString(s.c_str(), -1, &fontBody, PointF(ui.rDropMenu.X + 5, ui.rDropMenu.Y + i * 18), &textBrush);
-            }
-        }
+
 
         BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
         SelectObject(memDC, oldBmp);
@@ -1674,21 +1765,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         int logicalW = rc.right / dpiScale;
         int logicalH = rc.bottom / dpiScale;
         UIRects ui; CalculateUIRects(ui, logicalW, logicalH);
-        
-        if (g_openDropdown != -1) {
-            if (ui.rDropMenu.Contains(x, y)) {
-                int idx = (y - ui.rDropMenu.Y) / 18;
-                const ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
-                if (idx >= 0 && idx < 18) {
-                    g_config.mouse_bindings[g_openDropdown] = buttons[idx].val;
-                    g_ki.mouse_bindings[g_openDropdown] = buttons[idx].val;
-                    SaveConfig(); WriteConfigToSharedMemory();
-                }
-            }
-            g_openDropdown = -1;
-            InvalidateRect(hWnd, nullptr, FALSE);
-            return 0;
-        }
         
         if (ui.rDarkBtn.Contains(x, y)) { g_config.use_light_theme = false; ApplyTheme(); SaveConfig(); InvalidateUIRectsCache(); InvalidateRect(hWnd, nullptr, FALSE); return 0; }
         if (ui.rLightBtn.Contains(x, y)) { g_config.use_light_theme = true; ApplyTheme(); SaveConfig(); InvalidateUIRectsCache(); InvalidateRect(hWnd, nullptr, FALSE); return 0; }
@@ -1722,7 +1798,25 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         if (g_config.use_independent_sens && hBoxV.Contains(x, y)) { g_dragSlider = 1; SetCapture(hWnd); }
         
         for (int i=0; i<5; ++i) {
-            if (ui.rDrops[i].Contains(x, y)) { g_openDropdown = i; InvalidateRect(hWnd, nullptr, FALSE); return 0; }
+            if (ui.rDrops[i].Contains(x, y)) {
+                g_openDropdown = i;
+                InvalidateUIRectsCache();
+                CalculateUIRects(ui, logicalW, logicalH);
+                
+                POINT pt = { (int)(ui.rDropMenu.X * dpiScale), (int)(ui.rDropMenu.Y * dpiScale) };
+                ClientToScreen(hWnd, &pt);
+                int popupW = ui.rDropMenu.Width * dpiScale;
+                int popupH = ui.rDropMenu.Height * dpiScale;
+                
+                HWND hPopup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DropdownPopupClass", L"",
+                    WS_POPUP | WS_VISIBLE,
+                    pt.x, pt.y, popupW, popupH,
+                    hWnd, nullptr, GetModuleHandle(nullptr), (LPVOID)(INT_PTR)i);
+                
+                SetFocus(hPopup);
+                InvalidateRect(hWnd, nullptr, FALSE);
+                return 0;
+            }
         }
         return 0;
     }
@@ -1763,35 +1857,30 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         auto checkHovI = [&](int& state, int val) {
             if (state != val) { state = val; needRedraw = true; }
         };
+
+        checkHovI(g_hoverDropMenuRow, (g_openDropdown != -1 && ui.rDropMenu.Contains(x, y)) ? (y - ui.rDropMenu.Y) / 18 : -1);
+            
+        checkHov(g_hoverInject, ui.rInj.Contains(x, y));
+        checkHov(g_hoverReinject, ui.rReinj.Contains(x, y) && g_targetInjected);
+        checkHov(g_hoverReset, ui.rRst.Contains(x, y) && g_targetInjected);
+        checkHov(g_hoverDarkBtn, ui.rDarkBtn.Contains(x, y));
+        checkHov(g_hoverLightBtn, ui.rLightBtn.Contains(x, y));
+        checkHov(g_hoverPath, ui.rPath.Contains(x, y));
+        checkHov(g_hoverPathReset, !g_config.cemu_path_override.empty() && ui.rPathReset.Contains(x, y));
         
-        if (g_openDropdown != -1) {
-            if (ui.rDropMenu.Contains(x, y)) checkHovI(g_hoverDropMenuRow, (y - ui.rDropMenu.Y) / 18);
-            else checkHovI(g_hoverDropMenuRow, -1);
-        } else {
-            checkHovI(g_hoverDropMenuRow, -1);
-            
-            checkHov(g_hoverInject, ui.rInj.Contains(x, y));
-            checkHov(g_hoverReinject, ui.rReinj.Contains(x, y) && g_targetInjected);
-            checkHov(g_hoverReset, ui.rRst.Contains(x, y) && g_targetInjected);
-            checkHov(g_hoverDarkBtn, ui.rDarkBtn.Contains(x, y));
-            checkHov(g_hoverLightBtn, ui.rLightBtn.Contains(x, y));
-            checkHov(g_hoverPath, ui.rPath.Contains(x, y));
-            checkHov(g_hoverPathReset, !g_config.cemu_path_override.empty() && ui.rPathReset.Contains(x, y));
-            
-            checkHov(g_hoverScrollHelper, ui.rScrollHelper.Contains(x, y));
-            checkHov(g_hoverOrbitCam, ui.rOrbitCam.Contains(x, y));
-            checkHov(g_hoverIndepSens, ui.rIndepSens.Contains(x, y));
-            Rect hBoxH = ui.rSensH; hBoxH.Y += 15; hBoxH.Height = 24;
-            Rect hBoxV = ui.rSensV; hBoxV.Y += 15; hBoxV.Height = 24;
-            checkHov(g_hoverSensH, hBoxH.Contains(x, y));
-            if (g_config.use_independent_sens) checkHov(g_hoverSensV, hBoxV.Contains(x, y));
-            
-            int dropHov = -1;
-            for (int i=0; i<5; ++i) if (ui.rDrops[i].Contains(x, y)) dropHov = i;
-            checkHovI(g_hoverDrop, dropHov);
-            
-            checkHov(g_hoverClearLog, ui.rClearLog.Contains(x, y)); // UX6
-        }
+        checkHov(g_hoverScrollHelper, ui.rScrollHelper.Contains(x, y));
+        checkHov(g_hoverOrbitCam, ui.rOrbitCam.Contains(x, y));
+        checkHov(g_hoverIndepSens, ui.rIndepSens.Contains(x, y));
+        Rect hBoxH = ui.rSensH; hBoxH.Y += 15; hBoxH.Height = 24;
+        Rect hBoxV = ui.rSensV; hBoxV.Y += 15; hBoxV.Height = 24;
+        checkHov(g_hoverSensH, hBoxH.Contains(x, y));
+        if (g_config.use_independent_sens) checkHov(g_hoverSensV, hBoxV.Contains(x, y));
+        
+        int dropHov = -1;
+        for (int i=0; i<5; ++i) if (ui.rDrops[i].Contains(x, y)) dropHov = i;
+        checkHovI(g_hoverDrop, dropHov);
+        
+        checkHov(g_hoverClearLog, ui.rClearLog.Contains(x, y));
         
         if (g_dragSlider != -1) {
             int pad = 15; int w = ui.rSensH.Width;
@@ -1909,6 +1998,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     wcex.lpszClassName = L"MousecamClass";
 
     RegisterClassExW(&wcex);
+
+    WNDCLASSEXW wcexPopup = {};
+    wcexPopup.cbSize = sizeof(WNDCLASSEXW);
+    wcexPopup.style = CS_HREDRAW | CS_VREDRAW | CS_SAVEBITS;
+    wcexPopup.lpfnWndProc = DropdownPopupWndProc;
+    wcexPopup.hInstance = hInstance;
+    wcexPopup.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wcexPopup.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wcexPopup.lpszClassName = L"DropdownPopupClass";
+    RegisterClassExW(&wcexPopup);
 
     // Load config BEFORE window creation so theme colors are known (I2)
     LoadConfig();
