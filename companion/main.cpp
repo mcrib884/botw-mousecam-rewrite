@@ -1059,6 +1059,7 @@ static void UpdateUiState() {
 
 static bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
     if (g_pSharedMemory) {
+        g_pSharedMemory->m_statusShutdownDone = false;
         g_pSharedMemory->m_reqShutdown = true;
         // Wait for DLL threads to exit cleanly (up to 1500 ms)
         int waitLimit = 150;
@@ -2014,6 +2015,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    LoadLibraryW(L"msftedit.dll");
+
     GdiplusStartupInput gdiplusStartupInput;
     GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, nullptr);
 
