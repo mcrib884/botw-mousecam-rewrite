@@ -63,6 +63,7 @@ struct SharedMemoryLayout {
     // --- Log queue (written by DLL, read by companion) ---
     char     m_logQueue[8][128];
     uint32_t m_logWriteIdx;
+    bool     m_statusShutdownDone;
 
     // --- Commands (written by companion, read by DLL) ---
     bool m_reqDumpAob;

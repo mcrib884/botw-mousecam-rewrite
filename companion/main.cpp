@@ -1057,17 +1057,30 @@ static void UpdateUiState() {
     if (g_hWnd) InvalidateRect(g_hWnd, nullptr, FALSE);
 }
 
+static bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
+    if (g_pSharedMemory) {
+        g_pSharedMemory->m_reqShutdown = true;
+        // Wait for DLL threads to exit cleanly (up to 1500 ms)
+        int waitLimit = 150;
+        while (waitLimit-- > 0 && !g_pSharedMemory->m_statusShutdownDone) {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(10);
+        }
+    }
+    return Injector::EjectDLL(pid, dllPath);
+}
+
 static void DoInjectOrEject() {
     DWORD pid = GetSelectedOrTargetPid();
     if (!pid) { SetStatus(L"Error: cemu.exe not found."); return; }
     std::wstring dllPath = GetCompanionDllPath();
     if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
         SetStatus(L"Ejecting...");
-        if (g_pSharedMemory) {
-            g_pSharedMemory->m_reqShutdown = true;
-            Sleep(100);
-        }
-        if (Injector::EjectDLL(pid, dllPath)) { SetStatus(L"Ejection successful!"); UpdateUiState(); }
+        if (SafeEjectDLL(pid, dllPath)) { SetStatus(L"Ejection successful!"); UpdateUiState(); }
         else SetStatus(L"Error: ejection failed.");
     } else {
         SetStatus(L"Injecting...");
@@ -1082,12 +1095,8 @@ static void DoReinject() {
     std::wstring dllPath = GetCompanionDllPath();
     if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
         SetStatus(L"Reloading...");
-        if (g_pSharedMemory) {
-            g_pSharedMemory->m_reqShutdown = true;
-            Sleep(100);
-        }
-        if (!Injector::EjectDLL(pid, dllPath)) { SetStatus(L"Error: reload failed."); return; }
-        Sleep(150);
+        if (!SafeEjectDLL(pid, dllPath)) { SetStatus(L"Error: reload failed."); return; }
+        Sleep(50);
     }
     g_ki.ReloadSettings();
     SetStatus(L"Reloading...");
@@ -1100,11 +1109,7 @@ static void DoEjectOnClose() {
     if (pid && Injector::IsModuleLoaded(pid, Injector::GetFileName(GetCompanionDllPath()))) {
         SetStatus(L"Ejecting DLL on close...");
         UpdateWindow(g_hWnd); // Force immediate redraw to show status
-        if (g_pSharedMemory) {
-            g_pSharedMemory->m_reqShutdown = true;
-            Sleep(100);
-        }
-        Injector::EjectDLL(pid, GetCompanionDllPath());
+        SafeEjectDLL(pid, GetCompanionDllPath());
     }
 }
 

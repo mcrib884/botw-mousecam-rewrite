@@ -77,6 +77,10 @@ namespace Mod {
         g_pSharedMemory->m_logWriteIdx++;
     }
 
+    static std::atomic<int> g_runningThreads{0};
+
+    static void OnThreadExit();
+
     static HANDLE g_hScanThread = nullptr;
     static HANDLE g_hCameraControlThread = nullptr;
     static std::atomic<bool> g_scanning = false;
@@ -993,6 +997,29 @@ namespace Mod {
         }
     }
 
+    static void OnThreadExit() {
+        if (--g_runningThreads == 0) {
+            DllLog("[INFO] All DLL threads are exiting. Performing final cleanup...");
+            RemoveShortcutHook();
+            
+            g_writerHuntActive = false;
+            DisarmPageGuard();
+            RestoreAllWriterNops();
+
+            if (g_vehHandle) {
+                RemoveVectoredExceptionHandler(g_vehHandle);
+                g_vehHandle = nullptr;
+            }
+
+            RestoreAllPatches();
+
+            if (g_pSharedMemory) {
+                g_pSharedMemory->m_statusScanning = false;
+                g_pSharedMemory->m_statusShutdownDone = true;
+            }
+        }
+    }
+
     static DWORD WINAPI ScanAobThread(LPVOID lpParam) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         LoadWriterBlacklist();
@@ -1283,6 +1310,7 @@ namespace Mod {
         if (g_pSharedMemory) {
             g_pSharedMemory->m_statusScanning = false;
         }
+        OnThreadExit();
         return 0;
     }
 
@@ -2231,6 +2259,7 @@ namespace Mod {
         }
 
         timeEndPeriod(1);
+        OnThreadExit();
         return 0;
     }
 
@@ -2267,46 +2296,18 @@ namespace Mod {
 
         // Start scanning thread
         g_scanning = true;
+        g_runningThreads++;
         g_hScanThread = CreateThread(nullptr, 0, ScanAobThread, nullptr, 0, nullptr);
 
         // Start camera control thread
         g_cameraControlRunning = true;
+        g_runningThreads++;
         g_hCameraControlThread = CreateThread(nullptr, 0, CameraControlThread, nullptr, 0, nullptr);
     }
 
     void Shutdown() {
         g_scanning = false;
-        if (g_hScanThread) {
-            WaitForSingleObject(g_hScanThread, 2000);
-            CloseHandle(g_hScanThread);
-            g_hScanThread = nullptr;
-        }
-
         g_cameraControlRunning = false;
-        if (g_hCameraControlThread) {
-            WaitForSingleObject(g_hCameraControlThread, 2000);
-            CloseHandle(g_hCameraControlThread);
-            g_hCameraControlThread = nullptr;
-        }
-
-        // Stop writer hunt, disarm guard, restore all dynamic NOPs
-        g_writerHuntActive = false;
-        DisarmPageGuard();
-        RestoreAllWriterNops();
-
-        // Remove VEH
-        if (g_vehHandle) {
-            RemoveVectoredExceptionHandler(g_vehHandle);
-            g_vehHandle = nullptr;
-        }
-
-        // Restore magnesis patches
-        RestoreAllPatches();
-
-        // Clean up critical sections
-        EnterCriticalSection(&g_writerCS);
-        g_discoveredWriters.clear();
-        LeaveCriticalSection(&g_writerCS);
 
         DeleteCriticalSection(&g_patchCS);
         DeleteCriticalSection(&g_writerCS);
