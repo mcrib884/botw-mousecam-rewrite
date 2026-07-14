@@ -465,6 +465,144 @@ namespace Mod {
     static CodePatch g_magneZPatch = {};
     static bool g_magnePatchesInitialized = false;
 
+    static CodePatch g_shortcutHookPatch = {};
+    static LPVOID g_shortcutTrampoline = nullptr;
+    static std::atomic<uintptr_t> g_tempShortcutAddress{0};
+    static std::atomic<int32_t> g_tempShortcutValue{0};
+    static bool g_shortcutHookActive = false;
+
+    static LPVOID AllocateWithin2GB(uintptr_t targetAddr, size_t size) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        
+        // Search in a range of +/- 1 GB around targetAddr
+        uintptr_t minAddr = targetAddr > 0x3FFFFFFF ? targetAddr - 0x3FFFFFFF : reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
+        uintptr_t maxAddr = targetAddr < UINTPTR_MAX - 0x3FFFFFFF ? targetAddr + 0x3FFFFFFF : reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+
+        // Align to dwAllocationGranularity
+        minAddr = (minAddr + si.dwAllocationGranularity - 1) & ~static_cast<uintptr_t>(si.dwAllocationGranularity - 1);
+        maxAddr = maxAddr & ~static_cast<uintptr_t>(si.dwAllocationGranularity - 1);
+
+        for (uintptr_t addr = minAddr; addr < maxAddr; addr += si.dwAllocationGranularity) {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) != 0) {
+                if (mbi.State == MEM_FREE) {
+                    LPVOID allocated = VirtualAlloc((LPVOID)addr, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                    if (allocated) {
+                        return allocated;
+                    }
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    static void RemoveShortcutHook() {
+        if (!g_shortcutHookActive) return;
+        g_shortcutHookPatch.Restore();
+        if (g_shortcutTrampoline) {
+            VirtualFree(g_shortcutTrampoline, 0, MEM_RELEASE);
+            g_shortcutTrampoline = nullptr;
+        }
+        g_shortcutHookActive = false;
+    }
+
+    static bool SetupShortcutHook(uintptr_t foundAddress) {
+        if (g_shortcutHookActive) return true;
+
+        g_shortcutTrampoline = AllocateWithin2GB(foundAddress, 64);
+        if (!g_shortcutTrampoline) {
+            return false;
+        }
+
+        g_shortcutHookPatch.address = foundAddress;
+        g_shortcutHookPatch.size = 10;
+        if (!g_shortcutHookPatch.Backup()) {
+            VirtualFree(g_shortcutTrampoline, 0, MEM_RELEASE);
+            g_shortcutTrampoline = nullptr;
+            return false;
+        }
+
+        g_tempShortcutAddress = 0;
+        g_tempShortcutValue = 0;
+
+        uint8_t code[64] = {};
+        size_t idx = 0;
+
+        code[idx++] = 0x9C; // pushf
+        code[idx++] = 0x50; // push rax
+        code[idx++] = 0x51; // push rcx
+
+        // lea rax, [r13 + rdx + 0x1C04]
+        code[idx++] = 0x49;
+        code[idx++] = 0x8D;
+        code[idx++] = 0x84;
+        code[idx++] = 0x15;
+        code[idx++] = 0x04;
+        code[idx++] = 0x1C;
+        code[idx++] = 0x00;
+        code[idx++] = 0x00;
+
+        // mov rcx, <address of g_tempShortcutAddress>
+        code[idx++] = 0x48;
+        code[idx++] = 0xB9;
+        uintptr_t addrAddress = (uintptr_t)&g_tempShortcutAddress;
+        memcpy(&code[idx], &addrAddress, 8);
+        idx += 8;
+
+        // mov [rcx], rax
+        code[idx++] = 0x48;
+        code[idx++] = 0x89;
+        code[idx++] = 0x01;
+
+        // mov rcx, <address of g_tempShortcutValue>
+        code[idx++] = 0x48;
+        code[idx++] = 0xB9;
+        uintptr_t valAddress = (uintptr_t)&g_tempShortcutValue;
+        memcpy(&code[idx], &valAddress, 8);
+        idx += 8;
+
+        // mov [rcx], ebx
+        code[idx++] = 0x89;
+        code[idx++] = 0x19;
+
+        code[idx++] = 0x59; // pop rcx
+        code[idx++] = 0x58; // pop rax
+        code[idx++] = 0x9D; // popf
+
+        // Original instruction: movbe [r13 + rdx + 0x1C04], ebx
+        memcpy(&code[idx], "\x41\x0F\x38\xF1\x9C\x15\x04\x1C\x00\x00", 10);
+        idx += 10;
+
+        // jmp [rip + 0]
+        code[idx++] = 0xFF;
+        code[idx++] = 0x25;
+        code[idx++] = 0x00;
+        code[idx++] = 0x00;
+        code[idx++] = 0x00;
+        code[idx++] = 0x00;
+
+        uintptr_t returnAddress = foundAddress + 10;
+        memcpy(&code[idx], &returnAddress, 8);
+        idx += 8;
+
+        memcpy(g_shortcutTrampoline, code, idx);
+
+        std::vector<uint8_t> patchBytes(10, 0x90);
+        patchBytes[0] = 0xE9;
+        intptr_t diff = (intptr_t)g_shortcutTrampoline - (intptr_t)(foundAddress + 5);
+        *(int32_t*)(&patchBytes[1]) = (int32_t)diff;
+
+        if (!g_shortcutHookPatch.ApplyBytes(patchBytes.data(), 10)) {
+            VirtualFree(g_shortcutTrampoline, 0, MEM_RELEASE);
+            g_shortcutTrampoline = nullptr;
+            return false;
+        }
+
+        g_shortcutHookActive = true;
+        return true;
+    }
+
     static void RestoreAllPatches() {
         EnterCriticalSection(&g_patchCS);
         if (g_magnePatchesInitialized) {
@@ -472,6 +610,7 @@ namespace Mod {
             g_magneYPatch.Restore();
             g_magneZPatch.Restore();
         }
+        RemoveShortcutHook();
         LeaveCriticalSection(&g_patchCS);
     }
 
@@ -854,7 +993,7 @@ namespace Mod {
         std::vector<AobTask> tasks = {
             { L"GameRomCamera",  "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00", false, false, 0 },
             { L"Magne Target Sig", "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00", true, false, 0 },
-            { L"ShortcutMenu",    "6F 5E 82 18 6F 5E 83 44 6F 5E 82 64 6F 5A A7 9C 6F 5E 82 BC 6F 5E 83 00 10 22 2A 40 6F 5A BB 50 6F 5E 83 88 10 21 CE E4 6F 5A C1 C8 6F 5E 84 6C 6F 5E 84 B8 6F 5E 84 FC 10 21 D0 AC 6F 5A DE F4 6F 5A D2 68 10 21 74 6C 10 22 7F 3C 6F 5E 85 98 00 00 00 02 00 00 00 05 00 00 00 05 6F 5E 80 F4 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 3F 80 00 00 42 34 00 00 3F 80 00 00 00 00 00 00 00 00 00 00 FF FF FF FF 00 00 00 ?? 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? ?? 6F 58 80 1C 10 24 3A 14 00 00 00 40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??", false, false, 0 },
+            { L"ShortcutMenu",    "41 0F 38 F1 9C 15 04 1C 00 00", true, false, 0 },
             { L"MenuState",       "00 19 29 29 08 19 29 29 08 00 00 00 00 1A ?? ?? ?? 0C 00 00 00 00 00 00 05 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 54 5A 89 78 10 2F D4 14 00 00 00 00 00 00 00 00 10 31 F3 34 00 00 00 00 00 00 00 00 54 61 E3 AC", false, false, 0 }
         };
 
@@ -879,6 +1018,8 @@ namespace Mod {
                     g_addrShortcutMenu = 0;
                     g_addrMenuState = 0;
                     
+                    RemoveShortcutHook();
+
                     g_writerHuntActive = false;
                     DisarmPageGuard();
                     EnterCriticalSection(&g_writerCS);
@@ -975,50 +1116,78 @@ namespace Mod {
             if (targetIdx != 0) {
                 nextIdx = (targetIdx % (tasks.size() - 1)) + 1;
 
-                Pattern pat = ParseAOB(tasks[targetIdx].patternStr);
-                uintptr_t foundAddress = 0;
-                if (ScanProcessAOB(pat, tasks[targetIdx].isCode, foundAddress)) {
-                    tasks[targetIdx].address = foundAddress;
-                    tasks[targetIdx].found = true;
-                    foundAny = true;
-
-                    // Write to shared memory immediately!
-                    if (g_pSharedMemory) {
-                        switch (targetIdx) {
-                            case 1: g_pSharedMemory->m_statusAddrMagneTarget  = foundAddress; break;
-                            case 2: g_pSharedMemory->m_statusAddrShortcutMenu = foundAddress; break;
-                            case 3: g_pSharedMemory->m_statusAddrMenuState    = foundAddress; break;
-                        }
-                    }
-
-                    // Assign to global variable immediately!
-                    switch (targetIdx) {
-                        case 1: g_addrMagneTarget  = foundAddress; break;
-                        case 2: g_addrShortcutMenu = foundAddress; break;
-                        case 3: g_addrMenuState    = foundAddress; break;
-                    }
-
-                    // Initialize magnesis detour patches when MagneTarget is found
-                    if (targetIdx == 1) {
-                        EnterCriticalSection(&g_patchCS);
-                        if (!g_magnePatchesInitialized) {
-                            g_magneDetourPatch = { foundAddress + 0x40, 15, {}, false };
-                            g_magneYPatch      = { foundAddress + 0xBA,  7, {}, false };
-                            g_magneZPatch      = { foundAddress + 0xCE,  7, {}, false };
-
-                            g_magneDetourPatch.Backup();
-                            g_magneYPatch.Backup();
-                            g_magneZPatch.Backup();
-                            
-                            g_magnesisXWriterReturn = foundAddress + 0x40 + 15;
-                            g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisXWriter);
-
-                            g_magnePatchesInitialized = true;
-                            if (g_pSharedMemory) {
-                                g_pSharedMemory->m_patchMagneDetourActive = true;
+                if (targetIdx == 2) {
+                    if (g_shortcutHookActive) {
+                        uintptr_t tempAddr = g_tempShortcutAddress.load();
+                        if (tempAddr != 0) {
+                            int32_t tempVal = g_tempShortcutValue.load();
+                            if (tempVal == -1 || tempVal == 0 || tempVal == 1 || tempVal == 2 || tempVal == 3 || tempVal == 4) {
+                                // Correct!
+                                tasks[2].found = true;
+                                g_addrShortcutMenu = tempAddr - 128;
+                                if (g_pSharedMemory) {
+                                    g_pSharedMemory->m_statusAddrShortcutMenu = g_addrShortcutMenu;
+                                }
+                                RemoveShortcutHook();
+                                foundAny = true;
+                            } else {
+                                // Incorrect target address. Reset and wait for another write.
+                                g_tempShortcutAddress = 0;
+                                g_tempShortcutValue = 0;
                             }
                         }
-                        LeaveCriticalSection(&g_patchCS);
+                    } else {
+                        Pattern pat = ParseAOB(tasks[2].patternStr);
+                        uintptr_t foundAddress = 0;
+                        if (ScanProcessAOB(pat, tasks[2].isCode, foundAddress)) {
+                            tasks[2].address = foundAddress;
+                            SetupShortcutHook(foundAddress);
+                        }
+                    }
+                } else {
+                    Pattern pat = ParseAOB(tasks[targetIdx].patternStr);
+                    uintptr_t foundAddress = 0;
+                    if (ScanProcessAOB(pat, tasks[targetIdx].isCode, foundAddress)) {
+                        tasks[targetIdx].address = foundAddress;
+                        tasks[targetIdx].found = true;
+                        foundAny = true;
+
+                        // Write to shared memory immediately!
+                        if (g_pSharedMemory) {
+                            switch (targetIdx) {
+                                case 1: g_pSharedMemory->m_statusAddrMagneTarget  = foundAddress; break;
+                                case 3: g_pSharedMemory->m_statusAddrMenuState    = foundAddress; break;
+                            }
+                        }
+
+                        // Assign to global variable immediately!
+                        switch (targetIdx) {
+                            case 1: g_addrMagneTarget  = foundAddress; break;
+                            case 3: g_addrMenuState    = foundAddress; break;
+                        }
+
+                        // Initialize magnesis detour patches when MagneTarget is found
+                        if (targetIdx == 1) {
+                            EnterCriticalSection(&g_patchCS);
+                            if (!g_magnePatchesInitialized) {
+                                g_magneDetourPatch = { foundAddress + 0x40, 15, {}, false };
+                                g_magneYPatch      = { foundAddress + 0xBA,  7, {}, false };
+                                g_magneZPatch      = { foundAddress + 0xCE,  7, {}, false };
+
+                                g_magneDetourPatch.Backup();
+                                g_magneYPatch.Backup();
+                                g_magneZPatch.Backup();
+                                
+                                g_magnesisXWriterReturn = foundAddress + 0x40 + 15;
+                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisXWriter);
+
+                                g_magnePatchesInitialized = true;
+                                if (g_pSharedMemory) {
+                                    g_pSharedMemory->m_patchMagneDetourActive = true;
+                                }
+                            }
+                            LeaveCriticalSection(&g_patchCS);
+                        }
                     }
                 }
             }
@@ -1055,6 +1224,8 @@ namespace Mod {
                 Sleep(100);
             }
         }
+
+        RemoveShortcutHook();
 
         if (g_pSharedMemory) {
             g_pSharedMemory->m_statusScanning = false;
