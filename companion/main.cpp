@@ -1273,17 +1273,15 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
     curY += teleH + spacing;
     
     // CAMERA SETTINGS
-    const int setH = g_config.use_independent_sens ? 130 : 100;
+    const int setH = g_config.use_independent_sens ? 180 : 150;
     r.rSetPanel = Rect(pad, curY, panelW, setH);
-    int gap = (panelW - 515) / 2;
-    if (gap < 5) gap = 5;
-    r.rScrollHelper = Rect(pad + 5, curY + 35, 135, 20);
-    r.rOrbitCam = Rect(pad + 5 + 135 + gap, curY + 35, 145, 20);
-    r.rIndepSens = Rect(pad + 5 + 135 + gap + 145 + gap, curY + 35, 235, 20);
+    r.rScrollHelper = Rect(pad + 10, curY + 35, panelW - 20, 20);
+    r.rOrbitCam = Rect(pad + 10, curY + 60, panelW - 20, 20);
+    r.rIndepSens = Rect(pad + 10, curY + 85, panelW - 20, 20);
     
-    r.rSensH = Rect(pad + 10, curY + 65, panelW - 40, 24);
+    r.rSensH = Rect(pad + 10, curY + 115, panelW - 40, 24);
     if (g_config.use_independent_sens) {
-        r.rSensV = Rect(pad + 10, curY + 95, panelW - 40, 24);
+        r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
     } else {
         r.rSensV = Rect(0,0,0,0);
     }
