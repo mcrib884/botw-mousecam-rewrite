@@ -355,6 +355,9 @@ namespace Mod {
         size_t overlap = pattern.bytes.size();
 
         while (current < end) {
+            if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
+                return false;
+            }
             if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) {
                 break;
             }
@@ -376,6 +379,9 @@ namespace Mod {
                 size_t regionSize = mbi.RegionSize;
 
                 for (size_t offset = 0; offset < regionSize; offset += (chunkSize > overlap ? chunkSize - overlap : chunkSize)) {
+                    if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
+                        return false;
+                    }
                     size_t toRead = (std::min)(chunkSize, regionSize - offset);
                     __try {
                         size_t matchOffset = 0;
