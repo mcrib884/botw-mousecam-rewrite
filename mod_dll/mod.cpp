@@ -10,6 +10,8 @@
 #include <TlHelp32.h>
 #include <cstdint>
 #include <stdio.h>
+#include <immintrin.h>
+#include <intrin.h>
 
 // ============================================================================
 // Why this DLL contains camera logic rather than being a pure memory relay:
@@ -143,6 +145,118 @@ namespace Mod {
         return pat;
     }
 
+    static bool CpuSupportsAvx2() {
+        int cpuInfo[4] = { 0 };
+        __cpuid(cpuInfo, 7);
+        return (cpuInfo[1] & (1 << 5)) != 0;
+    }
+
+    static bool SearchPatternAVX2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
+        size_t patternLen = pattern.bytes.size();
+        size_t limit = bufferSize - patternLen;
+        
+        __m256i firstByteVec = _mm256_set1_epi8(firstByte);
+        
+        size_t i = 0;
+        for (; i + 32 <= limit; i += 32) {
+            __m256i data = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(buffer + i + firstNonWildcard));
+            __m256i cmp = _mm256_cmpeq_epi8(data, firstByteVec);
+            unsigned int mask = _mm256_movemask_epi8(cmp);
+            
+            while (mask != 0) {
+                unsigned long bitIdx;
+                _BitScanForward(&bitIdx, mask);
+                mask &= ~(1u << bitIdx);
+                
+                size_t offset = i + bitIdx;
+                if (offset + patternLen <= bufferSize) {
+                    bool match = true;
+                    for (size_t j = 0; j < patternLen; ++j) {
+                        if (!pattern.isWildcard[j] && buffer[offset + j] != pattern.bytes[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        foundOffset = offset;
+                        return true;
+                    }
+                }
+            }
+        }
+        
+        for (; i <= limit; ++i) {
+            if (buffer[i + firstNonWildcard] == firstByte) {
+                bool match = true;
+                for (size_t j = 0; j < patternLen; ++j) {
+                    if (!pattern.isWildcard[j] && buffer[i + j] != pattern.bytes[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    foundOffset = i;
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    static bool SearchPatternSSE2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
+        size_t patternLen = pattern.bytes.size();
+        size_t limit = bufferSize - patternLen;
+        
+        __m128i firstByteVec = _mm_set1_epi8(firstByte);
+        
+        size_t i = 0;
+        for (; i + 16 <= limit; i += 16) {
+            __m128i data = _mm_loadu_si128(reinterpret_cast<const __m128i*>(buffer + i + firstNonWildcard));
+            __m128i cmp = _mm_cmpeq_epi8(data, firstByteVec);
+            unsigned int mask = _mm_movemask_epi8(cmp);
+            
+            while (mask != 0) {
+                unsigned long bitIdx;
+                _BitScanForward(&bitIdx, mask);
+                mask &= ~(1u << bitIdx);
+                
+                size_t offset = i + bitIdx;
+                if (offset + patternLen <= bufferSize) {
+                    bool match = true;
+                    for (size_t j = 0; j < patternLen; ++j) {
+                        if (!pattern.isWildcard[j] && buffer[offset + j] != pattern.bytes[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        foundOffset = offset;
+                        return true;
+                    }
+                }
+            }
+        }
+        
+        for (; i <= limit; ++i) {
+            if (buffer[i + firstNonWildcard] == firstByte) {
+                bool match = true;
+                for (size_t j = 0; j < patternLen; ++j) {
+                    if (!pattern.isWildcard[j] && buffer[i + j] != pattern.bytes[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    foundOffset = i;
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
     static bool SearchPattern(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t& foundOffset) {
         if (pattern.bytes.empty() || bufferSize < pattern.bytes.size()) {
             return false;
@@ -159,32 +273,13 @@ namespace Mod {
         }
 
         unsigned char firstByte = pattern.bytes[firstNonWildcard];
-        size_t i = 0;
-        while (i + pattern.bytes.size() <= bufferSize) {
-            const void* p = memchr(buffer + i + firstNonWildcard, firstByte, bufferSize - (i + firstNonWildcard));
-            if (!p) {
-                break;
-            }
-
-            i = static_cast<const unsigned char*>(p) - buffer - firstNonWildcard;
-
-            bool match = true;
-            for (size_t j = 0; j < pattern.bytes.size(); ++j) {
-                if (!pattern.isWildcard[j] && buffer[i + j] != pattern.bytes[j]) {
-                    match = false;
-                    break;
-                }
-            }
-
-            if (match) {
-                foundOffset = i;
-                return true;
-            }
-
-            i++;
+        
+        static bool hasAvx2 = CpuSupportsAvx2();
+        if (hasAvx2) {
+            return SearchPatternAVX2(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
+        } else {
+            return SearchPatternSSE2(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
         }
-
-        return false;
     }
 
     static uintptr_t g_emulatedRamBase = 0;
