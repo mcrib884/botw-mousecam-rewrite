@@ -1206,7 +1206,7 @@ static void DrawDropdown(Graphics& g, int x, int y, int width, const wchar_t* la
 }
 
 // Layout constants
-const int WND_W = 900;
+const int WND_W = 580;
 const int WND_H = 880;
 
 struct UIRects {
@@ -1878,8 +1878,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 
     case WM_GETMINMAXINFO: {
         MINMAXINFO* mmi = (MINMAXINFO*)lParam;
-        mmi->ptMinTrackSize.x = WND_W;
-        mmi->ptMinTrackSize.y = WND_H;
+        float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
+        if (dpiScale <= 0) dpiScale = 1.0f;
+        mmi->ptMinTrackSize.x = WND_W * dpiScale;
+        mmi->ptMinTrackSize.y = WND_H * dpiScale;
         return 0;
     }
     case WM_DESTROY:
