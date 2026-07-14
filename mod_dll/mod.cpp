@@ -203,6 +203,13 @@ namespace Mod {
                     char line[1024];
                     while (fgets(line, sizeof(line), f)) {
                         std::string s(line);
+                        // Trim leading spaces
+                        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+                            return !std::isspace(ch);
+                        }));
+                        if (s.empty() || s[0] == '#' || (s.size() >= 2 && s[0] == '/' && s[1] == '/')) {
+                            continue;
+                        }
                         if (s.find("AOB Dump") != std::string::npos) continue;
                         Pattern pat = ParseAOB(s);
                         if (!pat.bytes.empty()) {
@@ -417,7 +424,17 @@ namespace Mod {
             if (address == 0 || size == 0 || g_originalBytes.empty() || len != size) return false;
             DWORD oldProtect;
             if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                memcpy((LPVOID)address, bytes, len);
+                if (len >= 14 && bytes[0] == 0xFF && bytes[1] == 0x25 && bytes[2] == 0x00 && bytes[3] == 0x00 && bytes[4] == 0x00 && bytes[5] == 0x00) {
+                    // Atomic detour write to prevent race conditions:
+                    // 1. Write the target address at offset 6 (and NOPs) first
+                    memcpy((LPVOID)(address + 6), bytes + 6, len - 6);
+                    // 2. Perform atomic 64-bit write of the first 8 bytes
+                    uint64_t first8;
+                    memcpy(&first8, bytes, 8);
+                    InterlockedExchange64((LONG64*)address, (LONG64)first8);
+                } else {
+                    memcpy((LPVOID)address, bytes, len);
+                }
                 VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
                 FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, len);
                 active = true;
@@ -845,6 +862,9 @@ namespace Mod {
         size_t nextIdx = 1;
         while (g_scanning) {
             if (g_pSharedMemory) {
+                if (g_pSharedMemory->m_reqShutdown) {
+                    break;
+                }
                 g_pSharedMemory->m_statusScanning = true;
                 
                 if (g_pSharedMemory->m_reqResetScan) {
@@ -1228,6 +1248,9 @@ namespace Mod {
         StartMouseHook();
 
         while (g_cameraControlRunning) {
+            if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
+                break;
+            }
             MSG msg;
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             }
@@ -1301,6 +1324,11 @@ namespace Mod {
                 menu_active = (g_liveMenuState == 2);
             }
 
+            bool is_shortcut_open = false;
+            if (g_addrShortcutMenu != 0) {
+                is_shortcut_open = (ReadInt32BE(g_addrShortcutMenu + 128) != -1);
+            }
+
             bool magnesis_auto_active = false;
             uint64_t current_heartbeat = g_magneHeartbeatCounter;
             // The assembly detour increments the heartbeat counter every frame
@@ -1362,7 +1390,7 @@ namespace Mod {
                 LeaveCriticalSection(&g_patchCS);
             }
 
-            bool should_nop = g_mousecamActive && !magnesis_mode && !menu_active;
+            bool should_nop = g_mousecamActive && !magnesis_mode && !menu_active && !is_shortcut_open;
             if (should_nop != last_should_nop) {
                 last_should_nop = should_nop;
                 if (should_nop) {
@@ -1583,10 +1611,6 @@ namespace Mod {
                         WriteFloatBE(magne_ideal_base + 8, magne_pos_z);
                     } else {
                         if (!magnesis_mode) {
-                            bool is_shortcut_open = false;
-                            if (g_addrShortcutMenu != 0) {
-                                is_shortcut_open = (ReadInt32BE(g_addrShortcutMenu + 128) != -1);
-                            }
                             bool is_main_menu_open = menu_active && !is_shortcut_open;
 
                             if (is_main_menu_open) {

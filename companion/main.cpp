@@ -1063,6 +1063,10 @@ static void DoInjectOrEject() {
     std::wstring dllPath = GetCompanionDllPath();
     if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
         SetStatus(L"Ejecting...");
+        if (g_pSharedMemory) {
+            g_pSharedMemory->m_reqShutdown = true;
+            Sleep(100);
+        }
         if (Injector::EjectDLL(pid, dllPath)) { SetStatus(L"Ejection successful!"); UpdateUiState(); }
         else SetStatus(L"Error: ejection failed.");
     } else {
@@ -1078,6 +1082,10 @@ static void DoReinject() {
     std::wstring dllPath = GetCompanionDllPath();
     if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
         SetStatus(L"Reloading...");
+        if (g_pSharedMemory) {
+            g_pSharedMemory->m_reqShutdown = true;
+            Sleep(100);
+        }
         if (!Injector::EjectDLL(pid, dllPath)) { SetStatus(L"Error: reload failed."); return; }
         Sleep(150);
     }
@@ -1090,6 +1098,10 @@ static void DoReinject() {
 static void DoEjectOnClose() {
     DWORD pid = GetSelectedOrTargetPid();
     if (pid && Injector::IsModuleLoaded(pid, Injector::GetFileName(GetCompanionDllPath()))) {
+        if (g_pSharedMemory) {
+            g_pSharedMemory->m_reqShutdown = true;
+            Sleep(100);
+        }
         Injector::EjectDLL(pid, GetCompanionDllPath());
     }
 }

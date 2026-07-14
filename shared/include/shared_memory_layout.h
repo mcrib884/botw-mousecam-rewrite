@@ -63,4 +63,6 @@ struct SharedMemoryLayout {
     // --- Commands (written by companion, read by DLL) ---
     bool m_reqDumpAob;
     bool m_reqResetScan;
+    bool m_reqShutdown;
 };
+
