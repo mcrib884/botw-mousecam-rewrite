@@ -14,7 +14,11 @@ AsmMagnesisXWriter PROC
     inc qword ptr [g_magneHeartbeatCounter]
     cmp byte ptr [g_magnesisEnabled], 1
     je SkipNativeWrite
-    movbe [r13 + rbp + 68h], r14d
+    push rbx
+    mov ebx, r14d
+    bswap ebx
+    mov [r13 + rbp + 68h], ebx
+    pop rbx
 
 SkipNativeWrite:
     cvtss2sd xmm6, xmm6

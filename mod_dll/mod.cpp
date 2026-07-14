@@ -81,6 +81,7 @@ namespace Mod {
 
     static void OnThreadExit();
     static bool IsCompanionAlive();
+    static bool CpuSupportsMovbe();
 
     static HANDLE g_hScanThread = nullptr;
     static HANDLE g_hCameraControlThread = nullptr;
@@ -536,13 +537,16 @@ namespace Mod {
     static bool SetupShortcutHook(uintptr_t foundAddress) {
         if (g_shortcutHookActive) return true;
 
+        bool hasMovbe = CpuSupportsMovbe();
+        size_t hookSize = hasMovbe ? 10 : 8;
+
         g_shortcutTrampoline = AllocateWithin2GB(foundAddress, 64);
         if (!g_shortcutTrampoline) {
             return false;
         }
 
         g_shortcutHookPatch.address = foundAddress;
-        g_shortcutHookPatch.size = 10;
+        g_shortcutHookPatch.size = hookSize;
         if (!g_shortcutHookPatch.Backup()) {
             VirtualFree(g_shortcutTrampoline, 0, MEM_RELEASE);
             g_shortcutTrampoline = nullptr;
@@ -596,9 +600,14 @@ namespace Mod {
         code[idx++] = 0x58; // pop rax
         code[idx++] = 0x9D; // popf
 
-        // Original instruction: movbe [r13 + rdx + 0x1C04], ebx
-        memcpy(&code[idx], "\x41\x0F\x38\xF1\x9C\x15\x04\x1C\x00\x00", 10);
-        idx += 10;
+        // Original instruction copy
+        if (hasMovbe) {
+            memcpy(&code[idx], "\x41\x0F\x38\xF1\x9C\x15\x04\x1C\x00\x00", 10);
+            idx += 10;
+        } else {
+            memcpy(&code[idx], (const void*)foundAddress, 8);
+            idx += 8;
+        }
 
         // jmp [rip + 0]
         code[idx++] = 0xFF;
@@ -608,18 +617,18 @@ namespace Mod {
         code[idx++] = 0x00;
         code[idx++] = 0x00;
 
-        uintptr_t returnAddress = foundAddress + 10;
+        uintptr_t returnAddress = foundAddress + hookSize;
         memcpy(&code[idx], &returnAddress, 8);
         idx += 8;
 
         memcpy(g_shortcutTrampoline, code, idx);
 
-        std::vector<uint8_t> patchBytes(10, 0x90);
+        std::vector<uint8_t> patchBytes(hookSize, 0x90);
         patchBytes[0] = 0xE9;
         intptr_t diff = (intptr_t)g_shortcutTrampoline - (intptr_t)(foundAddress + 5);
         *(int32_t*)(&patchBytes[1]) = (int32_t)diff;
 
-        if (!g_shortcutHookPatch.ApplyBytes(patchBytes.data(), 10)) {
+        if (!g_shortcutHookPatch.ApplyBytes(patchBytes.data(), hookSize)) {
             VirtualFree(g_shortcutTrampoline, 0, MEM_RELEASE);
             g_shortcutTrampoline = nullptr;
             return false;
@@ -1065,9 +1074,17 @@ namespace Mod {
         return true;
     }
 
+    static bool CpuSupportsMovbe() {
+        int cpuInfo[4] = { 0 };
+        __cpuid(cpuInfo, 1);
+        return (cpuInfo[2] & (1 << 22)) != 0;
+    }
+
         static DWORD WINAPI ScanAobThread(LPVOID lpParam) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         LoadWriterBlacklist();
+
+        bool hasMovbe = CpuSupportsMovbe();
 
         struct AobTask {
             std::wstring name;
@@ -1080,7 +1097,7 @@ namespace Mod {
         std::vector<AobTask> tasks = {
             { L"GameRomCamera",  "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00", false, false, 0 },
             { L"Magne Target Sig", "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00", true, false, 0 },
-            { L"ShortcutMenu",    "41 0F 38 F1 9C 15 04 1C 00 00", true, false, 0 }
+            { L"ShortcutMenu",    hasMovbe ? "41 0F 38 F1 9C 15 04 1C 00 00" : "?? 89 84 15 04 1C 00 00", true, false, 0 }
         };
 
         bool allOtherFound = false;
