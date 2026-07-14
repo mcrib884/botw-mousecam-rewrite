@@ -255,6 +255,14 @@ static void ApplyTheme() {
     if (g_hConsoleEdit) {
         COLORREF bg = g_config.use_light_theme ? RGB(240, 240, 240) : RGB(5, 6, 8);
         SendMessageW(g_hConsoleEdit, EM_SETBKGNDCOLOR, 0, bg);
+        
+        CHARFORMATW cf = {};
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_COLOR;
+        cf.crTextColor = g_config.use_light_theme ? RGB(30, 30, 35) : RGB(201, 209, 217);
+        SendMessageW(g_hConsoleEdit, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&cf);
+        SendMessageW(g_hConsoleEdit, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+        
         InvalidateRect(g_hConsoleEdit, nullptr, TRUE);
     }
     ThemeColors lightTheme = {
@@ -941,7 +949,7 @@ static void LogToConsole(const wchar_t* format, ...) {
     int len = SendMessageW(g_hConsoleEdit, EM_GETTEXTLENGTHEX, (WPARAM)&gtl, 0);
     SendMessageW(g_hConsoleEdit, EM_SETSEL, len, len);
 
-    CHARFORMAT2W cf;
+    CHARFORMATW cf;
     ZeroMemory(&cf, sizeof(cf));
     cf.cbSize = sizeof(cf);
     cf.dwMask = CFM_COLOR;
@@ -1950,7 +1958,24 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         return 0;
     }
     case WM_MOUSEWHEEL: {
-        return 0;
+        if (g_hConsoleEdit && !g_collapsedLog) {
+            POINT pt; GetCursorPos(&pt);
+            ScreenToClient(hWnd, &pt);
+            float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
+            if (dpiScale <= 0) dpiScale = 1.0f;
+            pt.x /= dpiScale; pt.y /= dpiScale;
+
+            RECT rc; GetClientRect(hWnd, &rc);
+            int logicalW = rc.right / dpiScale;
+            int logicalH = rc.bottom / dpiScale;
+            UIRects ui; CalculateUIRects(ui, logicalW, logicalH);
+
+            if (ui.rLog.Contains(pt.x, pt.y)) {
+                SendMessageW(g_hConsoleEdit, WM_MOUSEWHEEL, wParam, lParam);
+                return 0;
+            }
+        }
+        break;
     }
     case WM_MOUSELEAVE: {
         g_trackingMouse = false;
