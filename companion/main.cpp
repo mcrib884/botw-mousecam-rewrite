@@ -252,19 +252,6 @@ static void ApplyTheme() {
         BOOL dark = !g_config.use_light_theme;
         DwmSetWindowAttribute(g_hWnd, 20, &dark, sizeof(dark));
     }
-    if (g_hConsoleEdit) {
-        COLORREF bg = g_config.use_light_theme ? RGB(220, 222, 228) : RGB(10, 12, 16);
-        SendMessageW(g_hConsoleEdit, EM_SETBKGNDCOLOR, 0, bg);
-        
-        CHARFORMATW cf = {};
-        cf.cbSize = sizeof(cf);
-        cf.dwMask = CFM_COLOR;
-        cf.crTextColor = g_config.use_light_theme ? RGB(30, 30, 35) : RGB(201, 209, 217);
-        SendMessageW(g_hConsoleEdit, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&cf);
-        SendMessageW(g_hConsoleEdit, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
-        
-        InvalidateRect(g_hConsoleEdit, nullptr, TRUE);
-    }
     ThemeColors lightTheme = {
         Color(255, 245, 245, 247), Color(255, 255, 255, 255), Color(255, 220, 220, 225),
         Color(255, 0, 102, 204), Color(255, 30, 30, 35), Color(255, 120, 120, 125),
@@ -285,6 +272,20 @@ static void ApplyTheme() {
     g_theme.success = LerpColor(lightTheme.success, darkTheme.success, t);
     g_theme.error = LerpColor(lightTheme.error, darkTheme.error, t);
     g_theme.consoleBg = LerpColor(lightTheme.consoleBg, darkTheme.consoleBg, t);
+
+    if (g_hConsoleEdit) {
+        COLORREF bg = RGB(g_theme.consoleBg.GetR(), g_theme.consoleBg.GetG(), g_theme.consoleBg.GetB());
+        SendMessageW(g_hConsoleEdit, EM_SETBKGNDCOLOR, 0, bg);
+        
+        CHARFORMATW cf = {};
+        cf.cbSize = sizeof(cf);
+        cf.dwMask = CFM_COLOR;
+        cf.crTextColor = RGB(g_theme.text.GetR(), g_theme.text.GetG(), g_theme.text.GetB());
+        SendMessageW(g_hConsoleEdit, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&cf);
+        SendMessageW(g_hConsoleEdit, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+        
+        InvalidateRect(g_hConsoleEdit, nullptr, TRUE);
+    }
 }
 
 static std::string GetConfigPath() {
