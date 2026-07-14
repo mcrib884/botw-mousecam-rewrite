@@ -19,6 +19,7 @@ struct SharedMemoryLayout {
     uint64_t m_dllBaseAddr;
 
     // --- Config (written by companion, read by DLL) ---
+    uint32_t m_companionPid;
     bool     m_cfgMagnesisEnabled;
     bool     m_cfgScrollHelper;
     float    m_cfgSensitivityX;

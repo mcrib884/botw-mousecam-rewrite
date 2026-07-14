@@ -991,6 +991,7 @@ static DWORD GetSelectedOrTargetPid() {
 
 static void WriteConfigToSharedMemory() {
     if (g_pSharedMemory) {
+        g_pSharedMemory->m_companionPid = GetCurrentProcessId();
         g_pSharedMemory->m_cfgMagnesisEnabled = g_config.magnesis_enabled;
         g_pSharedMemory->m_cfgScrollHelper = g_config.scroll_helper ? 1 : 0;
         g_pSharedMemory->m_cfgFullOrbitCamera = g_config.full_orbit_camera ? 1 : 0;
