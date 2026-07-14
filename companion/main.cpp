@@ -253,7 +253,7 @@ static void ApplyTheme() {
         DwmSetWindowAttribute(g_hWnd, 20, &dark, sizeof(dark));
     }
     if (g_hConsoleEdit) {
-        COLORREF bg = g_config.use_light_theme ? RGB(240, 240, 240) : RGB(5, 6, 8);
+        COLORREF bg = g_config.use_light_theme ? RGB(220, 222, 228) : RGB(10, 12, 16);
         SendMessageW(g_hConsoleEdit, EM_SETBKGNDCOLOR, 0, bg);
         
         CHARFORMATW cf = {};
@@ -268,12 +268,12 @@ static void ApplyTheme() {
     ThemeColors lightTheme = {
         Color(255, 245, 245, 247), Color(255, 255, 255, 255), Color(255, 220, 220, 225),
         Color(255, 0, 102, 204), Color(255, 30, 30, 35), Color(255, 120, 120, 125),
-        Color(255, 30, 150, 60), Color(255, 220, 40, 40), Color(255, 240, 240, 240)
+        Color(255, 30, 150, 60), Color(255, 220, 40, 40), Color(255, 220, 222, 228)
     };
     ThemeColors darkTheme = {
         Color(255, 13, 17, 23), Color(255, 22, 27, 34), Color(255, 48, 54, 61),
         Color(255, 47, 129, 247), Color(255, 201, 209, 217), Color(255, 139, 148, 158),
-        Color(255, 35, 134, 54), Color(255, 218, 54, 51), Color(255, 5, 6, 8)
+        Color(255, 35, 134, 54), Color(255, 218, 54, 51), Color(255, 10, 12, 16)
     };
     float t = g_animTheme == -1.0f ? (g_config.use_light_theme ? 0.0f : 1.0f) : g_animTheme;
     g_theme.bg = LerpColor(lightTheme.bg, darkTheme.bg, t);
