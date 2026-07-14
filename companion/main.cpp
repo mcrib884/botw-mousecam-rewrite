@@ -1209,6 +1209,9 @@ static void DrawDropdown(Graphics& g, int x, int y, int width, const wchar_t* la
 const int WND_W = 580;
 const int WND_H = 880;
 
+const float SENS_MIN = 0.1f;
+const float SENS_MAX = 10.0f;
+
 struct UIRects {
     Rect rConnPanel;
     Rect rMemPanel;
@@ -1702,9 +1705,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         DrawToggle(g, ui.rOrbitCam.X, ui.rOrbitCam.Y, g_animOrbitCam, L"Full Orbit Camera", ff);
         DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff);
         
-        DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, 0.1f, 5.0f, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
+        DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
         if (g_config.use_independent_sens) {
-            DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, 0.1f, 5.0f, g_animSensV, L"Sensitivity (V)", ff);
+            DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Sensitivity (V)", ff);
         }
 
         // --- MOUSE BINDINGS ---
@@ -1886,7 +1889,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             int pad = 15; int w = ui.rSensH.Width;
             float pct = (float)(x - pad - 10) / w;
             if (pct < 0) pct = 0; if (pct > 1) pct = 1;
-            float val = 0.1f + pct * 4.9f;
+            float val = SENS_MIN + pct * (SENS_MAX - SENS_MIN);
             if (g_dragSlider == 0) g_config.sensitivity_x = val;
             else g_config.sensitivity_y = val;
             SaveConfig(); WriteConfigToSharedMemory();
