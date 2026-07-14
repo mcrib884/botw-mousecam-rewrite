@@ -1098,6 +1098,8 @@ static void DoReinject() {
 static void DoEjectOnClose() {
     DWORD pid = GetSelectedOrTargetPid();
     if (pid && Injector::IsModuleLoaded(pid, Injector::GetFileName(GetCompanionDllPath()))) {
+        SetStatus(L"Ejecting DLL on close...");
+        UpdateWindow(g_hWnd); // Force immediate redraw to show status
         if (g_pSharedMemory) {
             g_pSharedMemory->m_reqShutdown = true;
             Sleep(100);
@@ -1106,11 +1108,14 @@ static void DoEjectOnClose() {
     }
 }
 
+static uint32_t g_logReadIdx = 0;
+
 static void UpdateTelemetryGui() {
     if (!g_pSharedMemory) {
         g_addrGameRomCamera = 0; g_addrMagneTarget = 0; g_addrShortcutMenu = 0; g_addrMenuState = 0; g_writersFound = 0;
         g_liveCamPosX = 0; g_liveCamPosY = 0; g_liveCamPosZ = 0; g_liveCamFocX = 0; g_liveCamFocY = 0; g_liveCamFocZ = 0; g_liveCamFOV = 0;
         g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
+        g_logReadIdx = 0;
     } else {
         if (g_pSharedMemory->m_statusAddrGameRomCamera != 0 && g_addrGameRomCamera == 0) LogToConsole(L"[INFO] Found GameRomCamera");
         if (g_pSharedMemory->m_statusAddrMagneTarget != 0 && g_addrMagneTarget == 0) LogToConsole(L"[INFO] Found Magne Target Sig");
@@ -1128,6 +1133,22 @@ static void UpdateTelemetryGui() {
         g_liveCamFocX = g_pSharedMemory->m_teleLiveCamFocX; g_liveCamFocY = g_pSharedMemory->m_teleLiveCamFocY; g_liveCamFocZ = g_pSharedMemory->m_teleLiveCamFocZ;
         g_liveCamFOV = g_pSharedMemory->m_teleLiveCamFOV; g_liveShortcutMenu = g_pSharedMemory->m_teleLiveShortcutMenu; g_liveMenuState = g_pSharedMemory->m_teleLiveMenuState;
         g_magneDetourActive = g_pSharedMemory->m_patchMagneDetourActive;
+
+        // Read new logs from shared memory
+        uint32_t writeIdx = g_pSharedMemory->m_logWriteIdx;
+        if (writeIdx < g_logReadIdx) {
+            g_logReadIdx = writeIdx;
+        }
+        if (writeIdx - g_logReadIdx > 8) {
+            g_logReadIdx = writeIdx - 8;
+        }
+        while (g_logReadIdx < writeIdx) {
+            uint32_t idx = g_logReadIdx % 8;
+            std::string logMsg(g_pSharedMemory->m_logQueue[idx]);
+            std::wstring wLogMsg = Utf8ToWstr(logMsg);
+            LogToConsole(wLogMsg.c_str());
+            g_logReadIdx++;
+        }
     }
 }
 
@@ -1974,6 +1995,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         mmi->ptMinTrackSize.y = WND_H * dpiScale;
         return 0;
     }
+    case WM_CLOSE:
+        DoEjectOnClose();
+        DestroyWindow(hWnd);
+        return 0;
     case WM_DESTROY:
         DoEjectOnClose();
         if (g_hTargetProcess) { CloseHandle(g_hTargetProcess); g_hTargetProcess = nullptr; }

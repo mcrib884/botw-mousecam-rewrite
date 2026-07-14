@@ -60,6 +60,10 @@ struct SharedMemoryLayout {
     uint32_t m_statusWritersFound;
     bool    m_patchMagneDetourActive;
 
+    // --- Log queue (written by DLL, read by companion) ---
+    char     m_logQueue[8][128];
+    uint32_t m_logWriteIdx;
+
     // --- Commands (written by companion, read by DLL) ---
     bool m_reqDumpAob;
     bool m_reqResetScan;

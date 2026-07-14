@@ -63,6 +63,20 @@ namespace Mod {
     static HANDLE g_hMapFile = nullptr;
     static SharedMemoryLayout* g_pSharedMemory = nullptr;
 
+    static void DllLog(const char* format, ...) {
+        if (!g_pSharedMemory) return;
+
+        char msg[128];
+        va_list args;
+        va_start(args, format);
+        vsprintf_s(msg, format, args);
+        va_end(args);
+
+        uint32_t idx = g_pSharedMemory->m_logWriteIdx % 8;
+        strcpy_s(g_pSharedMemory->m_logQueue[idx], msg);
+        g_pSharedMemory->m_logWriteIdx++;
+    }
+
     static HANDLE g_hScanThread = nullptr;
     static HANDLE g_hCameraControlThread = nullptr;
     static std::atomic<bool> g_scanning = false;
@@ -499,6 +513,7 @@ namespace Mod {
 
     static void RemoveShortcutHook() {
         if (!g_shortcutHookActive) return;
+        DllLog("[INFO] Removing ShortcutMenu detour hook.");
         g_shortcutHookPatch.Restore();
         if (g_shortcutTrampoline) {
             VirtualFree(g_shortcutTrampoline, 0, MEM_RELEASE);
@@ -1008,6 +1023,7 @@ namespace Mod {
                 
                 if (g_pSharedMemory->m_reqResetScan) {
                     g_pSharedMemory->m_reqResetScan = false;
+                    DllLog("[INFO] Scanner reset requested. Clearing addresses and reloading blacklist.");
                     LoadWriterBlacklist();
                     for (size_t i = 0; i < tasks.size(); ++i) {
                         tasks[i].found = false;
@@ -1048,6 +1064,7 @@ namespace Mod {
                 }
 
                 if (!verifySuccess) {
+                    DllLog("[WARNING] GameRomCamera verification failed (Z-coord is 0.0). Address voided! Resetting scanner.");
                     tasks[0].found = false;
                     tasks[0].address = 0;
                     g_addrGameRomCamera = 0;
@@ -1081,6 +1098,7 @@ namespace Mod {
             }
 
             if (!tasks[0].found) {
+                DllLog("[INFO] Scanning for GameRomCamera...");
                 Pattern pat = ParseAOB(tasks[0].patternStr);
                 uintptr_t foundAddress = 0;
 
@@ -1091,6 +1109,9 @@ namespace Mod {
                     if (g_pSharedMemory) {
                         g_pSharedMemory->m_statusAddrGameRomCamera = foundAddress;
                     }
+                    DllLog("[SUCCESS] Found GameRomCamera at 0x%llX", foundAddress);
+                } else {
+                    DllLog("[WARNING] GameRomCamera not found. Retrying in 500ms...");
                 }
                 
                 // Sleep 500ms before checking again if GameRomCamera not found
@@ -1122,6 +1143,7 @@ namespace Mod {
                         if (tempAddr != 0) {
                             int32_t tempVal = g_tempShortcutValue.load();
                             if (tempVal == -1 || tempVal == 0 || tempVal == 1 || tempVal == 2 || tempVal == 3 || tempVal == 4) {
+                                DllLog("[SUCCESS] Hook fired! Verified ShortcutMenu address: 0x%llX (value: %d). Hook removed.", tempAddr - 128, tempVal);
                                 // Correct!
                                 tasks[2].found = true;
                                 g_addrShortcutMenu = tempAddr - 128;
@@ -1131,26 +1153,51 @@ namespace Mod {
                                 RemoveShortcutHook();
                                 foundAny = true;
                             } else {
+                                DllLog("[WARNING] Hook fired on incorrect value %d at address 0x%llX. Ignoring and waiting.", tempVal, tempAddr);
                                 // Incorrect target address. Reset and wait for another write.
                                 g_tempShortcutAddress = 0;
                                 g_tempShortcutValue = 0;
                             }
+                        } else {
+                            static int waitCounter = 0;
+                            if (waitCounter++ % 5 == 0) {
+                                DllLog("[INFO] ShortcutMenu detour hook is active. Waiting for game write...");
+                            }
                         }
                     } else {
+                        DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
                         Pattern pat = ParseAOB(tasks[2].patternStr);
                         uintptr_t foundAddress = 0;
                         if (ScanProcessAOB(pat, tasks[2].isCode, foundAddress)) {
+                            DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
                             tasks[2].address = foundAddress;
-                            SetupShortcutHook(foundAddress);
+                            if (SetupShortcutHook(foundAddress)) {
+                                DllLog("[SUCCESS] Detour hook set up successfully. Waiting for game write...");
+                            } else {
+                                DllLog("[ERROR] Failed to set up detour hook for ShortcutMenu.");
+                            }
+                        } else {
+                            DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
                         }
                     }
                 } else {
+                    if (targetIdx == 1) {
+                        DllLog("[INFO] Scanning for Magne Target Sig...");
+                    } else if (targetIdx == 3) {
+                        DllLog("[INFO] Scanning for MenuState...");
+                    }
                     Pattern pat = ParseAOB(tasks[targetIdx].patternStr);
                     uintptr_t foundAddress = 0;
                     if (ScanProcessAOB(pat, tasks[targetIdx].isCode, foundAddress)) {
                         tasks[targetIdx].address = foundAddress;
                         tasks[targetIdx].found = true;
                         foundAny = true;
+
+                        if (targetIdx == 1) {
+                            DllLog("[SUCCESS] Found Magne Target Sig at 0x%llX. Detour hooks injected.", foundAddress);
+                        } else if (targetIdx == 3) {
+                            DllLog("[SUCCESS] Found MenuState at 0x%llX.", foundAddress);
+                        }
 
                         // Write to shared memory immediately!
                         if (g_pSharedMemory) {
@@ -1187,6 +1234,12 @@ namespace Mod {
                                 }
                             }
                             LeaveCriticalSection(&g_patchCS);
+                        }
+                    } else {
+                        if (targetIdx == 1) {
+                            DllLog("[WARNING] Magne Target Sig not found. Retrying in 1s...");
+                        } else if (targetIdx == 3) {
+                            DllLog("[WARNING] MenuState not found. Retrying in 1s...");
                         }
                     }
                 }
