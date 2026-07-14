@@ -416,34 +416,11 @@ namespace Mod {
         return false;
     }
 
-    static bool ScanProcessAOB(const Pattern& pattern, bool isCode, uintptr_t& foundAddress) {
-        uintptr_t start = 0;
-        uintptr_t end = 0;
-
-        if (!isCode) {
-            uintptr_t ramBase = 0;
-            size_t ramSize = 0;
-            if (g_emulatedRamBase != 0) {
-                ramBase = g_emulatedRamBase;
-                ramSize = g_emulatedRamSize;
-            } else {
-                if (FindEmulatedRam(ramBase, ramSize)) {
-                    g_emulatedRamBase = ramBase;
-                    g_emulatedRamSize = ramSize;
-                }
-            }
-            if (ramBase != 0) {
-                start = ramBase;
-                end = ramBase + ramSize;
-            } else {
-                return false;
-            }
-        } else {
-            SYSTEM_INFO si;
-            GetSystemInfo(&si);
-            start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
-            end = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
-        }
+    static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        uintptr_t start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
+        uintptr_t end = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
 
         MEMORY_BASIC_INFORMATION mbi;
         uintptr_t current = start;
@@ -458,17 +435,9 @@ namespace Mod {
                 break;
             }
 
-            bool scanThisPage = false;
-            if (!isCode) {
-                scanThisPage = (mbi.State == MEM_COMMIT) &&
-                               (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_READONLY)) &&
-                               !(mbi.Protect & PAGE_GUARD);
-            } else {
-                scanThisPage = (mbi.State == MEM_COMMIT) &&
-                               (mbi.Type != MEM_IMAGE) &&
-                               (mbi.Protect & (PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_READ)) &&
-                               !(mbi.Protect & PAGE_GUARD);
-            }
+            bool scanThisPage = (mbi.State == MEM_COMMIT) &&
+                                (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+                                !(mbi.Protect & PAGE_GUARD);
 
             if (scanThisPage) {
                 uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -1167,15 +1136,14 @@ namespace Mod {
         struct AobTask {
             std::wstring name;
             std::string patternStr;
-            bool isCode;
             bool found;
             uintptr_t address;
         };
 
         std::vector<AobTask> tasks = {
-            { L"GameRomCamera",  "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00", false, false, 0 },
-            { L"Magne Target Sig", "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00", true, false, 0 },
-            { L"ShortcutMenu",    "41 0F 38 F1 9C 15 04 1C 00 00", true, false, 0 }
+            { L"GameRomCamera",  "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00", false, 0 },
+            { L"Magne Target Sig", "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00", false, 0 },
+            { L"ShortcutMenu",    "41 0F 38 F1 9C 15 04 1C 00 00", false, 0 }
         };
 
         bool allOtherFound = false;
@@ -1272,7 +1240,7 @@ namespace Mod {
                 Pattern pat = ParseAOB(tasks[0].patternStr);
                 uintptr_t foundAddress = 0;
 
-                if (ScanProcessAOB(pat, tasks[0].isCode, foundAddress)) {
+                if (ScanProcessAOB(pat, foundAddress)) {
                     tasks[0].found = true;
                     tasks[0].address = foundAddress;
                     g_addrGameRomCamera = foundAddress;
@@ -1338,7 +1306,7 @@ namespace Mod {
                         DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
                         Pattern pat = ParseAOB(tasks[2].patternStr);
                         uintptr_t foundAddress = 0;
-                        if (ScanProcessAOB(pat, tasks[2].isCode, foundAddress)) {
+                        if (ScanProcessAOB(pat, foundAddress)) {
                             DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
                             tasks[2].address = foundAddress;
                             if (SetupShortcutHook(foundAddress)) {
@@ -1356,7 +1324,7 @@ namespace Mod {
                     }
                     Pattern pat = ParseAOB(tasks[targetIdx].patternStr);
                     uintptr_t foundAddress = 0;
-                    if (ScanProcessAOB(pat, tasks[targetIdx].isCode, foundAddress)) {
+                    if (ScanProcessAOB(pat, foundAddress)) {
                         tasks[targetIdx].address = foundAddress;
                         tasks[targetIdx].found = true;
                         foundAny = true;
