@@ -930,21 +930,7 @@ static void LogToConsole(const wchar_t* format, ...) {
     wchar_t buf[768];
     swprintf_s(buf, L"%02d:%02d:%02d %s\n", st.wHour, st.wMinute, st.wSecond, msg_content);
 
-    // TD6: Optional file logging — simple append-write each call
-    static bool g_logToFile = true;
-    if (g_logToFile) {
-        wchar_t logPath[MAX_PATH];
-        GetModuleFileNameW(nullptr, logPath, MAX_PATH);
-        wchar_t* lastSlash = wcsrchr(logPath, L'\\');
-        if (lastSlash) {
-            wcscpy_s(lastSlash + 1, MAX_PATH - (lastSlash - logPath) - 1, L"mousecam_companion.log");
-            std::ofstream logFile(WstrToUtf8(logPath), std::ios::app);
-            if (logFile.is_open()) {
-                logFile << WstrToUtf8(buf);
-                logFile.close();
-            }
-        }
-    }
+
 
     GETTEXTLENGTHEX gtl = { GTL_DEFAULT, 1200 };
     int len = SendMessageW(g_hConsoleEdit, EM_GETTEXTLENGTHEX, (WPARAM)&gtl, 0);
