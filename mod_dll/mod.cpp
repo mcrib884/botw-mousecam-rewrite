@@ -54,9 +54,9 @@ extern "C" {
     uint8_t g_magnesisEnabled = 0;
     uint64_t g_magneHeartbeatCounter = 0;
     uint64_t g_magneIdealBase = 0;
-    uint64_t g_magnesisXWriterReturn = 0;
+    uint64_t g_magnesisZWriterReturn = 0;
 
-    void AsmMagnesisXWriter();
+    void AsmMagnesisZWriter();
 }
 
 namespace Mod {
@@ -552,8 +552,8 @@ namespace Mod {
     static CRITICAL_SECTION g_patchCS;
 
     static CodePatch g_magneDetourPatch = {};
+    static CodePatch g_magneXPatch = {};
     static CodePatch g_magneYPatch = {};
-    static CodePatch g_magneZPatch = {};
     static bool g_magnePatchesInitialized = false;
 
     static CodePatch g_shortcutHookPatch = {};
@@ -699,8 +699,8 @@ namespace Mod {
         EnterCriticalSection(&g_patchCS);
         if (g_magnePatchesInitialized) {
             g_magneDetourPatch.Restore();
+            g_magneXPatch.Restore();
             g_magneYPatch.Restore();
-            g_magneZPatch.Restore();
         }
         RemoveShortcutHook();
         LeaveCriticalSection(&g_patchCS);
@@ -1351,16 +1351,16 @@ namespace Mod {
                         if (targetIdx == 1) {
                             EnterCriticalSection(&g_patchCS);
                             if (!g_magnePatchesInitialized) {
-                                g_magneDetourPatch = { foundAddress + 0x40, 15, {}, false };
+                                g_magneXPatch      = { foundAddress + 0x40,  7, {}, false };
                                 g_magneYPatch      = { foundAddress + 0xBA,  7, {}, false };
-                                g_magneZPatch      = { foundAddress + 0xCE,  7, {}, false };
+                                g_magneDetourPatch = { foundAddress + 0xCE, 17, {}, false };
 
-                                g_magneDetourPatch.Backup();
+                                g_magneXPatch.Backup();
                                 g_magneYPatch.Backup();
-                                g_magneZPatch.Backup();
+                                g_magneDetourPatch.Backup();
                                 
-                                g_magnesisXWriterReturn = foundAddress + 0x40 + 15;
-                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisXWriter);
+                                g_magnesisZWriterReturn = foundAddress + 0xCE + 17;
+                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
 
                                 g_magnePatchesInitialized = true;
                                 if (g_pSharedMemory) {
@@ -1721,12 +1721,12 @@ namespace Mod {
                     if (bytesRead == 1 && currentByte != 0xFF) {
                         // The detour was overwritten! Re-inject it!
                         g_magneDetourPatch.active = false; // Force it to allow reinjection
-                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisXWriter);
+                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
                         if (magnesis_mode) {
+                            g_magneXPatch.active = false;
                             g_magneYPatch.active = false;
-                            g_magneZPatch.active = false;
+                            g_magneXPatch.ApplyNop();
                             g_magneYPatch.ApplyNop();
-                            g_magneZPatch.ApplyNop();
                         }
                     }
                 }
@@ -1738,12 +1738,12 @@ namespace Mod {
 
                 EnterCriticalSection(&g_patchCS);
                 if (g_magnePatchesInitialized) {
-                    if (magnesis_mode && !g_magneYPatch.active) {
+                    if (magnesis_mode && !g_magneXPatch.active) {
+                        g_magneXPatch.ApplyNop();
                         g_magneYPatch.ApplyNop();
-                        g_magneZPatch.ApplyNop();
-                    } else if (!magnesis_mode && g_magneYPatch.active) {
+                    } else if (!magnesis_mode && g_magneXPatch.active) {
+                        g_magneXPatch.Restore();
                         g_magneYPatch.Restore();
-                        g_magneZPatch.Restore();
                         g_magneIdealBase = 0;
                         magne_initialized = false;
                     }
