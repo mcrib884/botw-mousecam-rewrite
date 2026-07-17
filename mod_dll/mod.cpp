@@ -80,7 +80,7 @@ namespace Mod {
         if (experimental) {
             cfg.name = L"Cemu Experimental";
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
-            cfg.magnesisAob      = "45 0F 38 F1 74 15 00 45 0F 38 F0 74 1D 04 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 66 41 0F 7E C6 45 0F 38 F1 74 15 04 F3 0F 5A C0 45 0F 38 F0 74 1D 08 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 F2 0F 11 8C 24 ?? ?? ?? ?? 66 41 0F 7E C6 45 0F 38 F1 74 15 08";
+            cfg.magnesisAob      = "45 0F 38 F1 74 15 00 45 0F 38 F0 74 1D 04 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 66 41 0F 7E C6 45 0F 38 F1 74 15 04 F3 0F 5A C0 45 0F 38 F0 74 1D 08 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 F2 0F 11 8C 24 90 00 00 00 66 41 0F 7E C6 45 0F 38 F1 74 15 08";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.magnesisXOffset = 0x00;
             cfg.magnesisYOffset = 0x20;
@@ -291,6 +291,11 @@ namespace Mod {
                         }
                     }
                     if (match) {
+                        uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + offset);
+                        uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
+                        if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
+                            continue;
+                        }
                         foundOffset = offset;
                         return true;
                     }
@@ -308,6 +313,11 @@ namespace Mod {
                     }
                 }
                 if (match) {
+                    uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + i);
+                    uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
+                    if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
+                        continue;
+                    }
                     foundOffset = i;
                     return true;
                 }
@@ -344,6 +354,11 @@ namespace Mod {
                         }
                     }
                     if (match) {
+                        uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + offset);
+                        uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
+                        if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
+                            continue;
+                        }
                         foundOffset = offset;
                         return true;
                     }
@@ -361,6 +376,11 @@ namespace Mod {
                     }
                 }
                 if (match) {
+                    uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + i);
+                    uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
+                    if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
+                        continue;
+                    }
                     foundOffset = i;
                     return true;
                 }
@@ -557,13 +577,6 @@ namespace Mod {
             stackAllocBase = reinterpret_cast<uintptr_t>(stackMbi.AllocationBase);
         }
 
-        // 3. Get the heap allocation bases for the pattern data vectors
-        uintptr_t heapAllocBase1 = 0;
-        MEMORY_BASIC_INFORMATION heapMbi1;
-        if (!pattern.bytes.empty() && VirtualQuery(pattern.bytes.data(), &heapMbi1, sizeof(heapMbi1))) {
-            heapAllocBase1 = reinterpret_cast<uintptr_t>(heapMbi1.AllocationBase);
-        }
-
         while (current < end) {
             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
                 return false;
@@ -574,8 +587,7 @@ namespace Mod {
 
             uintptr_t pageAllocBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
             bool isOurMemory = (ourAllocBase != 0 && pageAllocBase == ourAllocBase) ||
-                               (stackAllocBase != 0 && pageAllocBase == stackAllocBase) ||
-                               (heapAllocBase1 != 0 && pageAllocBase == heapAllocBase1);
+                               (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
 
             bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
                                 (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
