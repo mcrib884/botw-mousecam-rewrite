@@ -216,7 +216,7 @@ namespace Mod {
 
     struct Pattern {
         std::vector<unsigned char> bytes;
-        std::vector<bool> isWildcard;
+        std::vector<uint8_t> isWildcard;
     };
 
     static Pattern ParseAOB(const std::string& aobStr) {
@@ -590,7 +590,8 @@ namespace Mod {
                                (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
 
             bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
-                                (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
+                                (mbi.Protect != 0) &&
+                                !(mbi.Protect & PAGE_NOACCESS) &&
                                 !(mbi.Protect & PAGE_GUARD);
 
             if (scanThisPage) {
