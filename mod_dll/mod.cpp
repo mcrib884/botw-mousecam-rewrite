@@ -1295,6 +1295,7 @@ namespace Mod {
         if (g_pSharedMemory) {
             currentExperimental = g_pSharedMemory->m_cfgCemuExperimental;
         }
+        DllLog("[INFO] Scanner thread started. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
         CemuVersionConfig vCfg = GetCemuVersionConfig(currentExperimental);
 
         std::vector<AobTask> tasks = {
@@ -1323,6 +1324,7 @@ namespace Mod {
 
                     currentExperimental = g_pSharedMemory->m_cfgCemuExperimental;
                     vCfg = GetCemuVersionConfig(currentExperimental);
+                    DllLog("[INFO] Scanner reset applied. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
                     tasks[0].patternStr = vCfg.gameRomCameraAob;
                     tasks[1].patternStr = vCfg.magnesisAob;
                     tasks[2].patternStr = vCfg.shortcutMenuAob;
@@ -2570,10 +2572,17 @@ namespace Mod {
 
         if (g_sharedMemory.Create(L"Local\\BotwMousecamSharedMemory")) {
             if (g_pSharedMemory) {
-                // Zero the memory first
-                memset(g_pSharedMemory, 0, sizeof(SharedMemoryLayout));
-
                 g_pSharedMemory->m_dllBaseAddr = (uint64_t)hModule;
+                g_pSharedMemory->m_statusAddrGameRomCamera = 0;
+                g_pSharedMemory->m_statusAddrMagneTarget = 0;
+                g_pSharedMemory->m_statusAddrShortcutMenu = 0;
+                g_pSharedMemory->m_statusAddrMenuState = 0;
+                g_pSharedMemory->m_statusScanning = false;
+                g_pSharedMemory->m_statusWritersFound = 0;
+                g_pSharedMemory->m_patchMagneDetourActive = false;
+                g_pSharedMemory->m_logWriteIdx = 0;
+                memset(g_pSharedMemory->m_logQueue, 0, sizeof(g_pSharedMemory->m_logQueue));
+                g_pSharedMemory->m_statusShutdownDone = false;
             }
         }
 
