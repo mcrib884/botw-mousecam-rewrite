@@ -590,6 +590,7 @@ namespace Mod {
                                (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
 
             bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
+                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE) &&
                                 (mbi.Protect != 0) &&
                                 !(mbi.Protect & PAGE_NOACCESS) &&
                                 !(mbi.Protect & PAGE_GUARD);
