@@ -531,7 +531,7 @@ namespace Mod {
         return false;
     }
 
-    static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress, bool executableOnly = false) {
+    static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress) {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
         uintptr_t start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
@@ -559,14 +559,9 @@ namespace Mod {
 
             bool isOurModule = (ourAllocBase != 0 && reinterpret_cast<uintptr_t>(mbi.AllocationBase) == ourAllocBase);
 
-            bool scanThisPage = !isOurModule && (mbi.State == MEM_COMMIT) && !(mbi.Protect & PAGE_GUARD);
-            if (scanThisPage) {
-                if (executableOnly) {
-                    scanThisPage = (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
-                } else {
-                    scanThisPage = (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
-                }
-            }
+            bool scanThisPage = !isOurModule && (mbi.State == MEM_COMMIT) &&
+                                (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+                                !(mbi.Protect & PAGE_GUARD);
 
             if (scanThisPage) {
                 uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -1377,7 +1372,7 @@ namespace Mod {
                 Pattern pat = ParseAOB(tasks[0].patternStr);
                 uintptr_t foundAddress = 0;
 
-                if (ScanProcessAOB(pat, foundAddress, false)) {
+                if (ScanProcessAOB(pat, foundAddress)) {
                     tasks[0].found = true;
                     tasks[0].address = foundAddress;
                     g_addrGameRomCamera = foundAddress;
@@ -1443,7 +1438,7 @@ namespace Mod {
                         DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
                         Pattern pat = ParseAOB(tasks[2].patternStr);
                         uintptr_t foundAddress = 0;
-                        if (ScanProcessAOB(pat, foundAddress, true)) {
+                        if (ScanProcessAOB(pat, foundAddress)) {
                             DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
                             tasks[2].address = foundAddress;
                             if (SetupShortcutHook(foundAddress)) {
@@ -1461,7 +1456,7 @@ namespace Mod {
                     }
                     Pattern pat = ParseAOB(tasks[targetIdx].patternStr);
                     uintptr_t foundAddress = 0;
-                    if (ScanProcessAOB(pat, foundAddress, true)) {
+                    if (ScanProcessAOB(pat, foundAddress)) {
                         tasks[targetIdx].address = foundAddress;
                         tasks[targetIdx].found = true;
                         foundAny = true;
