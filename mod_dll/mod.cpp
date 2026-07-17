@@ -578,7 +578,7 @@ namespace Mod {
                                (heapAllocBase1 != 0 && pageAllocBase == heapAllocBase1);
 
             bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
-                                (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+                                (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) &&
                                 !(mbi.Protect & PAGE_GUARD);
 
             if (scanThisPage) {
