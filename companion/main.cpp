@@ -80,33 +80,56 @@ static bool g_targetInjected = false;
 // SharedMemoryLayout defined in shared/include/shared_memory_layout.h —
 // single source of truth shared with mod_dll to prevent layout drift.
 
-static HANDLE g_hSharedMemoryFile = nullptr;
-static SharedMemoryLayout* g_pSharedMemory = nullptr;
+class SharedMemoryManager {
+public:
+    SharedMemoryManager() = default;
+    ~SharedMemoryManager() { Close(); }
+
+    SharedMemoryManager(const SharedMemoryManager&) = delete;
+    SharedMemoryManager& operator=(const SharedMemoryManager&) = delete;
+
+    bool Open(const wchar_t* name) {
+        if (m_layout) return true;
+        m_hFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name);
+        if (!m_hFile) {
+            return false;
+        }
+        m_layout = static_cast<SharedMemoryLayout*>(MapViewOfFile(m_hFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemoryLayout)));
+        if (!m_layout) {
+            CloseHandle(m_hFile);
+            m_hFile = nullptr;
+            return false;
+        }
+        return true;
+    }
+
+    void Close() {
+        if (m_layout) {
+            UnmapViewOfFile(m_layout);
+            m_layout = nullptr;
+        }
+        if (m_hFile) {
+            CloseHandle(m_hFile);
+            m_hFile = nullptr;
+        }
+    }
+
+    SharedMemoryLayout* GetLayout() const { return m_layout; }
+
+private:
+    HANDLE m_hFile = nullptr;
+    SharedMemoryLayout* m_layout = nullptr;
+};
+
+static SharedMemoryManager g_sharedMemory;
+#define g_pSharedMemory (g_sharedMemory.GetLayout())
 
 static bool MapSharedMemory() {
-    if (g_pSharedMemory) return true;
-    g_hSharedMemoryFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, L"Local\\BotwMousecamSharedMemory");
-    if (!g_hSharedMemoryFile) {
-        return false;
-    }
-    g_pSharedMemory = (SharedMemoryLayout*)MapViewOfFile(g_hSharedMemoryFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemoryLayout));
-    if (!g_pSharedMemory) {
-        CloseHandle(g_hSharedMemoryFile);
-        g_hSharedMemoryFile = nullptr;
-        return false;
-    }
-    return true;
+    return g_sharedMemory.Open(L"Local\\BotwMousecamSharedMemory");
 }
 
 static void UnmapSharedMemory() {
-    if (g_pSharedMemory) {
-        UnmapViewOfFile(g_pSharedMemory);
-        g_pSharedMemory = nullptr;
-    }
-    if (g_hSharedMemoryFile) {
-        CloseHandle(g_hSharedMemoryFile);
-        g_hSharedMemoryFile = nullptr;
-    }
+    g_sharedMemory.Close();
 }
 
 

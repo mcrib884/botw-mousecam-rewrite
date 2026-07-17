@@ -4,9 +4,46 @@
 
 namespace Injector {
 
+struct SafeHandle {
+    HANDLE handle = nullptr;
+    SafeHandle() = default;
+    explicit SafeHandle(HANDLE h) : handle(h) {}
+    ~SafeHandle() { if (handle && handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+
+    SafeHandle(const SafeHandle&) = delete;
+    SafeHandle& operator=(const SafeHandle&) = delete;
+    SafeHandle(SafeHandle&& other) noexcept : handle(other.handle) { other.handle = nullptr; }
+    SafeHandle& operator=(SafeHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle && handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+            handle = other.handle;
+            other.handle = nullptr;
+        }
+        return *this;
+    }
+
+    operator HANDLE() const { return handle; }
+    bool IsValid() const { return handle != nullptr && handle != INVALID_HANDLE_VALUE; }
+};
+
+struct SafeRemoteMemory {
+    HANDLE hProcess = nullptr;
+    void* address = nullptr;
+
+    SafeRemoteMemory(HANDLE proc, void* addr) : hProcess(proc), address(addr) {}
+    ~SafeRemoteMemory() {
+        if (hProcess && address) {
+            VirtualFreeEx(hProcess, address, 0, MEM_RELEASE);
+        }
+    }
+
+    SafeRemoteMemory(const SafeRemoteMemory&) = delete;
+    SafeRemoteMemory& operator=(const SafeRemoteMemory&) = delete;
+};
+
 DWORD FindProcessByName(const std::wstring& name) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) {
+    SafeHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snap.IsValid()) {
         return 0;
     }
 
@@ -23,72 +60,63 @@ DWORD FindProcessByName(const std::wstring& name) {
         } while (Process32NextW(snap, &pe));
     }
 
-    CloseHandle(snap);
     return pid;
 }
 
 bool InjectDLL(DWORD pid, const std::wstring& dllPath) {
-    HANDLE hProc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (!hProc) {
+    SafeHandle hProc(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid));
+    if (!hProc.IsValid()) {
         return false;
     }
 
     SIZE_T pathSize = (dllPath.size() + 1) * sizeof(wchar_t);
-    void* remoteMem = VirtualAllocEx(hProc, nullptr, pathSize,
+    void* rawRemoteMem = VirtualAllocEx(hProc, nullptr, pathSize,
                                      MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remoteMem) {
-        CloseHandle(hProc);
+    if (!rawRemoteMem) {
         return false;
     }
+    SafeRemoteMemory remoteMem(hProc, rawRemoteMem);
 
-    if (!WriteProcessMemory(hProc, remoteMem, dllPath.c_str(), pathSize, nullptr)) {
-        VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProc);
+    if (!WriteProcessMemory(hProc, remoteMem.address, dllPath.c_str(), pathSize, nullptr)) {
         return false;
     }
 
     HMODULE hK32 = GetModuleHandleW(L"kernel32.dll");
     FARPROC loadLibW = GetProcAddress(hK32, "LoadLibraryW");
 
-    HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0,
+    SafeHandle hThread(CreateRemoteThread(hProc, nullptr, 0,
         reinterpret_cast<LPTHREAD_START_ROUTINE>(loadLibW),
-        remoteMem, 0, nullptr);
+        remoteMem.address, 0, nullptr));
 
-    if (!hThread) {
-        VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProc);
+    if (!hThread.IsValid()) {
         return false;
     }
 
     WaitForSingleObject(hThread, 5000);
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
-    CloseHandle(hThread);
-    VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-    CloseHandle(hProc);
     return (exitCode != 0);
 }
 
 bool EjectDLL(DWORD pid, const std::wstring& dllPath) {
     std::wstring moduleName = GetFileName(dllPath);
 
-    HANDLE hProc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (!hProc) {
+    SafeHandle hProc(OpenProcess(PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid));
+    if (!hProc.IsValid()) {
         return false;
     }
 
     HMODULE hK32 = GetModuleHandleW(L"kernel32.dll");
     FARPROC freeLib = GetProcAddress(hK32, "FreeLibrary");
     if (!freeLib) {
-        CloseHandle(hProc);
         return false;
     }
 
     bool success = false;
     int safetyLimit = 15;
     while (safetyLimit-- > 0) {
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-        if (snap == INVALID_HANDLE_VALUE) {
+        SafeHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
+        if (!snap.IsValid()) {
             break;
         }
 
@@ -104,24 +132,22 @@ bool EjectDLL(DWORD pid, const std::wstring& dllPath) {
                 }
             } while (Module32NextW(snap, &me));
         }
-        CloseHandle(snap);
         if (!hMod) {
             success = true;
             break;
         }
 
-        HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0,
+        SafeHandle hThread(CreateRemoteThread(hProc, nullptr, 0,
             reinterpret_cast<LPTHREAD_START_ROUTINE>(freeLib),
-            hMod, 0, nullptr);
+            hMod, 0, nullptr));
 
-        if (!hThread) {
+        if (!hThread.IsValid()) {
             break;
         }
 
         WaitForSingleObject(hThread, 5000);
         DWORD exitCode = 0;
         GetExitCodeThread(hThread, &exitCode);
-        CloseHandle(hThread);
         if (exitCode == 0) {
             break;
         }
@@ -129,13 +155,12 @@ bool EjectDLL(DWORD pid, const std::wstring& dllPath) {
         Sleep(50);
     }
 
-    CloseHandle(hProc);
     return success;
 }
 
 bool IsModuleLoaded(DWORD pid, const std::wstring& moduleName) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-    if (snap == INVALID_HANDLE_VALUE) {
+    SafeHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
+    if (!snap.IsValid()) {
         return false;
     }
 
@@ -151,7 +176,6 @@ bool IsModuleLoaded(DWORD pid, const std::wstring& moduleName) {
             }
         } while (Module32NextW(snap, &me));
     }
-    CloseHandle(snap);
     return loaded;
 }
 

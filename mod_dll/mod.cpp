@@ -101,9 +101,63 @@ namespace Mod {
         return cfg;
     }
 
+    class SharedMemoryCreator {
+        public:
+            SharedMemoryCreator() = default;
+            ~SharedMemoryCreator() { Close(); }
+
+            SharedMemoryCreator(const SharedMemoryCreator&) = delete;
+            SharedMemoryCreator& operator=(const SharedMemoryCreator&) = delete;
+
+            bool Create(const wchar_t* name) {
+                if (m_layout) return true;
+                m_hFile = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    nullptr,
+                    PAGE_READWRITE,
+                    0,
+                    sizeof(SharedMemoryLayout),
+                    name
+                );
+                if (!m_hFile) return false;
+
+                m_layout = static_cast<SharedMemoryLayout*>(MapViewOfFile(
+                    m_hFile,
+                    FILE_MAP_ALL_ACCESS,
+                    0,
+                    0,
+                    sizeof(SharedMemoryLayout)
+                ));
+
+                if (!m_layout) {
+                    CloseHandle(m_hFile);
+                    m_hFile = nullptr;
+                    return false;
+                }
+                return true;
+            }
+
+            void Close() {
+                if (m_layout) {
+                    UnmapViewOfFile(m_layout);
+                    m_layout = nullptr;
+                }
+                if (m_hFile) {
+                    CloseHandle(m_hFile);
+                    m_hFile = nullptr;
+                }
+            }
+
+            SharedMemoryLayout* GetLayout() const { return m_layout; }
+
+        private:
+            HANDLE m_hFile = nullptr;
+            SharedMemoryLayout* m_layout = nullptr;
+    };
+
     static HMODULE g_hModule = nullptr;
-    static HANDLE g_hMapFile = nullptr;
-    static SharedMemoryLayout* g_pSharedMemory = nullptr;
+    static SharedMemoryCreator g_sharedMemory;
+    #define g_pSharedMemory (g_sharedMemory.GetLayout())
 
     static void DllLog(const char* format, ...) {
         if (!g_pSharedMemory) return;
@@ -141,8 +195,16 @@ namespace Mod {
     static std::atomic<float> g_liveCamFocY{0.0f};
     static std::atomic<float> g_liveCamFocZ{0.0f};
     static std::atomic<float> g_liveCamFOV{0.0f};
-    static std::atomic<int32_t> g_liveShortcutMenu{-1};
-    static std::atomic<uint8_t> g_liveMenuState{1};
+    static std::atomic<float> g_livePivotX{0.0f};
+    static std::atomic<float> g_livePivotY{0.0f};
+    static std::atomic<float> g_livePivotZ{0.0f};
+
+    static std::atomic<float> g_magneTargetX{0.0f};
+    static std::atomic<float> g_magneTargetY{0.0f};
+    static std::atomic<float> g_magneTargetZ{0.0f};
+
+    static std::atomic<int32_t> g_liveShortcutMenu{0};
+    static std::atomic<uint8_t> g_liveMenuState{0};
 
     static std::atomic<bool> g_mousecamActive{false};
 
@@ -160,6 +222,13 @@ namespace Mod {
     static Pattern ParseAOB(const std::string& aobStr) {
         Pattern pat;
         size_t i = 0;
+        auto hexCharToVal = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            return -1;
+        };
+
         while (i < aobStr.size()) {
             if (isspace(aobStr[i]) || aobStr[i] == '[' || aobStr[i] == ']') {
                 i++;
@@ -174,12 +243,16 @@ namespace Mod {
                 pat.isWildcard.push_back(true);
                 i += 1;
             } else {
-                unsigned int val = 0;
-                std::string byteStr = aobStr.substr(i, 2);
-                sscanf_s(byteStr.c_str(), "%x", &val);
-                pat.bytes.push_back(static_cast<unsigned char>(val));
-                pat.isWildcard.push_back(false);
-                i += 2;
+                int high = hexCharToVal(aobStr[i]);
+                int low = (i + 1 < aobStr.size()) ? hexCharToVal(aobStr[i+1]) : -1;
+                if (high != -1 && low != -1) {
+                    unsigned char val = static_cast<unsigned char>((high << 4) | low);
+                    pat.bytes.push_back(val);
+                    pat.isWildcard.push_back(false);
+                    i += 2;
+                } else {
+                    i++;
+                }
             }
         }
         return pat;
@@ -1138,14 +1211,7 @@ namespace Mod {
             }
 
             if (forceEject) {
-                if (g_pSharedMemory) {
-                    UnmapViewOfFile(g_pSharedMemory);
-                    g_pSharedMemory = nullptr;
-                }
-                if (g_hMapFile) {
-                    CloseHandle(g_hMapFile);
-                    g_hMapFile = nullptr;
-                }
+                g_sharedMemory.Close();
                 DeleteCriticalSection(&g_patchCS);
                 DeleteCriticalSection(&g_writerCS);
                 FreeLibraryAndExitThread(g_hModule, 0);
@@ -2459,24 +2525,7 @@ namespace Mod {
         InitializeCriticalSection(&g_patchCS);
         InitializeCriticalSection(&g_writerCS);
 
-        g_hMapFile = CreateFileMappingW(
-            INVALID_HANDLE_VALUE,
-            nullptr,
-            PAGE_READWRITE,
-            0,
-            sizeof(SharedMemoryLayout),
-            L"Local\\BotwMousecamSharedMemory"
-        );
-
-        if (g_hMapFile) {
-            g_pSharedMemory = (SharedMemoryLayout*)MapViewOfFile(
-                g_hMapFile,
-                FILE_MAP_ALL_ACCESS,
-                0,
-                0,
-                sizeof(SharedMemoryLayout)
-            );
-
+        if (g_sharedMemory.Create(L"Local\\BotwMousecamSharedMemory")) {
             if (g_pSharedMemory) {
                 // Zero the memory first
                 memset(g_pSharedMemory, 0, sizeof(SharedMemoryLayout));
@@ -2503,14 +2552,7 @@ namespace Mod {
         DeleteCriticalSection(&g_patchCS);
         DeleteCriticalSection(&g_writerCS);
 
-        if (g_pSharedMemory) {
-            UnmapViewOfFile(g_pSharedMemory);
-            g_pSharedMemory = nullptr;
-        }
-        if (g_hMapFile) {
-            CloseHandle(g_hMapFile);
-            g_hMapFile = nullptr;
-        }
+        g_sharedMemory.Close();
     }
 
 } // namespace Mod
