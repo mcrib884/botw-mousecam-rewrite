@@ -59,6 +59,7 @@ extern "C" {
 
     void AsmMagnesisZWriter();
     void AsmMagnesisYWriterExp();
+    void AsmMagnesisZWriterExp();
 }
 
 namespace Mod {
@@ -84,9 +85,9 @@ namespace Mod {
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.magnesisXOffset = 0x00;
             cfg.magnesisYOffset = 0x20;
-            cfg.magnesisZOffset = 0x4D;
-            cfg.detourTargetAxis = 'Y';
-            cfg.magnesisDetourSize = 18;
+            cfg.magnesisZOffset = 0x3F;
+            cfg.detourTargetAxis = 'Z';
+            cfg.magnesisDetourSize = 21;
         } else {
             cfg.name = L"Cemu 2.6";
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
@@ -1527,7 +1528,11 @@ namespace Mod {
                                     g_magneDetourPatch = { foundAddress + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
                                     g_magneDetourPatch.Backup();
                                     g_magnesisZWriterReturn = foundAddress + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
-                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                                    if (currentExperimental) {
+                                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriterExp);
+                                    } else {
+                                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                                    }
                                 } else if (vCfg.detourTargetAxis == 'Y') {
                                     g_magneDetourPatch = { foundAddress + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, false };
                                     g_magneDetourPatch.Backup();
@@ -1896,8 +1901,13 @@ namespace Mod {
                     if (bytesRead == 1 && currentByte != 0xFF) {
                         // The detour was overwritten! Re-inject it!
                         g_magneDetourPatch.active = false; // Force it to allow reinjection
+                        bool experimental = g_pSharedMemory ? g_pSharedMemory->m_cfgCemuExperimental : false;
                         if (vCfg.detourTargetAxis == 'Z') {
-                            g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                            if (experimental) {
+                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriterExp);
+                            } else {
+                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                            }
                             if (magnesis_mode) {
                                 g_magneXPatch.active = false;
                                 g_magneYPatch.active = false;

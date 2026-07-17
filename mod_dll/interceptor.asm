@@ -44,4 +44,23 @@ SkipNativeWrite:
     jmp [g_magnesisYWriterReturn]
 AsmMagnesisYWriterExp ENDP
 
+AsmMagnesisZWriterExp PROC
+    pushf
+    push rax
+    lea rax, [r13 + rdx]
+    mov [g_magneIdealBase], rax
+    pop rax
+    inc qword ptr [g_magneHeartbeatCounter]
+    cmp byte ptr [g_magnesisEnabled], 1
+    je SkipNativeWrite
+    movbe [r13 + rdx + 08h], r14d
+
+SkipNativeWrite:
+    movsd qword ptr [rsp + 90h], xmm1
+    movd r14d, xmm0
+
+    popf
+    jmp [g_magnesisZWriterReturn]
+AsmMagnesisZWriterExp ENDP
+
 END
