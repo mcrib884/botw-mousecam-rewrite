@@ -90,7 +90,17 @@ public:
 
     bool Open(const wchar_t* name) {
         if (m_layout) return true;
-        m_hFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name);
+        m_hFile = CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            nullptr,
+            PAGE_READWRITE,
+            0,
+            sizeof(SharedMemoryLayout),
+            name
+        );
+        if (!m_hFile) {
+            m_hFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name);
+        }
         if (!m_hFile) {
             return false;
         }
@@ -1108,6 +1118,9 @@ static void DoInjectOrEject() {
         else SetStatus(L"Error: ejection failed.");
     } else {
         SetStatus(L"Injecting...");
+        if (MapSharedMemory()) {
+            WriteConfigToSharedMemory();
+        }
         if (Injector::InjectDLL(pid, dllPath)) { SetStatus(L"Injection successful!"); UpdateUiState(); }
         else SetStatus(L"Error: injection failed \x2014 try running as Administrator.");
     }
@@ -1124,6 +1137,9 @@ static void DoReinject() {
     }
     g_ki.ReloadSettings();
     SetStatus(L"Reloading...");
+    if (MapSharedMemory()) {
+        WriteConfigToSharedMemory();
+    }
     if (Injector::InjectDLL(pid, dllPath)) SetStatus(L"Reinjected successfully!");
     else SetStatus(L"Reinject error: injection failed.");
 }

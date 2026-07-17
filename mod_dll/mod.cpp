@@ -1920,24 +1920,26 @@ namespace Mod {
             if (magnesis_mode != last_magnesis_mode) {
                 last_magnesis_mode = magnesis_mode;
                 g_magnesisEnabled = magnesis_mode ? 1 : 0;
+                if (!magnesis_mode) {
+                    g_magneIdealBase = 0;
+                    magne_initialized = false;
+                }
+            }
 
+            if (g_magnePatchesInitialized) {
                 EnterCriticalSection(&g_patchCS);
-                if (g_magnePatchesInitialized) {
-                    if (magnesis_mode) {
-                        if (vCfg.detourTargetAxis == 'Z') {
-                            if (!g_magneXPatch.active) g_magneXPatch.ApplyNop();
-                            if (!g_magneYPatch.active) g_magneYPatch.ApplyNop();
-                        } else if (vCfg.detourTargetAxis == 'Y') {
-                            if (!g_magneXPatch.active) g_magneXPatch.ApplyNop();
-                            if (!g_magneZPatch.active) g_magneZPatch.ApplyNop();
-                        }
-                    } else {
-                        if (g_magneXPatch.active) g_magneXPatch.Restore();
-                        if (g_magneYPatch.active) g_magneYPatch.Restore();
-                        if (g_magneZPatch.active) g_magneZPatch.Restore();
-                        g_magneIdealBase = 0;
-                        magne_initialized = false;
+                if (magnesis_mode) {
+                    if (vCfg.detourTargetAxis == 'Z') {
+                        if (!g_magneXPatch.active) g_magneXPatch.ApplyNop();
+                        if (!g_magneYPatch.active) g_magneYPatch.ApplyNop();
+                    } else if (vCfg.detourTargetAxis == 'Y') {
+                        if (!g_magneXPatch.active) g_magneXPatch.ApplyNop();
+                        if (!g_magneZPatch.active) g_magneZPatch.ApplyNop();
                     }
+                } else {
+                    if (g_magneXPatch.active) g_magneXPatch.Restore();
+                    if (g_magneYPatch.active) g_magneYPatch.Restore();
+                    if (g_magneZPatch.active) g_magneZPatch.Restore();
                 }
                 LeaveCriticalSection(&g_patchCS);
             }
