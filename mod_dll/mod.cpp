@@ -80,7 +80,7 @@ namespace Mod {
         if (experimental) {
             cfg.name = L"Cemu Experimental";
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
-            cfg.magnesisAob      = "45 0F 38 F1 74 15 00 45 0F 38 F0 74 1D 04 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 66 41 0F 7E C6 45 0F 38 F1 74 15 04 F3 0F 5A C0 45 0F 38 F0 74 1D 08 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 F2 0F 11 8C 24 90 00 00 00 66 41 0F 7E C6 45 0F 38 F1 74 15 08";
+            cfg.magnesisAob      = "45 0F 38 F1 74 15 00 45 0F 38 F0 74 1D 04 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 66 41 0F 7E C6 45 0F 38 F1 74 15 04 F3 0F 5A C0 45 0F 38 F0 74 1D 08 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 F2 0F 11 8C 24 ?? ?? ?? ?? 66 41 0F 7E C6 45 0F 38 F1 74 15 08";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.magnesisXOffset = 0x00;
             cfg.magnesisYOffset = 0x20;
