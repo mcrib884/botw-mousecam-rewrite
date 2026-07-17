@@ -61,6 +61,42 @@ extern "C" {
 
 namespace Mod {
 
+    struct CemuVersionConfig {
+        std::wstring name;
+        std::string gameRomCameraAob;
+        std::string magnesisAob;
+        std::string shortcutMenuAob;
+        size_t magnesisXOffset;
+        size_t magnesisYOffset;
+        size_t magnesisZOffset;
+        size_t magnesisDetourSize;
+    };
+
+    static CemuVersionConfig GetCemuVersionConfig(bool experimental) {
+        CemuVersionConfig cfg;
+        if (experimental) {
+            cfg.name = L"Cemu Experimental";
+            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            // Placeholder: currently identical to 2.6, to be updated once new patterns/offsets are specified
+            cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
+            cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
+            cfg.magnesisXOffset = 0x40;
+            cfg.magnesisYOffset = 0xBA;
+            cfg.magnesisZOffset = 0xCE;
+            cfg.magnesisDetourSize = 17;
+        } else {
+            cfg.name = L"Cemu 2.6";
+            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
+            cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
+            cfg.magnesisXOffset = 0x40;
+            cfg.magnesisYOffset = 0xBA;
+            cfg.magnesisZOffset = 0xCE;
+            cfg.magnesisDetourSize = 17;
+        }
+        return cfg;
+    }
+
     static HMODULE g_hModule = nullptr;
     static HANDLE g_hMapFile = nullptr;
     static SharedMemoryLayout* g_pSharedMemory = nullptr;
@@ -1142,10 +1178,16 @@ namespace Mod {
             uintptr_t address;
         };
 
+        bool currentExperimental = false;
+        if (g_pSharedMemory) {
+            currentExperimental = g_pSharedMemory->m_cfgCemuExperimental;
+        }
+        CemuVersionConfig vCfg = GetCemuVersionConfig(currentExperimental);
+
         std::vector<AobTask> tasks = {
-            { L"GameRomCamera",  "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00", false, 0 },
-            { L"Magne Target Sig", "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00", false, 0 },
-            { L"ShortcutMenu",    "41 0F 38 F1 9C 15 04 1C 00 00", false, 0 }
+            { L"GameRomCamera",  vCfg.gameRomCameraAob, false, 0 },
+            { L"Magne Target Sig", vCfg.magnesisAob, false, 0 },
+            { L"ShortcutMenu",    vCfg.shortcutMenuAob, false, 0 }
         };
 
         bool allOtherFound = false;
@@ -1165,6 +1207,13 @@ namespace Mod {
                     g_pSharedMemory->m_reqResetScan = false;
                     DllLog("[INFO] Scanner reset requested. Clearing addresses and reloading blacklist.");
                     LoadWriterBlacklist();
+
+                    currentExperimental = g_pSharedMemory->m_cfgCemuExperimental;
+                    vCfg = GetCemuVersionConfig(currentExperimental);
+                    tasks[0].patternStr = vCfg.gameRomCameraAob;
+                    tasks[1].patternStr = vCfg.magnesisAob;
+                    tasks[2].patternStr = vCfg.shortcutMenuAob;
+
                     for (size_t i = 0; i < tasks.size(); ++i) {
                         tasks[i].found = false;
                         tasks[i].address = 0;
@@ -1351,15 +1400,15 @@ namespace Mod {
                         if (targetIdx == 1) {
                             EnterCriticalSection(&g_patchCS);
                             if (!g_magnePatchesInitialized) {
-                                g_magneXPatch      = { foundAddress + 0x40,  7, {}, false };
-                                g_magneYPatch      = { foundAddress + 0xBA,  7, {}, false };
-                                g_magneDetourPatch = { foundAddress + 0xCE, 17, {}, false };
+                                g_magneXPatch      = { foundAddress + vCfg.magnesisXOffset,  7, {}, false };
+                                g_magneYPatch      = { foundAddress + vCfg.magnesisYOffset,  7, {}, false };
+                                g_magneDetourPatch = { foundAddress + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
 
                                 g_magneXPatch.Backup();
                                 g_magneYPatch.Backup();
                                 g_magneDetourPatch.Backup();
                                 
-                                g_magnesisZWriterReturn = foundAddress + 0xCE + 17;
+                                g_magnesisZWriterReturn = foundAddress + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
                                 g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
 
                                 g_magnePatchesInitialized = true;

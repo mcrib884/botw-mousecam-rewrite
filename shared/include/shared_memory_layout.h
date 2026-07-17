@@ -34,6 +34,7 @@ struct SharedMemoryLayout {
     uint16_t m_cfgMouseBindingKeys[5];
     uint64_t m_cfgHCemuWnd;
     uint8_t  m_cfgFullOrbitCamera;
+    bool     m_cfgCemuExperimental;
 
     // --- Status / scan results (written by DLL, read by companion) ---
     uint64_t m_statusAddrGameRomCamera;

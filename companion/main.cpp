@@ -202,6 +202,7 @@ struct AppConfig {
     std::string cemu_path_override;
     bool theme_initialized = false;
     bool use_light_theme = false;
+    bool cemu_experimental = false;
 };
 
 static AppConfig g_config;
@@ -337,7 +338,8 @@ static void SaveConfig() {
     f << "  \"sensitivity_y\": " << g_config.sensitivity_y << ",\n";
     f << "  \"use_independent_sens\": " << (g_config.use_independent_sens ? "true" : "false") << ",\n";
     f << "  \"theme_initialized\": " << (g_config.theme_initialized ? "true" : "false") << ",\n";
-    f << "  \"use_light_theme\": " << (g_config.use_light_theme ? "true" : "false") << "\n";
+    f << "  \"use_light_theme\": " << (g_config.use_light_theme ? "true" : "false") << ",\n";
+    f << "  \"cemu_experimental\": " << (g_config.cemu_experimental ? "true" : "false") << "\n";
     f << "}\n";
     f.close();
 }
@@ -460,6 +462,7 @@ static void LoadConfig() {
     // Theme initialization (unconditional — not gated behind sensitivity_x)
     g_config.theme_initialized = extract_json_bool("theme_initialized", false);
     g_config.use_light_theme = extract_json_bool("use_light_theme", false);
+    g_config.cemu_experimental = extract_json_bool("cemu_experimental", false);
     if (!g_config.theme_initialized) {
         g_config.use_light_theme = IsWindowsLightTheme();
         g_config.theme_initialized = true;
@@ -858,7 +861,7 @@ static std::wstring g_statusText = L"Ready.";
 static bool g_hoverInject = false, g_hoverReinject = false, g_hoverReset = false;
 static float g_animInject = 0, g_animReinject = 0, g_animReset = 0;
 static float g_animDarkBtn = 0, g_animLightBtn = 0, g_animPath = 0, g_animPathReset = 0;
-static float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0;
+static float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0, g_animCemuExperimental = 0;
 static float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0;
 static float g_animDrop[5] = {0,0,0,0,0};
 static bool g_downInject = false, g_downReinject = false, g_downReset = false;
@@ -990,6 +993,7 @@ static void WriteConfigToSharedMemory() {
         g_pSharedMemory->m_cfgMagnesisEnabled = g_config.magnesis_enabled;
         g_pSharedMemory->m_cfgScrollHelper = g_config.scroll_helper ? 1 : 0;
         g_pSharedMemory->m_cfgFullOrbitCamera = g_config.full_orbit_camera ? 1 : 0;
+        g_pSharedMemory->m_cfgCemuExperimental = g_config.cemu_experimental;
         g_pSharedMemory->m_cfgSensitivityX = g_config.sensitivity_x;
         g_pSharedMemory->m_cfgSensitivityY = g_config.sensitivity_y;
         g_pSharedMemory->m_cfgUseIndependentSens = g_config.use_independent_sens ? 1 : 0;
@@ -1250,7 +1254,7 @@ struct UIRects {
     Rect rBindPanel;
 
     Rect rInj, rReinj, rRst;
-    Rect rScrollHelper, rOrbitCam, rIndepSens, rSensH, rSensV;
+    Rect rScrollHelper, rOrbitCam, rIndepSens, rCemuExperimental, rSensH, rSensV;
     Rect rDrops[5], rDropMenu;
     Rect rPath, rPathReset;
     Rect rDarkBtn, rLightBtn;
@@ -1321,21 +1325,23 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
     curY += teleH + spacing;
     
     // CAMERA SETTINGS
-    const int setH = g_collapsedSet ? 30 : (g_config.use_independent_sens ? 180 : 150);
+    const int setH = g_collapsedSet ? 30 : (g_config.use_independent_sens ? 205 : 175);
     r.rSetPanel = Rect(pad, curY, panelW, setH);
     if (g_collapsedSet) {
         r.rScrollHelper = Rect(0,0,0,0);
         r.rOrbitCam = Rect(0,0,0,0);
         r.rIndepSens = Rect(0,0,0,0);
+        r.rCemuExperimental = Rect(0,0,0,0);
         r.rSensH = Rect(0,0,0,0);
         r.rSensV = Rect(0,0,0,0);
     } else {
         r.rScrollHelper = Rect(pad + 10, curY + 35, panelW - 20, 20);
         r.rOrbitCam = Rect(pad + 10, curY + 60, panelW - 20, 20);
         r.rIndepSens = Rect(pad + 10, curY + 85, panelW - 20, 20);
-        r.rSensH = Rect(pad + 10, curY + 115, panelW - 40, 24);
+        r.rCemuExperimental = Rect(pad + 10, curY + 110, panelW - 20, 20);
+        r.rSensH = Rect(pad + 10, curY + 140, panelW - 40, 24);
         if (g_config.use_independent_sens) {
-            r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
+            r.rSensV = Rect(pad + 10, curY + 170, panelW - 40, 24);
         } else {
             r.rSensV = Rect(0,0,0,0);
         }
@@ -1406,7 +1412,7 @@ static void UpdateConsoleEditPosition(HWND hWnd) {
 
 // Hover states tracking
 static bool g_trackingMouse = false;
-static bool g_hoverScrollHelper = false, g_hoverOrbitCam = false, g_hoverIndepSens = false;
+static bool g_hoverScrollHelper = false, g_hoverOrbitCam = false, g_hoverIndepSens = false, g_hoverCemuExperimental = false;
 static bool g_hoverSensH = false, g_hoverSensV = false;
 static int g_hoverDrop = -1;
 static int g_hoverDropMenuRow = -1;
@@ -1784,6 +1790,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             DrawToggle(g, ui.rScrollHelper.X, ui.rScrollHelper.Y, g_animScrollHelper, L"Scroll Wheel Weapon Select", ff);
             DrawToggle(g, ui.rOrbitCam.X, ui.rOrbitCam.Y, g_animOrbitCam, L"Full Orbit Camera", ff);
             DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff);
+            DrawToggle(g, ui.rCemuExperimental.X, ui.rCemuExperimental.Y, g_animCemuExperimental, L"Cemu Experimental Mode (AOB/Offsets)", ff);
             
             DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
             if (g_config.use_independent_sens) {
@@ -1908,6 +1915,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         
         if (ui.rScrollHelper.Contains(x, y)) { g_config.scroll_helper = !g_config.scroll_helper; SaveConfig(); InvalidateRect(hWnd, nullptr, FALSE); }
         if (ui.rOrbitCam.Contains(x, y)) { g_config.full_orbit_camera = !g_config.full_orbit_camera; SaveConfig(); InvalidateRect(hWnd, nullptr, FALSE); }
+        if (ui.rCemuExperimental.Contains(x, y)) { g_config.cemu_experimental = !g_config.cemu_experimental; SaveConfig(); InvalidateRect(hWnd, nullptr, FALSE); }
         if (ui.rIndepSens.Contains(x, y)) {
             g_config.use_independent_sens = !g_config.use_independent_sens;
             SaveConfig();
@@ -1968,7 +1976,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_trackingMouse = false;
         g_hoverInject = g_hoverReinject = g_hoverReset = false;
         g_hoverDarkBtn = g_hoverLightBtn = g_hoverPath = g_hoverPathReset = false;
-        g_hoverScrollHelper = g_hoverOrbitCam = g_hoverIndepSens = false;
+        g_hoverScrollHelper = g_hoverOrbitCam = g_hoverIndepSens = g_hoverCemuExperimental = false;
         g_hoverSensH = g_hoverSensV = g_hoverClearLog = false;
         g_hoverDrop = g_hoverDropMenuRow = -1;
         if (g_tooltipActive) ShowTooltip(hWnd, nullptr, 0, 0);
@@ -2012,6 +2020,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         checkHov(g_hoverScrollHelper, ui.rScrollHelper.Contains(x, y));
         checkHov(g_hoverOrbitCam, ui.rOrbitCam.Contains(x, y));
         checkHov(g_hoverIndepSens, ui.rIndepSens.Contains(x, y));
+        checkHov(g_hoverCemuExperimental, ui.rCemuExperimental.Contains(x, y));
         Rect hBoxH = ui.rSensH; hBoxH.Y += 15; hBoxH.Height = 24;
         Rect hBoxV = ui.rSensV; hBoxV.Y += 15; hBoxV.Height = 24;
         checkHov(g_hoverSensH, hBoxH.Contains(x, y));
@@ -2042,6 +2051,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             else if (ui.rRst.Contains(x, y) && g_targetInjected) tip = L"Reset AOB scanner to re-scan memory signatures";
             else if (ui.rDarkBtn.Contains(x, y)) tip = L"Dark theme";
             else if (ui.rLightBtn.Contains(x, y)) tip = L"Light theme";
+            else if (ui.rCemuExperimental.Contains(x, y)) tip = L"Use AOB patterns and offsets optimized for Cemu Experimental";
             else if (x > ui.rMemPanel.X + 10 && x < ui.rMemPanel.X + 250 && y > ui.rMemPanel.Y + 30 && y < ui.rMemPanel.Y + 45) tip = L"Address in memory storing Camera XYZ.";
             else if (x > ui.rMemPanel.X + 10 && x < ui.rMemPanel.X + 250 && y > ui.rMemPanel.Y + 45 && y < ui.rMemPanel.Y + 60) tip = L"Used to control Magnesis properly.";
             if (tip) ShowTooltip(hWnd, tip, x, y);
@@ -2135,6 +2145,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             ui.rScrollHelper.Contains(pt.x, pt.y) ||
             ui.rOrbitCam.Contains(pt.x, pt.y) ||
             ui.rIndepSens.Contains(pt.x, pt.y) ||
+            ui.rCemuExperimental.Contains(pt.x, pt.y) ||
             ui.rClearLog.Contains(pt.x, pt.y)) {
             overClickable = true;
         }
