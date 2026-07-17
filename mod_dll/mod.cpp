@@ -531,7 +531,7 @@ namespace Mod {
         return false;
     }
 
-    static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress) {
+    static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress, bool executableOnly = false) {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
         uintptr_t start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
@@ -542,6 +542,13 @@ namespace Mod {
         size_t chunkSize = 2 * 1024 * 1024;
         size_t overlap = pattern.bytes.size();
 
+        // Get our own module's allocation base to avoid matching patterns in our own binary
+        uintptr_t ourAllocBase = 0;
+        MEMORY_BASIC_INFORMATION ourMbi;
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(g_hModule), &ourMbi, sizeof(ourMbi))) {
+            ourAllocBase = reinterpret_cast<uintptr_t>(ourMbi.AllocationBase);
+        }
+
         while (current < end) {
             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
                 return false;
@@ -550,9 +557,16 @@ namespace Mod {
                 break;
             }
 
-            bool scanThisPage = (mbi.State == MEM_COMMIT) &&
-                                (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
-                                !(mbi.Protect & PAGE_GUARD);
+            bool isOurModule = (ourAllocBase != 0 && reinterpret_cast<uintptr_t>(mbi.AllocationBase) == ourAllocBase);
+
+            bool scanThisPage = !isOurModule && (mbi.State == MEM_COMMIT) && !(mbi.Protect & PAGE_GUARD);
+            if (scanThisPage) {
+                if (executableOnly) {
+                    scanThisPage = (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
+                } else {
+                    scanThisPage = (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
+                }
+            }
 
             if (scanThisPage) {
                 uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -1363,7 +1377,7 @@ namespace Mod {
                 Pattern pat = ParseAOB(tasks[0].patternStr);
                 uintptr_t foundAddress = 0;
 
-                if (ScanProcessAOB(pat, foundAddress)) {
+                if (ScanProcessAOB(pat, foundAddress, false)) {
                     tasks[0].found = true;
                     tasks[0].address = foundAddress;
                     g_addrGameRomCamera = foundAddress;
@@ -1429,7 +1443,7 @@ namespace Mod {
                         DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
                         Pattern pat = ParseAOB(tasks[2].patternStr);
                         uintptr_t foundAddress = 0;
-                        if (ScanProcessAOB(pat, foundAddress)) {
+                        if (ScanProcessAOB(pat, foundAddress, true)) {
                             DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
                             tasks[2].address = foundAddress;
                             if (SetupShortcutHook(foundAddress)) {
@@ -1447,7 +1461,7 @@ namespace Mod {
                     }
                     Pattern pat = ParseAOB(tasks[targetIdx].patternStr);
                     uintptr_t foundAddress = 0;
-                    if (ScanProcessAOB(pat, foundAddress)) {
+                    if (ScanProcessAOB(pat, foundAddress, true)) {
                         tasks[targetIdx].address = foundAddress;
                         tasks[targetIdx].found = true;
                         foundAny = true;
