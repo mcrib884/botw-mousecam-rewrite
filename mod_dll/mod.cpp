@@ -203,8 +203,8 @@ namespace Mod {
     static std::atomic<float> g_magneTargetY{0.0f};
     static std::atomic<float> g_magneTargetZ{0.0f};
 
-    static std::atomic<int32_t> g_liveShortcutMenu{0};
-    static std::atomic<uint8_t> g_liveMenuState{0};
+    static std::atomic<int32_t> g_liveShortcutMenu{-1};
+    static std::atomic<uint8_t> g_liveMenuState{1};
 
     static std::atomic<bool> g_mousecamActive{false};
 
@@ -542,11 +542,26 @@ namespace Mod {
         size_t chunkSize = 2 * 1024 * 1024;
         size_t overlap = pattern.bytes.size();
 
-        // Get our own module's allocation base to avoid matching patterns in our own binary
+        // 1. Get our own module's allocation base to avoid matching patterns in our own binary
         uintptr_t ourAllocBase = 0;
         MEMORY_BASIC_INFORMATION ourMbi;
         if (VirtualQuery(reinterpret_cast<LPCVOID>(g_hModule), &ourMbi, sizeof(ourMbi))) {
             ourAllocBase = reinterpret_cast<uintptr_t>(ourMbi.AllocationBase);
+        }
+
+        // 2. Get the stack's allocation base (using a local variable address)
+        uintptr_t stackAllocBase = 0;
+        MEMORY_BASIC_INFORMATION stackMbi;
+        int stackVar = 0;
+        if (VirtualQuery(&stackVar, &stackMbi, sizeof(stackMbi))) {
+            stackAllocBase = reinterpret_cast<uintptr_t>(stackMbi.AllocationBase);
+        }
+
+        // 3. Get the heap allocation bases for the pattern data vectors
+        uintptr_t heapAllocBase1 = 0;
+        MEMORY_BASIC_INFORMATION heapMbi1;
+        if (!pattern.bytes.empty() && VirtualQuery(pattern.bytes.data(), &heapMbi1, sizeof(heapMbi1))) {
+            heapAllocBase1 = reinterpret_cast<uintptr_t>(heapMbi1.AllocationBase);
         }
 
         while (current < end) {
@@ -557,9 +572,12 @@ namespace Mod {
                 break;
             }
 
-            bool isOurModule = (ourAllocBase != 0 && reinterpret_cast<uintptr_t>(mbi.AllocationBase) == ourAllocBase);
+            uintptr_t pageAllocBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
+            bool isOurMemory = (ourAllocBase != 0 && pageAllocBase == ourAllocBase) ||
+                               (stackAllocBase != 0 && pageAllocBase == stackAllocBase) ||
+                               (heapAllocBase1 != 0 && pageAllocBase == heapAllocBase1);
 
-            bool scanThisPage = !isOurModule && (mbi.State == MEM_COMMIT) &&
+            bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
                                 (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
                                 !(mbi.Protect & PAGE_GUARD);
 
@@ -1991,9 +2009,11 @@ namespace Mod {
 
                 if (g_addrShortcutMenu != 0) {
                     g_liveShortcutMenu = ReadInt32BE(g_addrShortcutMenu + 128);
-                    if (g_pSharedMemory) {
-                        g_pSharedMemory->m_teleLiveShortcutMenu = g_liveShortcutMenu;
-                    }
+                } else {
+                    g_liveShortcutMenu = -1;
+                }
+                if (g_pSharedMemory) {
+                    g_pSharedMemory->m_teleLiveShortcutMenu = g_liveShortcutMenu;
                 }
 
                 float dx = 0.0f;
