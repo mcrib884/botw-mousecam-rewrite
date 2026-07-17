@@ -1358,10 +1358,10 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
         r.rSensH = Rect(0,0,0,0);
         r.rSensV = Rect(0,0,0,0);
     } else {
-        r.rScrollHelper = Rect(pad + 10, curY + 35, panelW - 20, 20);
-        r.rOrbitCam = Rect(pad + 10, curY + 60, panelW - 20, 20);
-        r.rIndepSens = Rect(pad + 10, curY + 85, panelW - 20, 20);
-        r.rCemuExperimental = Rect(pad + 10, curY + 110, panelW - 20, 20);
+        r.rScrollHelper = Rect(pad + 10, curY + 35, std::min(250, panelW - 20), 20);
+        r.rOrbitCam = Rect(pad + 10, curY + 60, std::min(175, panelW - 20), 20);
+        r.rIndepSens = Rect(pad + 10, curY + 85, std::min(290, panelW - 20), 20);
+        r.rCemuExperimental = Rect(pad + 10, curY + 110, std::min(330, panelW - 20), 20);
         r.rSensH = Rect(pad + 10, curY + 140, panelW - 40, 24);
         if (g_config.use_independent_sens) {
             r.rSensV = Rect(pad + 10, curY + 170, panelW - 40, 24);
@@ -1586,6 +1586,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_animScrollHelper += (g_config.scroll_helper ? 0.075f : -0.075f);
         g_animOrbitCam += (g_config.full_orbit_camera ? 0.075f : -0.075f);
         g_animIndepSens += (g_config.use_independent_sens ? 0.075f : -0.075f);
+        g_animCemuExperimental += (g_config.cemu_experimental ? 0.075f : -0.075f);
         g_animSensH += (g_hoverSensH ? 0.05f : -0.05f);
         g_animSensV += (g_hoverSensV ? 0.05f : -0.05f);
         g_animClearLog += (g_hoverClearLog ? 0.05f : -0.05f);
@@ -1596,7 +1597,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         clampF(g_animDarkBtn); clampF(g_animLightBtn);
         clampF(g_animPath); clampF(g_animPathReset);
         clampF(g_animScrollHelper); clampF(g_animOrbitCam);
-        clampF(g_animIndepSens); clampF(g_animSensH); clampF(g_animSensV); clampF(g_animClearLog);
+        clampF(g_animIndepSens); clampF(g_animCemuExperimental); clampF(g_animSensH); clampF(g_animSensV); clampF(g_animClearLog);
         for (int i=0; i<5; ++i) clampF(g_animDrop[i]);
 
         float targetTheme = g_config.use_light_theme ? 0.0f : 1.0f;
@@ -1632,6 +1633,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                        (g_animTheme != (g_config.use_light_theme ? 0.0f : 1.0f)) ||
                        (g_animScrollHelper > 0 && g_animScrollHelper < 1) ||
                        (g_animOrbitCam > 0 && g_animOrbitCam < 1) || (g_animIndepSens > 0 && g_animIndepSens < 1) ||
+                       (g_animCemuExperimental > 0 && g_animCemuExperimental < 1) ||
                        (g_animSensH > 0 && g_animSensH < 1) || (g_animSensV > 0 && g_animSensV < 1) || (g_animClearLog > 0 && g_animClearLog < 1);
         for (int i=0; i<5; ++i) if (g_animDrop[i] > 0 && g_animDrop[i] < 1) hasAnim = true;
         if (changed || g_dragSlider != -1 || !g_targetInjected || hasAnim) {
