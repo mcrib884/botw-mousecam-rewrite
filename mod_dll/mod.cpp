@@ -55,8 +55,10 @@ extern "C" {
     uint64_t g_magneHeartbeatCounter = 0;
     uint64_t g_magneIdealBase = 0;
     uint64_t g_magnesisZWriterReturn = 0;
+    uint64_t g_magnesisYWriterReturn = 0;
 
     void AsmMagnesisZWriter();
+    void AsmMagnesisYWriterExp();
 }
 
 namespace Mod {
@@ -69,6 +71,7 @@ namespace Mod {
         size_t magnesisXOffset;
         size_t magnesisYOffset;
         size_t magnesisZOffset;
+        char detourTargetAxis;
         size_t magnesisDetourSize;
     };
 
@@ -77,13 +80,13 @@ namespace Mod {
         if (experimental) {
             cfg.name = L"Cemu Experimental";
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
-            // Placeholder: currently identical to 2.6, to be updated once new patterns/offsets are specified
-            cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
+            cfg.magnesisAob      = "45 0F 38 F1 74 15 00 45 0F 38 F0 74 1D 04 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 66 41 0F 7E C6 45 0F 38 F1 74 15 04 F3 0F 5A C0 45 0F 38 F0 74 1D 08 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 F2 0F 11 8C 24 90 00 00 00 66 41 0F 7E C6 45 0F 38 F1 74 15 08";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
-            cfg.magnesisXOffset = 0x40;
-            cfg.magnesisYOffset = 0xBA;
-            cfg.magnesisZOffset = 0xCE;
-            cfg.magnesisDetourSize = 17;
+            cfg.magnesisXOffset = 0x00;
+            cfg.magnesisYOffset = 0x20;
+            cfg.magnesisZOffset = 0x4D;
+            cfg.detourTargetAxis = 'Y';
+            cfg.magnesisDetourSize = 18;
         } else {
             cfg.name = L"Cemu 2.6";
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
@@ -92,6 +95,7 @@ namespace Mod {
             cfg.magnesisXOffset = 0x40;
             cfg.magnesisYOffset = 0xBA;
             cfg.magnesisZOffset = 0xCE;
+            cfg.detourTargetAxis = 'Z';
             cfg.magnesisDetourSize = 17;
         }
         return cfg;
@@ -590,6 +594,7 @@ namespace Mod {
     static CodePatch g_magneDetourPatch = {};
     static CodePatch g_magneXPatch = {};
     static CodePatch g_magneYPatch = {};
+    static CodePatch g_magneZPatch = {};
     static bool g_magnePatchesInitialized = false;
 
     static CodePatch g_shortcutHookPatch = {};
@@ -737,6 +742,7 @@ namespace Mod {
             g_magneDetourPatch.Restore();
             g_magneXPatch.Restore();
             g_magneYPatch.Restore();
+            g_magneZPatch.Restore();
         }
         RemoveShortcutHook();
         LeaveCriticalSection(&g_patchCS);
@@ -1400,16 +1406,25 @@ namespace Mod {
                         if (targetIdx == 1) {
                             EnterCriticalSection(&g_patchCS);
                             if (!g_magnePatchesInitialized) {
-                                g_magneXPatch      = { foundAddress + vCfg.magnesisXOffset,  7, {}, false };
-                                g_magneYPatch      = { foundAddress + vCfg.magnesisYOffset,  7, {}, false };
-                                g_magneDetourPatch = { foundAddress + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
+                                g_magneXPatch = { foundAddress + vCfg.magnesisXOffset, 7, {}, false };
+                                g_magneYPatch = { foundAddress + vCfg.magnesisYOffset, 7, {}, false };
+                                g_magneZPatch = { foundAddress + vCfg.magnesisZOffset, 7, {}, false };
 
                                 g_magneXPatch.Backup();
                                 g_magneYPatch.Backup();
-                                g_magneDetourPatch.Backup();
-                                
-                                g_magnesisZWriterReturn = foundAddress + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
-                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                                g_magneZPatch.Backup();
+
+                                if (vCfg.detourTargetAxis == 'Z') {
+                                    g_magneDetourPatch = { foundAddress + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
+                                    g_magneDetourPatch.Backup();
+                                    g_magnesisZWriterReturn = foundAddress + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
+                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                                } else if (vCfg.detourTargetAxis == 'Y') {
+                                    g_magneDetourPatch = { foundAddress + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, false };
+                                    g_magneDetourPatch.Backup();
+                                    g_magnesisYWriterReturn = foundAddress + vCfg.magnesisYOffset + vCfg.magnesisDetourSize;
+                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
+                                }
 
                                 g_magnePatchesInitialized = true;
                                 if (g_pSharedMemory) {
@@ -1762,6 +1777,8 @@ namespace Mod {
             // The JIT compiler periodically recompiles code paths, which can
             // overwrite our injected detour bytes (jmp [AsmMagnesisXWriter]).
             // We poll the first byte of the detour site every frame and
+            CemuVersionConfig vCfg = GetCemuVersionConfig(g_pSharedMemory ? g_pSharedMemory->m_cfgCemuExperimental : false);
+
             // re-inject if it's been stomped back to the original instruction.
             if (g_magnePatchesInitialized && g_magneDetourPatch.address != 0) {
                 uint8_t currentByte = 0;
@@ -1770,12 +1787,22 @@ namespace Mod {
                     if (bytesRead == 1 && currentByte != 0xFF) {
                         // The detour was overwritten! Re-inject it!
                         g_magneDetourPatch.active = false; // Force it to allow reinjection
-                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
-                        if (magnesis_mode) {
-                            g_magneXPatch.active = false;
-                            g_magneYPatch.active = false;
-                            g_magneXPatch.ApplyNop();
-                            g_magneYPatch.ApplyNop();
+                        if (vCfg.detourTargetAxis == 'Z') {
+                            g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                            if (magnesis_mode) {
+                                g_magneXPatch.active = false;
+                                g_magneYPatch.active = false;
+                                g_magneXPatch.ApplyNop();
+                                g_magneYPatch.ApplyNop();
+                            }
+                        } else if (vCfg.detourTargetAxis == 'Y') {
+                            g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
+                            if (magnesis_mode) {
+                                g_magneXPatch.active = false;
+                                g_magneZPatch.active = false;
+                                g_magneXPatch.ApplyNop();
+                                g_magneZPatch.ApplyNop();
+                            }
                         }
                     }
                 }
@@ -1787,12 +1814,18 @@ namespace Mod {
 
                 EnterCriticalSection(&g_patchCS);
                 if (g_magnePatchesInitialized) {
-                    if (magnesis_mode && !g_magneXPatch.active) {
-                        g_magneXPatch.ApplyNop();
-                        g_magneYPatch.ApplyNop();
-                    } else if (!magnesis_mode && g_magneXPatch.active) {
-                        g_magneXPatch.Restore();
-                        g_magneYPatch.Restore();
+                    if (magnesis_mode) {
+                        if (vCfg.detourTargetAxis == 'Z') {
+                            if (!g_magneXPatch.active) g_magneXPatch.ApplyNop();
+                            if (!g_magneYPatch.active) g_magneYPatch.ApplyNop();
+                        } else if (vCfg.detourTargetAxis == 'Y') {
+                            if (!g_magneXPatch.active) g_magneXPatch.ApplyNop();
+                            if (!g_magneZPatch.active) g_magneZPatch.ApplyNop();
+                        }
+                    } else {
+                        if (g_magneXPatch.active) g_magneXPatch.Restore();
+                        if (g_magneYPatch.active) g_magneYPatch.Restore();
+                        if (g_magneZPatch.active) g_magneZPatch.Restore();
                         g_magneIdealBase = 0;
                         magne_initialized = false;
                     }

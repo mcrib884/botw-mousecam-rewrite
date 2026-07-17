@@ -4,6 +4,7 @@ EXTERN g_magnesisEnabled: byte
 EXTERN g_magneHeartbeatCounter: qword
 EXTERN g_magneIdealBase: qword
 EXTERN g_magnesisZWriterReturn: qword
+EXTERN g_magnesisYWriterReturn: qword
 
 AsmMagnesisZWriter PROC
     pushf
@@ -23,5 +24,24 @@ SkipNativeWrite:
     popf
     jmp [g_magnesisZWriterReturn]
 AsmMagnesisZWriter ENDP
+
+AsmMagnesisYWriterExp PROC
+    pushf
+    push rax
+    lea rax, [r13 + rdx]
+    mov [g_magneIdealBase], rax
+    pop rax
+    inc qword ptr [g_magneHeartbeatCounter]
+    cmp byte ptr [g_magnesisEnabled], 1
+    je SkipNativeWrite
+    movbe [r13 + rdx + 04h], r14d
+
+SkipNativeWrite:
+    cvtss2sd xmm0, xmm0
+    movbe r14d, [r13 + rbx + 08h]
+
+    popf
+    jmp [g_magnesisYWriterReturn]
+AsmMagnesisYWriterExp ENDP
 
 END
