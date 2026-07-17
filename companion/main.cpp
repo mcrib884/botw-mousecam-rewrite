@@ -1201,17 +1201,17 @@ static void DrawRoundedRect(Graphics& g, const Rect& bounds, int radius, const P
     if (pen) g.DrawPath(pen, &path);
 }
 
-static void DrawToggle(Graphics& g, int x, int y, float stateAnim, const wchar_t* label, FontFamily& ff) {
+static void DrawToggle(Graphics& g, int x, int y, float stateAnim, const wchar_t* label, FontFamily& ff, bool disabled = false) {
     Rect r(x, y, 36, 20);
-    Color cOff = Color(255, 60, 60, 75);
-    Color cOn = g_theme.accent;
+    Color cOff = disabled ? Color(255, 45, 45, 45) : Color(255, 60, 60, 75);
+    Color cOn = disabled ? Color(255, 80, 80, 80) : g_theme.accent;
     SolidBrush bg(LerpColor(cOff, cOn, stateAnim));
     DrawRoundedRect(g, r, 10, nullptr, &bg);
-    SolidBrush thumb(Color::White);
+    SolidBrush thumb(disabled ? Color(255, 120, 120, 120) : Color::White);
     float thumbX = 2.0f + 16.0f * stateAnim;
     g.FillEllipse(&thumb, x + (int)thumbX, y + 2, 16, 16);
     
-    SolidBrush textBrush(g_theme.text);
+    SolidBrush textBrush(disabled ? g_theme.textMuted : g_theme.text);
     Font f(&ff, 12, FontStyleRegular, UnitPixel);
     g.DrawString(label, -1, &f, PointF((REAL)x + 45, (REAL)y + 2), &textBrush);
 }
@@ -1333,6 +1333,7 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
     r.rRst = Rect(pad + panelW - 90, curY + 45, 80, 26);
     r.rPath = Rect(pad + 10, curY + 50, 115, 20);
     r.rPathReset = g_config.cemu_path_override.empty() ? Rect(0,0,0,0) : Rect(pad + 130, curY + 50, 18, 20);
+    r.rCemuExperimental = Rect(pad + 155, curY + 50, 125, 20);
     r.rStatusDot = Rect(pad + panelW - 25, curY + 15, 12, 12);
     
     curY += connH + spacing;
@@ -1348,23 +1349,22 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
     curY += teleH + spacing;
     
     // CAMERA SETTINGS
-    const int setH = g_collapsedSet ? 30 : (g_config.use_independent_sens ? 205 : 175);
+    const int setH = g_collapsedSet ? 30 : (g_config.use_independent_sens ? 180 : 150);
     r.rSetPanel = Rect(pad, curY, panelW, setH);
     if (g_collapsedSet) {
         r.rScrollHelper = Rect(0,0,0,0);
         r.rOrbitCam = Rect(0,0,0,0);
         r.rIndepSens = Rect(0,0,0,0);
-        r.rCemuExperimental = Rect(0,0,0,0);
+        r.rCemuExperimental = Rect(0,0,0,0); // Re-zero in collapsed mode just in case
         r.rSensH = Rect(0,0,0,0);
         r.rSensV = Rect(0,0,0,0);
     } else {
         r.rScrollHelper = Rect(pad + 10, curY + 35, std::min(250, panelW - 20), 20);
         r.rOrbitCam = Rect(pad + 10, curY + 60, std::min(175, panelW - 20), 20);
         r.rIndepSens = Rect(pad + 10, curY + 85, std::min(290, panelW - 20), 20);
-        r.rCemuExperimental = Rect(pad + 10, curY + 110, std::min(330, panelW - 20), 20);
-        r.rSensH = Rect(pad + 10, curY + 140, panelW - 40, 24);
+        r.rSensH = Rect(pad + 10, curY + 115, panelW - 40, 24);
         if (g_config.use_independent_sens) {
-            r.rSensV = Rect(pad + 10, curY + 170, panelW - 40, 24);
+            r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
         } else {
             r.rSensV = Rect(0,0,0,0);
         }
@@ -1727,23 +1727,33 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g.DrawString(L"Reinject", -1, &fontBody, RectF((REAL)ui.rReinj.X, (REAL)ui.rReinj.Y, (REAL)ui.rReinj.Width, (REAL)ui.rReinj.Height), &sfCenter, &textBrush);
         g.DrawString(L"Reset", -1, &fontBody, RectF((REAL)ui.rRst.X, (REAL)ui.rRst.Y, (REAL)ui.rRst.Width, (REAL)ui.rRst.Height), &sfCenter, &textBrush);
 
-        SolidBrush btnPath(g_downPath ? Color(255,50,80,120) : LerpColor(g_theme.panel, Color(255,70,100,150), g_animPath));
-        DrawRoundedRect(g, ui.rPath, 4, &borderPen, &btnPath);
-        g.DrawString(L"Cemu Executable", -1, &fontBody, RectF((REAL)ui.rPath.X, (REAL)ui.rPath.Y, (REAL)ui.rPath.Width, (REAL)ui.rPath.Height), &sfCenter, &textBrush);
         if (!g_config.cemu_path_override.empty()) {
             SolidBrush overrideBrush(g_theme.accent);
             std::wstring exeName = Utf8ToWstr(g_config.cemu_path_override);
             size_t lastSlash = exeName.find_last_of(L"\\/");
             if (lastSlash != std::wstring::npos) exeName = exeName.substr(lastSlash + 1);
             std::wstring txt = L"Target: " + exeName;
-            g.DrawString(txt.c_str(), -1, &fontBody, PointF(ui.rPath.X + 150, ui.rPath.Y + 2), &overrideBrush);
-            // Reset path button
+            g.DrawString(txt.c_str(), -1, &fontBody, PointF(ui.rPath.X, ui.rPath.Y - 18), &overrideBrush);
+        } else {
+            SolidBrush defaultBrush(g_theme.textMuted);
+            g.DrawString(L"Target: cemu.exe (Default)", -1, &fontBody, PointF(ui.rPath.X, ui.rPath.Y - 18), &defaultBrush);
+        }
+
+        SolidBrush btnPath(g_downPath ? Color(255,50,80,120) : LerpColor(g_theme.panel, Color(255,70,100,150), g_animPath));
+        DrawRoundedRect(g, ui.rPath, 4, &borderPen, &btnPath);
+        g.DrawString(L"Cemu Executable", -1, &fontBody, RectF((REAL)ui.rPath.X, (REAL)ui.rPath.Y, (REAL)ui.rPath.Width, (REAL)ui.rPath.Height), &sfCenter, &textBrush);
+        if (!g_config.cemu_path_override.empty()) {
+            // Reset path button next to it
             SolidBrush resetBg(LerpColor(Color(255, 60, 30, 30), g_theme.error, g_animPathReset));
             DrawRoundedRect(g, ui.rPathReset, 3, nullptr, &resetBg);
             SolidBrush resetText(Color::White);
             Font resetFont(&ff, 12, FontStyleBold, UnitPixel);
             g.DrawString(L"\u2715", -1, &resetFont, RectF((REAL)ui.rPathReset.X, (REAL)ui.rPathReset.Y, (REAL)ui.rPathReset.Width, (REAL)ui.rPathReset.Height), &sfCenter, &resetText);
         }
+
+        // Draw Experimental Toggle next to them, disabled when connected or injected
+        bool isExpDisabled = g_targetInjected;
+        DrawToggle(g, ui.rCemuExperimental.X, ui.rCemuExperimental.Y, g_animCemuExperimental, L"Experimental", ff, isExpDisabled);
 
 
         // --- MEMORY ADDRESSES ---
@@ -1815,7 +1825,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             DrawToggle(g, ui.rScrollHelper.X, ui.rScrollHelper.Y, g_animScrollHelper, L"Scroll Wheel Weapon Select", ff);
             DrawToggle(g, ui.rOrbitCam.X, ui.rOrbitCam.Y, g_animOrbitCam, L"Full Orbit Camera", ff);
             DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff);
-            DrawToggle(g, ui.rCemuExperimental.X, ui.rCemuExperimental.Y, g_animCemuExperimental, L"Cemu Experimental Mode (AOB/Offsets)", ff);
             
             DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
             if (g_config.use_independent_sens) {
@@ -1940,7 +1949,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         
         if (ui.rScrollHelper.Contains(x, y)) { g_config.scroll_helper = !g_config.scroll_helper; SaveConfig(); InvalidateRect(hWnd, nullptr, FALSE); }
         if (ui.rOrbitCam.Contains(x, y)) { g_config.full_orbit_camera = !g_config.full_orbit_camera; SaveConfig(); InvalidateRect(hWnd, nullptr, FALSE); }
-        if (ui.rCemuExperimental.Contains(x, y)) { g_config.cemu_experimental = !g_config.cemu_experimental; SaveConfig(); InvalidateRect(hWnd, nullptr, FALSE); }
+        if (ui.rCemuExperimental.Contains(x, y)) {
+            if (!g_targetInjected) {
+                g_config.cemu_experimental = !g_config.cemu_experimental;
+                SaveConfig();
+                InvalidateRect(hWnd, nullptr, FALSE);
+            }
+        }
         if (ui.rIndepSens.Contains(x, y)) {
             g_config.use_independent_sens = !g_config.use_independent_sens;
             SaveConfig();
@@ -2045,7 +2060,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         checkHov(g_hoverScrollHelper, ui.rScrollHelper.Contains(x, y));
         checkHov(g_hoverOrbitCam, ui.rOrbitCam.Contains(x, y));
         checkHov(g_hoverIndepSens, ui.rIndepSens.Contains(x, y));
-        checkHov(g_hoverCemuExperimental, ui.rCemuExperimental.Contains(x, y));
+        checkHov(g_hoverCemuExperimental, ui.rCemuExperimental.Contains(x, y) && !g_targetInjected);
         Rect hBoxH = ui.rSensH; hBoxH.Y += 15; hBoxH.Height = 24;
         Rect hBoxV = ui.rSensV; hBoxV.Y += 15; hBoxV.Height = 24;
         checkHov(g_hoverSensH, hBoxH.Contains(x, y));
@@ -2076,7 +2091,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             else if (ui.rRst.Contains(x, y) && g_targetInjected) tip = L"Reset AOB scanner to re-scan memory signatures";
             else if (ui.rDarkBtn.Contains(x, y)) tip = L"Dark theme";
             else if (ui.rLightBtn.Contains(x, y)) tip = L"Light theme";
-            else if (ui.rCemuExperimental.Contains(x, y)) tip = L"Use AOB patterns and offsets optimized for Cemu Experimental";
+            else if (ui.rCemuExperimental.Contains(x, y)) tip = g_targetInjected ? L"Cemu Experimental Mode (Cannot change settings while injected)" : L"Use AOB patterns and offsets optimized for Cemu Experimental";
             else if (x > ui.rMemPanel.X + 10 && x < ui.rMemPanel.X + 250 && y > ui.rMemPanel.Y + 30 && y < ui.rMemPanel.Y + 45) tip = L"Address in memory storing Camera XYZ.";
             else if (x > ui.rMemPanel.X + 10 && x < ui.rMemPanel.X + 250 && y > ui.rMemPanel.Y + 45 && y < ui.rMemPanel.Y + 60) tip = L"Used to control Magnesis properly.";
             if (tip) ShowTooltip(hWnd, tip, x, y);
@@ -2170,7 +2185,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
             ui.rScrollHelper.Contains(pt.x, pt.y) ||
             ui.rOrbitCam.Contains(pt.x, pt.y) ||
             ui.rIndepSens.Contains(pt.x, pt.y) ||
-            ui.rCemuExperimental.Contains(pt.x, pt.y) ||
+            (ui.rCemuExperimental.Contains(pt.x, pt.y) && !g_targetInjected) ||
             ui.rClearLog.Contains(pt.x, pt.y)) {
             overClickable = true;
         }
