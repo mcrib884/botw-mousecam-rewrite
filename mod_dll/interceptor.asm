@@ -51,14 +51,17 @@ AsmMagnesisZWriterExp PROC
     mov [g_magneIdealBase], rax
     pop rax
     inc qword ptr [g_magneHeartbeatCounter]
+
+    popf
+    ; Execute original instructions in correct order
+    movsd qword ptr [rsp + 148h], xmm6
+    movd r14d, xmm4
+
     cmp byte ptr [g_magnesisEnabled], 1
     je SkipNativeWrite
     movbe [r13 + rbp + 70h], r14d
 
 SkipNativeWrite:
-    popf
-    movsd qword ptr [rsp + 148h], xmm6
-    movd r14d, xmm4
     jmp [g_magnesisZWriterReturn]
 AsmMagnesisZWriterExp ENDP
 
