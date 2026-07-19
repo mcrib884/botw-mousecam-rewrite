@@ -1371,7 +1371,6 @@ static void CalculateUIRects(UIRects& r, int w, int h) {
         r.rScrollHelper = Rect(0,0,0,0);
         r.rOrbitCam = Rect(0,0,0,0);
         r.rIndepSens = Rect(0,0,0,0);
-        r.rCemuExperimental = Rect(0,0,0,0); // Re-zero in collapsed mode just in case
         r.rSensH = Rect(0,0,0,0);
         r.rSensV = Rect(0,0,0,0);
     } else {
