@@ -640,20 +640,28 @@ namespace Mod {
         }
 
         bool Restore() {
-            if (address == 0 || size == 0 || g_originalBytes.empty()) return false;
+            if (address == 0 || size == 0 || g_originalBytes.empty()) {
+                DllLog("[DEBUG] Restore failed: invalid address/size or empty backup");
+                return false;
+            }
             DWORD oldProtect;
             if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                 memcpy((LPVOID)address, g_originalBytes.data(), size);
                 VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
                 FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, size);
                 active = false;
+                DllLog("[DEBUG] Restore on 0x%llX succeeded", address);
                 return true;
             }
+            DllLog("[DEBUG] Restore on 0x%llX FAILED (VirtualProtect error)", address);
             return false;
         }
 
         bool ApplyNop() {
-            if (address == 0 || size == 0 || g_originalBytes.empty()) return false;
+            if (address == 0 || size == 0 || g_originalBytes.empty()) {
+                DllLog("[DEBUG] ApplyNop failed: invalid address/size or empty backup");
+                return false;
+            }
             std::vector<uint8_t> nops(size, 0x90);
             DWORD oldProtect;
             if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
@@ -661,8 +669,10 @@ namespace Mod {
                 VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
                 FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, size);
                 active = true;
+                DllLog("[DEBUG] ApplyNop on 0x%llX succeeded", address);
                 return true;
             }
+            DllLog("[DEBUG] ApplyNop on 0x%llX FAILED (VirtualProtect error)", address);
             return false;
         }
 
