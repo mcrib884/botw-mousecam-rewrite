@@ -47,7 +47,7 @@ AsmMagnesisYWriterExp ENDP
 AsmMagnesisZWriterExp PROC
     pushf
     push rax
-    lea rax, [r13 + rbp]
+    lea rax, [r13 + rbp + 68h]
     mov [g_magneIdealBase], rax
     pop rax
     inc qword ptr [g_magneHeartbeatCounter]
@@ -58,7 +58,7 @@ AsmMagnesisZWriterExp PROC
 SkipNativeWrite:
     popf
     movsd qword ptr [rsp + 148h], xmm6
-    movd r14d, xmm6
+    movd r14d, xmm4
     jmp [g_magnesisZWriterReturn]
 AsmMagnesisZWriterExp ENDP
 
