@@ -81,11 +81,11 @@ namespace Mod {
         if (experimental) {
             cfg.name = L"Cemu Experimental";
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
-            cfg.magnesisAob      = "45 0F 38 F1 74 15 00 45 0F 38 F0 74 1D 04 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 66 41 0F 7E C6 45 0F 38 F1 74 15 04 F3 0F 5A C0 45 0F 38 F0 74 1D 08 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 F2 0F 11 8C 24 90 00 00 00 66 41 0F 7E C6 45 0F 38 F1 74 15 08";
+            cfg.magnesisAob      = "45 0F 38 F1 74 2D 68 F3 0F 5A C0 F2 0F 10 AC 24 68 02 00 00 31 F6 66 0F 2E E5 41 0F 9B C6 40 0F 92 C6 44 20 F6 31 FF 66 0F 2E E5 40 0F 97 C7 45 31 C0 66 0F 2E E5 41 0F 9B C6 41 0F 94 C0 45 20 F0 45 31 C9 66 0F 2E E5 41 0F 9A C1 F2 0F 11 A4 24 88 00 00 00 41 89 5C 0D 70 0F CA 89 54 24 2C 45 0F 38 F0 74 0D 70 66 41 0F 6E E6 F2 0F 10 FC F3 0F 5A FF F2 0F 11 BC 24 60 01 00 00 66 41 0F 7E F6 45 0F 38 F1 74 2D 6C F3 0F 5A F6 F2 0F 11 B4 24 48 01 00 00 66 41 0F 7E E6 45 0F 38 F1 74 2D 70";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.magnesisXOffset = 0x00;
-            cfg.magnesisYOffset = 0x20;
-            cfg.magnesisZOffset = 0x3F;
+            cfg.magnesisYOffset = 0x82;
+            cfg.magnesisZOffset = 0x8D;
             cfg.detourTargetAxis = 'Z';
             cfg.magnesisDetourSize = 21;
         } else {
