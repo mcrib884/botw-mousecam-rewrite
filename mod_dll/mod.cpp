@@ -2613,6 +2613,21 @@ namespace Mod {
         g_scanning = false;
         g_cameraControlRunning = false;
 
+        DWORD currentThreadId = GetCurrentThreadId();
+
+        if (g_hScanThread && GetThreadId(g_hScanThread) != currentThreadId) {
+            WaitForSingleObject(g_hScanThread, 2000);
+            CloseHandle(g_hScanThread);
+            g_hScanThread = nullptr;
+        }
+        if (g_hCameraControlThread && GetThreadId(g_hCameraControlThread) != currentThreadId) {
+            WaitForSingleObject(g_hCameraControlThread, 2000);
+            CloseHandle(g_hCameraControlThread);
+            g_hCameraControlThread = nullptr;
+        }
+
+        RestoreAllPatches();
+
         DeleteCriticalSection(&g_patchCS);
         DeleteCriticalSection(&g_writerCS);
 
