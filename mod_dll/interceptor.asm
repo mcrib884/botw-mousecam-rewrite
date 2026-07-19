@@ -56,10 +56,9 @@ AsmMagnesisZWriterExp PROC
     movbe [r13 + rbp + 70h], r14d
 
 SkipNativeWrite:
+    popf
     movsd qword ptr [rsp + 148h], xmm6
     movd r14d, xmm6
-
-    popf
     jmp [g_magnesisZWriterReturn]
 AsmMagnesisZWriterExp ENDP
 
