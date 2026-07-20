@@ -1779,6 +1779,7 @@ namespace Mod {
         bool prev_pressed[5] = {false, false, false, false, false};
         std::chrono::steady_clock::time_point press_time[5];
         bool press_time_valid[5] = {false, false, false, false, false};
+        float magne_accum_dt = 0.0f;
 
         StartMouseHook();
 
@@ -1933,6 +1934,7 @@ namespace Mod {
                 if (!magnesis_mode) {
                     g_magneIdealBase = 0;
                     magne_initialized = false;
+                    magne_accum_dt = 0.0f;
                 }
             }
 
@@ -2151,15 +2153,25 @@ namespace Mod {
                             maxSpeedV = 45.0f;
                         }
 
-                        if (maxAngularSpeedH > 0.0f && dt > 0.0f) {
-                            float max_d_theta = maxAngularSpeedH * dt;
+                        // Accumulate dt for speed clamping to match input frequency
+                        float time_delta = dt;
+                        if (dx != 0.0f || dy != 0.0f) {
+                            time_delta += magne_accum_dt;
+                            magne_accum_dt = 0.0f;
+                        } else {
+                            magne_accum_dt += dt;
+                        }
+                        if (time_delta > 0.1f) time_delta = 0.1f;
+
+                        if (maxAngularSpeedH > 0.0f && time_delta > 0.0f) {
+                            float max_d_theta = maxAngularSpeedH * time_delta;
                             if (fabs(d_theta) > max_d_theta) {
                                 d_theta = (d_theta > 0.0f ? max_d_theta : -max_d_theta);
                             }
                         }
 
-                        if (maxSpeedV > 0.0f && dt > 0.0f) {
-                            float max_dy_world = maxSpeedV * dt;
+                        if (maxSpeedV > 0.0f && time_delta > 0.0f) {
+                            float max_dy_world = maxSpeedV * time_delta;
                             if (fabs(dy_world) > max_dy_world) {
                                 dy_world = (dy_world > 0.0f ? max_dy_world : -max_dy_world);
                             }
