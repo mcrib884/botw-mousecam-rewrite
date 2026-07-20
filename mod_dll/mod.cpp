@@ -2134,12 +2134,36 @@ namespace Mod {
                             magne_initialized = true;
                         }
 
-                        float prev_magne_off_x = magne_off_x;
-                        float prev_magne_off_y = magne_off_y;
-                        float prev_magne_off_z = magne_off_z;
-
                         float d_theta = dx * sens_x * 5.0f;
                         float dy_world = -dy * sens_y * 42.5f;
+
+                        // Apply magnesis speed limits based on configuration
+                        uint8_t speedMode = g_pSharedMemory ? g_pSharedMemory->m_cfgMagnesisSpeedMode : 2;
+                        float maxAngularSpeedH = 0.0f; // 0 = unlimited
+                        float maxSpeedV = 0.0f;
+                        const float PI = 3.14159265f;
+
+                        if (speedMode == 0) {
+                            maxAngularSpeedH = (2.0f * PI) / 7.0f; // 1 turn in 7 seconds
+                            maxSpeedV = 15.0f;
+                        } else if (speedMode == 1) {
+                            maxAngularSpeedH = (6.0f * PI) / 7.0f; // 3 times Vanilla
+                            maxSpeedV = 45.0f;
+                        }
+
+                        if (maxAngularSpeedH > 0.0f && dt > 0.0f) {
+                            float max_d_theta = maxAngularSpeedH * dt;
+                            if (fabs(d_theta) > max_d_theta) {
+                                d_theta = (d_theta > 0.0f ? max_d_theta : -max_d_theta);
+                            }
+                        }
+
+                        if (maxSpeedV > 0.0f && dt > 0.0f) {
+                            float max_dy_world = maxSpeedV * dt;
+                            if (fabs(dy_world) > max_dy_world) {
+                                dy_world = (dy_world > 0.0f ? max_dy_world : -max_dy_world);
+                            }
+                        }
 
                         if (d_theta != 0.0f || dy_world != 0.0f) {
                             float cos_t = cos(d_theta);
@@ -2171,33 +2195,6 @@ namespace Mod {
 
                         if (magne_off_y < -v_clamp) magne_off_y = -v_clamp;
                         if (magne_off_y > v_clamp) magne_off_y = v_clamp;
-
-                        // Apply magnesis speed limits based on configuration
-                        uint8_t speedMode = g_pSharedMemory ? g_pSharedMemory->m_cfgMagnesisSpeedMode : 2;
-                        float maxSpeedH = 0.0f;
-                        float maxSpeedV = 0.0f;
-                        if (speedMode == 0) { maxSpeedH = 25.0f; maxSpeedV = 15.0f; }
-                        else if (speedMode == 1) { maxSpeedH = 75.0f; maxSpeedV = 45.0f; }
-
-                        if (maxSpeedH > 0.0f && dt > 0.0f) {
-                            float delta_x = magne_off_x - prev_magne_off_x;
-                            float delta_z = magne_off_z - prev_magne_off_z;
-                            float h_disp = sqrt(delta_x * delta_x + delta_z * delta_z);
-                            float max_h_disp = maxSpeedH * dt;
-                            if (h_disp > max_h_disp) {
-                                float scale = max_h_disp / h_disp;
-                                magne_off_x = prev_magne_off_x + delta_x * scale;
-                                magne_off_z = prev_magne_off_z + delta_z * scale;
-                            }
-                        }
-
-                        if (maxSpeedV > 0.0f && dt > 0.0f) {
-                            float delta_y = magne_off_y - prev_magne_off_y;
-                            float max_v_disp = maxSpeedV * dt;
-                            if (fabs(delta_y) > max_v_disp) {
-                                magne_off_y = prev_magne_off_y + (delta_y > 0.0f ? max_v_disp : -max_v_disp);
-                            }
-                        }
 
                         float magne_pos_x = link_x + magne_off_x;
                         float magne_pos_y = link_y + magne_off_y;
