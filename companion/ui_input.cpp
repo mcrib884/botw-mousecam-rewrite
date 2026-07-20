@@ -22,6 +22,7 @@ bool g_downPath = false;
 bool g_hoverScrollHelper = false, g_hoverOrbitCam = false, g_hoverIndepSens = false, g_hoverCemuExperimental = false;
 bool g_hoverSensH = false, g_hoverSensV = false;
 bool g_hoverMagneYDeadzone = false;
+bool g_hoverMagneSens = false;
 bool g_hoverClearLog = false;
 Rect g_clearLogRect;
 
@@ -32,6 +33,7 @@ float g_animDarkBtn = 0, g_animLightBtn = 0, g_animPath = 0, g_animPathReset = 0
 float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0, g_animCemuExperimental = 0;
 float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0;
 float g_animMagneYDeadzone = 0;
+float g_animMagneSens = 0;
 float g_animDrop[5] = {0, 0, 0, 0, 0};
 
 bool g_trackingMouse = false;
@@ -288,6 +290,14 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         }
     }
     if (!g_collapsedSet) {
+        Rect hBoxM = ui.rMagneSens;
+        hBoxM.Y += 15;
+        hBoxM.Height = 24;
+        if (hBoxM.Contains(x, y)) {
+            g_dragSlider = 3;
+            SetCapture(hWnd);
+            return 0;
+        }
         Rect hBoxD = ui.rMagneYDeadzone;
         hBoxD.Y += 15;
         hBoxD.Height = 24;
@@ -422,11 +432,16 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         checkHov(g_hoverSensV, false);
     }
     if (!g_collapsedSet) {
+        Rect hBoxM = ui.rMagneSens;
+        hBoxM.Y += 15;
+        hBoxM.Height = 24;
+        checkHov(g_hoverMagneSens, hBoxM.Contains(x, y));
         Rect hBoxD = ui.rMagneYDeadzone;
         hBoxD.Y += 15;
         hBoxD.Height = 24;
         checkHov(g_hoverMagneYDeadzone, hBoxD.Contains(x, y));
     } else {
+        checkHov(g_hoverMagneSens, false);
         checkHov(g_hoverMagneYDeadzone, false);
     }
     int dropHov = -1;
@@ -451,6 +466,9 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         } else if (g_dragSlider == 2) {
             float val = 0.0f + pct * (10.0f - 0.0f);
             g_config.magnesis_y_deadzone = val;
+        } else if (g_dragSlider == 3) {
+            float val = SENS_MIN + pct * (SENS_MAX - SENS_MIN);
+            g_config.magnesis_sensitivity = val;
         }
         SaveConfig();
         WriteConfigToSharedMemory();
@@ -477,6 +495,8 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             tip = L"Used to control Magnesis properly.";
         else if (ui.rMagneSpeedMode.Contains(x, y))
             tip = L"Click to cycle: Vanilla -> Extended -> Unlimited";
+        else if (ui.rMagneSens.Contains(x, y))
+            tip = L"Adjust sensitivity multiplier for Magnesis movement (0.1 to 10.0)";
         else if (ui.rMagneYDeadzone.Contains(x, y))
             tip = L"Adjust vertical deadzone for Magnesis (0 to 10 pixels)";
         if (tip) ShowTooltip(hWnd, tip, x, y);
@@ -516,7 +536,7 @@ LRESULT HandleMouseLeave(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     g_hoverDarkBtn = g_hoverLightBtn = false;
     g_hoverPath = g_hoverPathReset = false;
     g_hoverScrollHelper = g_hoverOrbitCam = g_hoverIndepSens = g_hoverCemuExperimental = false;
-    g_hoverSensH = g_hoverSensV = g_hoverMagneYDeadzone = g_hoverClearLog = false;
+    g_hoverSensH = g_hoverSensV = g_hoverMagneSens = g_hoverMagneYDeadzone = g_hoverClearLog = false;
     g_hoverDrop = g_hoverDropMenuRow = -1;
     if (g_tooltipActive) ShowTooltip(hWnd, nullptr, 0, 0);
     InvalidateRect(hWnd, nullptr, FALSE);

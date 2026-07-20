@@ -13,6 +13,7 @@ extern bool g_downPath;
 extern bool g_hoverScrollHelper, g_hoverOrbitCam, g_hoverIndepSens, g_hoverCemuExperimental;
 extern bool g_hoverSensH, g_hoverSensV;
 extern bool g_hoverMagneYDeadzone;
+extern bool g_hoverMagneSens;
 extern bool g_hoverClearLog;
 extern Rect g_clearLogRect;
 
@@ -23,6 +24,7 @@ extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
 extern float g_animSensH, g_animSensV, g_animClearLog;
 extern float g_animMagneYDeadzone;
+extern float g_animMagneSens;
 extern float g_animDrop[5];
 
 extern bool g_trackingMouse;

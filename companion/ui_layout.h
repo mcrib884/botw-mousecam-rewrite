@@ -28,6 +28,7 @@ struct UIRects {
     Rect rSensV;
     Rect rMagneSpeedMode;
     Rect rMagneYDeadzone;
+    Rect rMagneSens;
 
     Rect rDrops[5];
     Rect rDropMenu;

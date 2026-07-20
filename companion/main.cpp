@@ -99,6 +99,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_animSensH += (g_hoverSensH ? 0.05f : -0.05f);
         g_animSensV += (g_hoverSensV ? 0.05f : -0.05f);
         g_animMagneYDeadzone += (g_hoverMagneYDeadzone ? 0.05f : -0.05f);
+        g_animMagneSens += (g_hoverMagneSens ? 0.05f : -0.05f);
         g_animClearLog += (g_hoverClearLog ? 0.05f : -0.05f);
         for (int i = 0; i < 5; ++i) g_animDrop[i] += (g_hoverDrop == i ? 0.05f : -0.05f);
 
@@ -107,7 +108,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         clampF(g_animDarkBtn); clampF(g_animLightBtn);
         clampF(g_animPath); clampF(g_animPathReset);
         clampF(g_animScrollHelper); clampF(g_animOrbitCam);
-        clampF(g_animIndepSens); clampF(g_animCemuExperimental); clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneYDeadzone); clampF(g_animClearLog);
+        clampF(g_animIndepSens); clampF(g_animCemuExperimental); clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneYDeadzone); clampF(g_animMagneSens); clampF(g_animClearLog);
         for (int i = 0; i < 5; ++i) clampF(g_animDrop[i]);
 
         float targetTheme = g_config.use_light_theme ? 0.0f : 1.0f;
@@ -145,7 +146,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                        (g_animOrbitCam > 0 && g_animOrbitCam < 1) || (g_animIndepSens > 0 && g_animIndepSens < 1) ||
                        (g_animCemuExperimental > 0 && g_animCemuExperimental < 1) ||
                        (g_animSensH > 0 && g_animSensH < 1) || (g_animSensV > 0 && g_animSensV < 1) ||
-                       (g_animMagneYDeadzone > 0 && g_animMagneYDeadzone < 1) || (g_animClearLog > 0 && g_animClearLog < 1);
+                       (g_animMagneYDeadzone > 0 && g_animMagneYDeadzone < 1) ||
+                       (g_animMagneSens > 0 && g_animMagneSens < 1) || (g_animClearLog > 0 && g_animClearLog < 1);
         for (int i = 0; i < 5; ++i) if (g_animDrop[i] > 0 && g_animDrop[i] < 1) hasAnim = true;
         if (changed || g_dragSlider != -1 || !g_targetInjected || hasAnim) {
             InvalidateRect(hWnd, nullptr, FALSE);

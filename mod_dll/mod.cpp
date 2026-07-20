@@ -2136,7 +2136,8 @@ namespace Mod {
                             magne_initialized = true;
                         }
 
-                        float d_theta = dx * sens_x * 5.0f;
+                        float magne_sens = g_pSharedMemory ? g_pSharedMemory->m_cfgMagneSens : 1.0f;
+                        float d_theta = dx * sens_x * magne_sens * 5.0f;
                         
                         // Apply vertical deadzone to dy
                         float deadzone = g_pSharedMemory ? g_pSharedMemory->m_cfgMagneYDeadzone : 1.5f;
@@ -2146,7 +2147,7 @@ namespace Mod {
                         } else {
                             raw_dy = (raw_dy > 0.0f) ? (raw_dy - deadzone) : (raw_dy + deadzone);
                         }
-                        float dy_world = -raw_dy * sens_y * 42.5f;
+                        float dy_world = -raw_dy * sens_y * magne_sens * 42.5f;
 
                         // Apply magnesis speed limits based on configuration
                         uint8_t speedMode = g_pSharedMemory ? g_pSharedMemory->m_cfgMagnesisSpeedMode : 2;

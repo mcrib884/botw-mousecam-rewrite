@@ -20,6 +20,7 @@ struct AppConfig {
     bool cemu_experimental = false;
     int  magnesis_speed_mode = 0; // 0=Vanilla, 1=Extended, 2=Unlimited
     float magnesis_y_deadzone = 1.5f; // Vertical deadzone in raw pixels
+    float magnesis_sensitivity = 1.0f; // Magnesis sensitivity multiplier
 };
 
 extern AppConfig g_config;

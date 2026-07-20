@@ -69,7 +69,7 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     r.rTelePanel = Rect(pad, curY, panelW, teleH);
     curY += teleH + spacing;
 
-    int setH = g_collapsedSet ? 30 : (indepSens ? 235 : 205);
+    int setH = g_collapsedSet ? 30 : (indepSens ? 265 : 235);
     r.rSetPanel = Rect(pad, curY, panelW, setH);
     if (g_collapsedSet) {
         r.rScrollHelper = Rect(0, 0, 0, 0);
@@ -79,6 +79,7 @@ void CalculateUIRects(UIRects& r, int w, int h) {
         r.rSensV = Rect(0, 0, 0, 0);
         r.rMagneSpeedMode = Rect(0, 0, 0, 0);
         r.rMagneYDeadzone = Rect(0, 0, 0, 0);
+        r.rMagneSens = Rect(0, 0, 0, 0);
     } else {
         r.rScrollHelper = Rect(pad + 10, curY + 35, (std::min)(250, panelW - 20), 20);
         r.rOrbitCam = Rect(pad + 10, curY + 60, (std::min)(175, panelW - 20), 20);
@@ -88,9 +89,11 @@ void CalculateUIRects(UIRects& r, int w, int h) {
             r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
         else
             r.rSensV = Rect(0, 0, 0, 0);
-        int deadzoneY = indepSens ? curY + 175 : curY + 145;
+        int magneSensY = indepSens ? curY + 175 : curY + 145;
+        r.rMagneSens = Rect(pad + 10, magneSensY, panelW - 40, 24);
+        int deadzoneY = indepSens ? curY + 205 : curY + 175;
         r.rMagneYDeadzone = Rect(pad + 10, deadzoneY, panelW - 40, 24);
-        int magneSpeedY = indepSens ? curY + 205 : curY + 175;
+        int magneSpeedY = indepSens ? curY + 235 : curY + 205;
         r.rMagneSpeedMode = Rect(pad + 10, magneSpeedY, (std::min)(290, panelW - 20), 20);
     }
     curY += setH + spacing;

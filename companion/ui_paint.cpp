@@ -16,7 +16,7 @@ using namespace Gdiplus;
 extern float g_animInject, g_animReinject, g_animReset;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
-extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneYDeadzone;
+extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneYDeadzone, g_animMagneSens;
 extern float g_animDrop[5];
 extern bool g_downInject, g_downReinject, g_downReset, g_downPath;
 
@@ -220,6 +220,8 @@ void PaintWindow(HWND hWnd) {
         DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
         if (g_config.use_independent_sens)
             DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Sensitivity (V)", ff);
+
+        DrawSlider(g, ui.rMagneSens.X, ui.rMagneSens.Y, ui.rMagneSens.Width, g_config.magnesis_sensitivity, SENS_MIN, SENS_MAX, g_animMagneSens, L"Magnesis Sensitivity", ff);
 
         DrawSlider(g, ui.rMagneYDeadzone.X, ui.rMagneYDeadzone.Y, ui.rMagneYDeadzone.Width, g_config.magnesis_y_deadzone, 0.0f, 10.0f, g_animMagneYDeadzone, L"Magnesis V Deadzone", ff);
 

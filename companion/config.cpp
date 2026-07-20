@@ -88,7 +88,8 @@ void SaveConfig() {
     f << "  \"use_light_theme\": " << (g_config.use_light_theme ? "true" : "false") << ",\n";
     f << "  \"cemu_experimental\": " << (g_config.cemu_experimental ? "true" : "false") << ",\n";
     f << "  \"magnesis_speed_mode\": " << g_config.magnesis_speed_mode << ",\n";
-    f << "  \"magnesis_y_deadzone\": " << g_config.magnesis_y_deadzone << "\n";
+    f << "  \"magnesis_y_deadzone\": " << g_config.magnesis_y_deadzone << ",\n";
+    f << "  \"magnesis_sensitivity\": " << g_config.magnesis_sensitivity << "\n";
     f << "}\n";
     f.close();
 }
@@ -217,6 +218,9 @@ void LoadConfig() {
     g_config.magnesis_y_deadzone = (float)extract_json_double("magnesis_y_deadzone", 1.5);
     if (g_config.magnesis_y_deadzone < 0.0f) g_config.magnesis_y_deadzone = 0.0f;
     if (g_config.magnesis_y_deadzone > 10.0f) g_config.magnesis_y_deadzone = 10.0f;
+    g_config.magnesis_sensitivity = (float)extract_json_double("magnesis_sensitivity", 1.0);
+    if (g_config.magnesis_sensitivity < 0.1f) g_config.magnesis_sensitivity = 0.1f;
+    if (g_config.magnesis_sensitivity > 10.0f) g_config.magnesis_sensitivity = 10.0f;
     if (!g_config.theme_initialized) {
         g_config.use_light_theme = IsWindowsLightTheme();
         g_config.theme_initialized = true;
