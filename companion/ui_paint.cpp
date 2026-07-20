@@ -2,6 +2,7 @@
 #include <gdiplus.h>
 using namespace Gdiplus;
 #include <string>
+#include <cmath>
 #include "theme.h"
 #include "ui_layout.h"
 #include "ui_draw.h"
@@ -172,12 +173,40 @@ void PaintWindow(HWND hWnd) {
                     g_pSharedMemory ? g_pSharedMemory->m_telePivotY : 0,
                     g_pSharedMemory ? g_pSharedMemory->m_telePivotZ : 0, 80);
         float mX = 0, mY = 0, mZ = 0;
-        if (g_magneDetourActive && g_pSharedMemory) {
-            mX = g_pSharedMemory->m_teleMagneTargetX;
-            mY = g_pSharedMemory->m_teleMagneTargetY;
-            mZ = g_pSharedMemory->m_teleMagneTargetZ;
+        if (g_magneDetourActive) {
+            mX = g_liveMagneTargetX;
+            mY = g_liveMagneTargetY;
+            mZ = g_liveMagneTargetZ;
         }
         drawVecLine(L"MTarget:", mX, mY, mZ, 95);
+
+        // Magnesis object speedometers (horizontal / vertical)
+        auto drawSpeedLine = [&](const wchar_t* label, float speed, float maxSpeed, int yOffset) {
+            g.DrawString(label, -1, &fontBody, PointF((REAL)(pad + 10), (REAL)(ui.rTelePanel.Y + yOffset)), &textBrush);
+            wchar_t buf[32];
+            swprintf_s(buf, L"%.1f", speed);
+            g.DrawString(buf, -1, &fontBody, PointF((REAL)(pad + 100), (REAL)(ui.rTelePanel.Y + yOffset)), &textBrush);
+
+            int barX = pad + 160;
+            int barY = ui.rTelePanel.Y + yOffset + 5;
+            int barW = ui.rTelePanel.Width - barX - pad - 5;
+            int barH = 8;
+            float t = 0.0f;
+            if (maxSpeed > 0.0f) {
+                t = std::fabs(speed) / maxSpeed;
+                if (t > 1.0f) t = 1.0f;
+            }
+            int fillW = static_cast<int>(barW * t);
+            SolidBrush barBg(g_theme.border);
+            g.FillRectangle(&barBg, barX, barY, barW, barH);
+            SolidBrush barFill(g_theme.accent);
+            g.FillRectangle(&barFill, barX, barY, fillW, barH);
+        };
+        float hMax = 500.0f, vMax = 200.0f;
+        if (g_config.magnesis_speed_mode == 0) { hMax = 50.0f; vMax = 30.0f; }
+        else if (g_config.magnesis_speed_mode == 1) { hMax = 150.0f; vMax = 90.0f; }
+        drawSpeedLine(L"MSpd H:", g_magneSpeedH, hMax, 110);
+        drawSpeedLine(L"MSpd V:", g_magneSpeedV, vMax, 125);
     }
 
     // CAMERA SETTINGS
@@ -191,6 +220,25 @@ void PaintWindow(HWND hWnd) {
         DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
         if (g_config.use_independent_sens)
             DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Sensitivity (V)", ff);
+
+        // Magnesis speed mode cycle button
+        {
+            const wchar_t* modeLabels[] = { L"Vanilla (25/15)", L"Extended (75/45)", L"Unlimited" };
+            int mode = g_config.magnesis_speed_mode;
+            if (mode < 0 || mode > 2) mode = 0;
+
+            // Draw a small colored pill indicator
+            Color pillColors[] = { Color(255, 80, 180, 80), Color(255, 220, 160, 40), Color(255, 200, 60, 60) };
+            SolidBrush pillBrush(pillColors[mode]);
+            g.FillEllipse(&pillBrush, ui.rMagneSpeedMode.X, ui.rMagneSpeedMode.Y + 3, 14, 14);
+
+            // Draw label
+            wchar_t buf[64];
+            swprintf_s(buf, L"  Magnesis Speed: %s", modeLabels[mode]);
+            Font font(&ff, 12, FontStyleRegular, UnitPixel);
+            SolidBrush textBrush(g_theme.text);
+            g.DrawString(buf, -1, &font, PointF((REAL)(ui.rMagneSpeedMode.X + 14), (REAL)(ui.rMagneSpeedMode.Y + 2)), &textBrush);
+        }
     }
 
     // MOUSE BINDINGS

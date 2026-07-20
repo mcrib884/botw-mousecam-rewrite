@@ -5,7 +5,7 @@
 extern int g_openDropdown;
 
 const int WND_W = 580;
-const int WND_H = 880;
+const int WND_H = 910;
 const float SENS_MIN = 0.1f;
 const float SENS_MAX = 10.0f;
 
@@ -65,11 +65,11 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     r.rMemPanel = Rect(pad, curY, panelW, memH);
     curY += memH + spacing;
 
-    int teleH = g_collapsedTele ? 30 : 115;
+    int teleH = g_collapsedTele ? 30 : 145;
     r.rTelePanel = Rect(pad, curY, panelW, teleH);
     curY += teleH + spacing;
 
-    int setH = g_collapsedSet ? 30 : (indepSens ? 180 : 150);
+    int setH = g_collapsedSet ? 30 : (indepSens ? 205 : 175);
     r.rSetPanel = Rect(pad, curY, panelW, setH);
     if (g_collapsedSet) {
         r.rScrollHelper = Rect(0, 0, 0, 0);
@@ -77,6 +77,7 @@ void CalculateUIRects(UIRects& r, int w, int h) {
         r.rIndepSens = Rect(0, 0, 0, 0);
         r.rSensH = Rect(0, 0, 0, 0);
         r.rSensV = Rect(0, 0, 0, 0);
+        r.rMagneSpeedMode = Rect(0, 0, 0, 0);
     } else {
         r.rScrollHelper = Rect(pad + 10, curY + 35, (std::min)(250, panelW - 20), 20);
         r.rOrbitCam = Rect(pad + 10, curY + 60, (std::min)(175, panelW - 20), 20);
@@ -86,6 +87,8 @@ void CalculateUIRects(UIRects& r, int w, int h) {
             r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
         else
             r.rSensV = Rect(0, 0, 0, 0);
+        int magneSpeedY = indepSens ? curY + 175 : curY + 145;
+        r.rMagneSpeedMode = Rect(pad + 10, magneSpeedY, (std::min)(290, panelW - 20), 20);
     }
     curY += setH + spacing;
 

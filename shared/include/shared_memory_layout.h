@@ -35,6 +35,8 @@ struct SharedMemoryLayout {
     uint64_t m_cfgHCemuWnd;
     uint8_t  m_cfgFullOrbitCamera;
     bool     m_cfgCemuExperimental;
+    uint8_t  m_cfgMagnesisSpeedMode; // 0=Vanilla, 1=Extended, 2=Unlimited
+
 
     // --- Status / scan results (written by DLL, read by companion) ---
     uint64_t m_statusAddrGameRomCamera;

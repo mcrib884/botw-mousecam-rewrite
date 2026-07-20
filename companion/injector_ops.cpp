@@ -6,6 +6,8 @@
 #include <string>
 #include <cstdint>
 #include <cstring>
+#include <chrono>
+#include <cmath>
 
 #include "injector_ops.h"
 #include "injector.h"
@@ -41,6 +43,12 @@ uint8_t g_liveMenuState = 1;
 bool g_mousecamActive = false;
 uint32_t g_writersFound = 0;
 bool g_magneDetourActive = false;
+
+float g_liveMagneTargetX = 0.0f;
+float g_liveMagneTargetY = 0.0f;
+float g_liveMagneTargetZ = 0.0f;
+float g_magneSpeedH = 0.0f;
+float g_magneSpeedV = 0.0f;
 
 std::wstring GetCompanionDllPath() {
     wchar_t path[MAX_PATH] = {};
@@ -115,6 +123,7 @@ void WriteConfigToSharedMemory() {
         g_pSharedMemory->m_cfgScrollHelper = g_config.scroll_helper ? 1 : 0;
         g_pSharedMemory->m_cfgFullOrbitCamera = g_config.full_orbit_camera ? 1 : 0;
         g_pSharedMemory->m_cfgCemuExperimental = g_config.cemu_experimental;
+        g_pSharedMemory->m_cfgMagnesisSpeedMode = static_cast<uint8_t>(g_config.magnesis_speed_mode);
         g_pSharedMemory->m_cfgSensitivityX = g_config.sensitivity_x;
         g_pSharedMemory->m_cfgSensitivityY = g_config.sensitivity_y;
         g_pSharedMemory->m_cfgUseIndependentSens = g_config.use_independent_sens ? 1 : 0;
@@ -248,6 +257,8 @@ void UpdateTelemetryGui() {
         g_addrGameRomCamera = 0; g_addrMagneTarget = 0; g_addrShortcutMenu = 0; g_addrMenuState = 0; g_writersFound = 0;
         g_liveCamPosX = 0; g_liveCamPosY = 0; g_liveCamPosZ = 0; g_liveCamFocX = 0; g_liveCamFocY = 0; g_liveCamFocZ = 0; g_liveCamFOV = 0;
         g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
+        g_liveMagneTargetX = 0.0f; g_liveMagneTargetY = 0.0f; g_liveMagneTargetZ = 0.0f;
+        g_magneSpeedH = 0.0f; g_magneSpeedV = 0.0f;
         g_logReadIdx = 0;
     } else {
         if (g_pSharedMemory->m_statusAddrGameRomCamera != 0 && g_addrGameRomCamera == 0) {
@@ -270,6 +281,33 @@ void UpdateTelemetryGui() {
         g_liveCamFocX = g_pSharedMemory->m_teleLiveCamFocX; g_liveCamFocY = g_pSharedMemory->m_teleLiveCamFocY; g_liveCamFocZ = g_pSharedMemory->m_teleLiveCamFocZ;
         g_liveCamFOV = g_pSharedMemory->m_teleLiveCamFOV; g_liveShortcutMenu = g_pSharedMemory->m_teleLiveShortcutMenu; g_liveMenuState = g_pSharedMemory->m_teleLiveMenuState;
         g_magneDetourActive = g_pSharedMemory->m_patchMagneDetourActive;
+
+        g_liveMagneTargetX = g_pSharedMemory->m_teleMagneTargetX;
+        g_liveMagneTargetY = g_pSharedMemory->m_teleMagneTargetY;
+        g_liveMagneTargetZ = g_pSharedMemory->m_teleMagneTargetZ;
+
+        // Compute magnesis object horizontal/vertical speed from per-frame position deltas.
+        static float s_prevMagneX = 0.0f, s_prevMagneY = 0.0f, s_prevMagneZ = 0.0f;
+        static bool s_prevMagneValid = false;
+        static std::chrono::steady_clock::time_point s_prevMagneTime = std::chrono::steady_clock::now();
+
+        auto now = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration<float>(now - s_prevMagneTime).count();
+        if (g_magneDetourActive && s_prevMagneValid && dt > 0.0f && dt < 1.0f) {
+            float dx = g_liveMagneTargetX - s_prevMagneX;
+            float dy = g_liveMagneTargetY - s_prevMagneY;
+            float dz = g_liveMagneTargetZ - s_prevMagneZ;
+            g_magneSpeedH = std::sqrt(dx * dx + dz * dz) / dt;
+            g_magneSpeedV = dy / dt;
+        } else {
+            g_magneSpeedH = 0.0f;
+            g_magneSpeedV = 0.0f;
+        }
+        s_prevMagneX = g_liveMagneTargetX;
+        s_prevMagneY = g_liveMagneTargetY;
+        s_prevMagneZ = g_liveMagneTargetZ;
+        s_prevMagneValid = g_magneDetourActive && (g_liveMagneTargetX != 0.0f || g_liveMagneTargetY != 0.0f || g_liveMagneTargetZ != 0.0f);
+        s_prevMagneTime = now;
 
         // Read new logs from shared memory
         uint32_t writeIdx = g_pSharedMemory->m_logWriteIdx;

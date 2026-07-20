@@ -2134,6 +2134,10 @@ namespace Mod {
                             magne_initialized = true;
                         }
 
+                        float prev_magne_off_x = magne_off_x;
+                        float prev_magne_off_y = magne_off_y;
+                        float prev_magne_off_z = magne_off_z;
+
                         float d_theta = dx * sens_x * 5.0f;
                         float dy_world = -dy * sens_y * 42.5f;
 
@@ -2167,6 +2171,33 @@ namespace Mod {
 
                         if (magne_off_y < -v_clamp) magne_off_y = -v_clamp;
                         if (magne_off_y > v_clamp) magne_off_y = v_clamp;
+
+                        // Apply magnesis speed limits based on configuration
+                        uint8_t speedMode = g_pSharedMemory ? g_pSharedMemory->m_cfgMagnesisSpeedMode : 2;
+                        float maxSpeedH = 0.0f;
+                        float maxSpeedV = 0.0f;
+                        if (speedMode == 0) { maxSpeedH = 25.0f; maxSpeedV = 15.0f; }
+                        else if (speedMode == 1) { maxSpeedH = 75.0f; maxSpeedV = 45.0f; }
+
+                        if (maxSpeedH > 0.0f && dt > 0.0f) {
+                            float delta_x = magne_off_x - prev_magne_off_x;
+                            float delta_z = magne_off_z - prev_magne_off_z;
+                            float h_disp = sqrt(delta_x * delta_x + delta_z * delta_z);
+                            float max_h_disp = maxSpeedH * dt;
+                            if (h_disp > max_h_disp) {
+                                float scale = max_h_disp / h_disp;
+                                magne_off_x = prev_magne_off_x + delta_x * scale;
+                                magne_off_z = prev_magne_off_z + delta_z * scale;
+                            }
+                        }
+
+                        if (maxSpeedV > 0.0f && dt > 0.0f) {
+                            float delta_y = magne_off_y - prev_magne_off_y;
+                            float max_v_disp = maxSpeedV * dt;
+                            if (fabs(delta_y) > max_v_disp) {
+                                magne_off_y = prev_magne_off_y + (delta_y > 0.0f ? max_v_disp : -max_v_disp);
+                            }
+                        }
 
                         float magne_pos_x = link_x + magne_off_x;
                         float magne_pos_y = link_y + magne_off_y;
@@ -2419,7 +2450,7 @@ namespace Mod {
                         g_pSharedMemory->m_telePivotY = pivot_y;
                         g_pSharedMemory->m_telePivotZ = pivot_z;
                         
-                        if (magnesis_mode && magne_ideal_base != 0) {
+                        if (magnesis_auto_active && magne_ideal_base != 0) {
                             g_pSharedMemory->m_teleMagneTargetX = ReadFloatBE(magne_ideal_base);
                             g_pSharedMemory->m_teleMagneTargetY = ReadFloatBE(magne_ideal_base + 4);
                             g_pSharedMemory->m_teleMagneTargetZ = ReadFloatBE(magne_ideal_base + 8);

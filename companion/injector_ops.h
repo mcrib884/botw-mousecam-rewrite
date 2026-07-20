@@ -41,6 +41,12 @@ extern float g_liveCamFOV;
 extern int32_t g_liveShortcutMenu;
 extern uint8_t g_liveMenuState;
 
+extern float g_liveMagneTargetX;
+extern float g_liveMagneTargetY;
+extern float g_liveMagneTargetZ;
+extern float g_magneSpeedH;
+extern float g_magneSpeedV;
+
 extern bool g_mousecamActive;
 extern uint32_t g_writersFound;
 extern bool g_magneDetourActive;

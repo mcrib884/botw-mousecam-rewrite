@@ -261,6 +261,12 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         UpdateConsoleEditPosition(hWnd);
         InvalidateRect(hWnd, nullptr, FALSE);
     }
+    if (ui.rMagneSpeedMode.Contains(x, y)) {
+        g_config.magnesis_speed_mode = (g_config.magnesis_speed_mode + 1) % 3;
+        SaveConfig();
+        WriteConfigToSharedMemory();
+        InvalidateRect(hWnd, nullptr, FALSE);
+    }
     Rect hBoxH = ui.rSensH;
     hBoxH.Y += 15;
     hBoxH.Height = 24;
@@ -442,6 +448,8 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             tip = L"Address in memory storing Camera XYZ.";
         else if (x > ui.rMemPanel.X + 10 && x < ui.rMemPanel.X + 250 && y > ui.rMemPanel.Y + 45 && y < ui.rMemPanel.Y + 60)
             tip = L"Used to control Magnesis properly.";
+        else if (ui.rMagneSpeedMode.Contains(x, y))
+            tip = L"Click to cycle: Vanilla (25/15) -> Extended (75/45) -> Unlimited";
         if (tip) ShowTooltip(hWnd, tip, x, y);
         else if (g_tooltipActive) ShowTooltip(hWnd, nullptr, 0, 0);
     }

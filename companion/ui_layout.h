@@ -26,6 +26,7 @@ struct UIRects {
     Rect rCemuExperimental;
     Rect rSensH;
     Rect rSensV;
+    Rect rMagneSpeedMode;
 
     Rect rDrops[5];
     Rect rDropMenu;

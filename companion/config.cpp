@@ -86,7 +86,8 @@ void SaveConfig() {
     f << "  \"use_independent_sens\": " << (g_config.use_independent_sens ? "true" : "false") << ",\n";
     f << "  \"theme_initialized\": " << (g_config.theme_initialized ? "true" : "false") << ",\n";
     f << "  \"use_light_theme\": " << (g_config.use_light_theme ? "true" : "false") << ",\n";
-    f << "  \"cemu_experimental\": " << (g_config.cemu_experimental ? "true" : "false") << "\n";
+    f << "  \"cemu_experimental\": " << (g_config.cemu_experimental ? "true" : "false") << ",\n";
+    f << "  \"magnesis_speed_mode\": " << g_config.magnesis_speed_mode << "\n";
     f << "}\n";
     f.close();
 }
@@ -210,6 +211,8 @@ void LoadConfig() {
     g_config.theme_initialized = extract_json_bool("theme_initialized", false);
     g_config.use_light_theme = extract_json_bool("use_light_theme", false);
     g_config.cemu_experimental = extract_json_bool("cemu_experimental", false);
+    g_config.magnesis_speed_mode = (int)extract_json_double("magnesis_speed_mode", 0.0);
+    if (g_config.magnesis_speed_mode < 0 || g_config.magnesis_speed_mode > 2) g_config.magnesis_speed_mode = 0;
     if (!g_config.theme_initialized) {
         g_config.use_light_theme = IsWindowsLightTheme();
         g_config.theme_initialized = true;

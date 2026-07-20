@@ -18,6 +18,7 @@ struct AppConfig {
     bool theme_initialized = false;
     bool use_light_theme = false;
     bool cemu_experimental = false;
+    int  magnesis_speed_mode = 0; // 0=Vanilla, 1=Extended, 2=Unlimited
 };
 
 extern AppConfig g_config;
