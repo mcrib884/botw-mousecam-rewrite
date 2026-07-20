@@ -2137,7 +2137,16 @@ namespace Mod {
                         }
 
                         float d_theta = dx * sens_x * 5.0f;
-                        float dy_world = -dy * sens_y * 42.5f;
+                        
+                        // Apply vertical deadzone to dy
+                        float deadzone = g_pSharedMemory ? g_pSharedMemory->m_cfgMagneYDeadzone : 1.5f;
+                        float raw_dy = dy;
+                        if (fabs(raw_dy) <= deadzone) {
+                            raw_dy = 0.0f;
+                        } else {
+                            raw_dy = (raw_dy > 0.0f) ? (raw_dy - deadzone) : (raw_dy + deadzone);
+                        }
+                        float dy_world = -raw_dy * sens_y * 42.5f;
 
                         // Apply magnesis speed limits based on configuration
                         uint8_t speedMode = g_pSharedMemory ? g_pSharedMemory->m_cfgMagnesisSpeedMode : 2;
@@ -2146,11 +2155,11 @@ namespace Mod {
                         const float PI = 3.14159265f;
 
                         if (speedMode == 0) {
-                            maxAngularSpeedH = (2.0f * PI) / 7.0f; // 1 turn in 7 seconds
-                            maxSpeedV = 15.0f;
+                            maxAngularSpeedH = (2.5f * PI) / 7.0f; // 1.25x Vanilla
+                            maxSpeedV = 18.75f;
                         } else if (speedMode == 1) {
-                            maxAngularSpeedH = (6.0f * PI) / 7.0f; // 3 times Vanilla
-                            maxSpeedV = 45.0f;
+                            maxAngularSpeedH = (6.25f * PI) / 7.0f; // 2.5x Vanilla
+                            maxSpeedV = 46.875f;
                         }
 
                         // Accumulate dt for speed clamping to match input frequency

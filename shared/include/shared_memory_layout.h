@@ -36,6 +36,7 @@ struct SharedMemoryLayout {
     uint8_t  m_cfgFullOrbitCamera;
     bool     m_cfgCemuExperimental;
     uint8_t  m_cfgMagnesisSpeedMode; // 0=Vanilla, 1=Extended, 2=Unlimited
+    float    m_cfgMagneYDeadzone;    // Vertical deadzone in raw pixels
 
 
     // --- Status / scan results (written by DLL, read by companion) ---

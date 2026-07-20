@@ -124,6 +124,7 @@ void WriteConfigToSharedMemory() {
         g_pSharedMemory->m_cfgFullOrbitCamera = g_config.full_orbit_camera ? 1 : 0;
         g_pSharedMemory->m_cfgCemuExperimental = g_config.cemu_experimental;
         g_pSharedMemory->m_cfgMagnesisSpeedMode = static_cast<uint8_t>(g_config.magnesis_speed_mode);
+        g_pSharedMemory->m_cfgMagneYDeadzone = g_config.magnesis_y_deadzone;
         g_pSharedMemory->m_cfgSensitivityX = g_config.sensitivity_x;
         g_pSharedMemory->m_cfgSensitivityY = g_config.sensitivity_y;
         g_pSharedMemory->m_cfgUseIndependentSens = g_config.use_independent_sens ? 1 : 0;
