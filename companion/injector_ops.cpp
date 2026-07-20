@@ -1,0 +1,293 @@
+// injector_ops.cpp — Target discovery, inject/eject orchestration, telemetry mirrors.
+// Extracted verbatim from companion/main.cpp lines 150-206, 207-222, 998-1205.
+
+#define NOMINMAX
+#include <Windows.h>
+#include <string>
+#include <cstdint>
+#include <cstring>
+
+#include "injector_ops.h"
+#include "injector.h"
+#include "shared_memory_manager.h" // g_pSharedMemory, MapSharedMemory, UnmapSharedMemory
+#include "shared_memory_layout.h"
+#include "config.h"        // g_config
+#include "cemu_key_injector.h" // g_ki
+#include "console.h"      // LogToConsole, SetStatus
+#include "string_utils.h" // Utf8ToWstr
+#include "theme.h"        // g_hWnd (main window handle for InvalidateRect)
+
+// Process state.
+HANDLE g_hTargetProcess = nullptr;
+DWORD g_targetPid = 0;
+bool g_targetInjected = false;
+
+// Telemetry mirrors.
+uintptr_t g_addrGameRomCamera = 0;
+uintptr_t g_addrMagneTarget = 0;
+uintptr_t g_addrShortcutMenu = 0;
+uintptr_t g_addrMenuState = 0;
+
+float g_liveCamPosX = 0.0f;
+float g_liveCamPosY = 0.0f;
+float g_liveCamPosZ = 0.0f;
+float g_liveCamFocX = 0.0f;
+float g_liveCamFocY = 0.0f;
+float g_liveCamFocZ = 0.0f;
+float g_liveCamFOV = 0.0f;
+int32_t g_liveShortcutMenu = -1;
+uint8_t g_liveMenuState = 1;
+
+bool g_mousecamActive = false;
+uint32_t g_writersFound = 0;
+bool g_magneDetourActive = false;
+
+std::wstring GetCompanionDllPath() {
+    wchar_t path[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring exePath(path);
+    size_t pos = exePath.find_last_of(L"\\/");
+    if (pos == std::wstring::npos) {
+        return L"botw-mousecam-rewrite.dll";
+    }
+    return exePath.substr(0, pos + 1) + L"botw-mousecam-rewrite.dll";
+}
+
+BOOL CALLBACK FindTargetWindowProc(HWND hWnd, LPARAM lParam) {
+    auto data = reinterpret_cast<TargetWndData*>(lParam);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hWnd, &pid);
+    if (pid == data->pid && IsWindowVisible(hWnd)) {
+        wchar_t className[256] = {};
+        GetClassNameW(hWnd, className, 256);
+        if (wcscmp(className, L"wxWindowNR") == 0 || GetWindow(hWnd, GW_OWNER) == nullptr) {
+            data->hWnd = hWnd;
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+HWND GetTargetWindow(DWORD pid) {
+    TargetWndData data = { pid, nullptr };
+    EnumWindows(FindTargetWindowProc, reinterpret_cast<LPARAM>(&data));
+    return data.hWnd;
+}
+
+POINT GetWindowCenter(HWND hWnd) {
+    RECT rect;
+    GetWindowRect(hWnd, &rect);
+    POINT pt;
+    pt.x = rect.left + (rect.right - rect.left) / 2;
+    pt.y = rect.top + (rect.bottom - rect.top) / 2;
+    return pt;
+}
+
+DWORD FindCemuProcess() {
+    if (!g_config.cemu_path_override.empty()) {
+        std::wstring exeName = Utf8ToWstr(g_config.cemu_path_override);
+        size_t lastSlash = exeName.find_last_of(L"\\/");
+        if (lastSlash != std::wstring::npos) {
+            exeName = exeName.substr(lastSlash + 1);
+        }
+        DWORD pid = Injector::FindProcessByName(exeName);
+        if (pid != 0) return pid;
+    } else {
+        DWORD pid = Injector::FindProcessByName(L"cemu.exe");
+        if (pid != 0) return pid;
+        pid = Injector::FindProcessByName(L"cemu_release.exe");
+        if (pid != 0) return pid;
+        pid = Injector::FindProcessByName(L"Cemu_release.exe");
+        if (pid != 0) return pid;
+    }
+
+    return 0;
+}
+
+DWORD GetSelectedOrTargetPid() {
+    return FindCemuProcess();
+}
+
+void WriteConfigToSharedMemory() {
+    if (g_pSharedMemory) {
+        g_pSharedMemory->m_companionPid = GetCurrentProcessId();
+        g_pSharedMemory->m_cfgMagnesisEnabled = g_config.magnesis_enabled;
+        g_pSharedMemory->m_cfgScrollHelper = g_config.scroll_helper ? 1 : 0;
+        g_pSharedMemory->m_cfgFullOrbitCamera = g_config.full_orbit_camera ? 1 : 0;
+        g_pSharedMemory->m_cfgCemuExperimental = g_config.cemu_experimental;
+        g_pSharedMemory->m_cfgSensitivityX = g_config.sensitivity_x;
+        g_pSharedMemory->m_cfgSensitivityY = g_config.sensitivity_y;
+        g_pSharedMemory->m_cfgUseIndependentSens = g_config.use_independent_sens ? 1 : 0;
+
+        g_pSharedMemory->m_cfgDpadUpKey = g_ki.GetDpadUpKey();
+        g_pSharedMemory->m_cfgDpadDownKey = g_ki.GetDpadDownKey();
+        g_pSharedMemory->m_cfgDpadLeftKey = g_ki.GetDpadLeftKey();
+        g_pSharedMemory->m_cfgDpadRightKey = g_ki.GetDpadRightKey();
+        g_pSharedMemory->m_cfgRstickLeftKey = g_ki.GetRstickLeftKey();
+        g_pSharedMemory->m_cfgRstickRightKey = g_ki.GetRstickRightKey();
+
+        for (int i = 0; i < 5; ++i) {
+            uint32_t gpid = g_config.mouse_bindings[i];
+            g_pSharedMemory->m_cfgMouseBindingKeys[i] = (gpid != 0) ? g_ki.GetKeyForGamepadId(gpid) : 0;
+        }
+        g_pSharedMemory->m_cfgHCemuWnd = reinterpret_cast<uint64_t>(GetTargetWindow(g_targetPid));
+    }
+}
+
+void UpdateUiState() {
+    static int findTicks = 0, refreshTicks = 0;
+
+    if (g_hTargetProcess != nullptr) {
+        DWORD exitCode = 0;
+        if (!GetExitCodeProcess(g_hTargetProcess, &exitCode) || exitCode != STILL_ACTIVE) {
+            CloseHandle(g_hTargetProcess); g_hTargetProcess = nullptr; g_targetPid = 0; g_targetInjected = false;
+            SystemParametersInfoW(SPI_SETCURSORS, 0, nullptr, 0); ClipCursor(nullptr);
+            UnmapSharedMemory();
+            SetStatus(L"Target process exited. Waiting...");
+        } else {
+            g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
+        }
+    }
+
+    if (g_hTargetProcess == nullptr) {
+        findTicks++;
+        if (findTicks >= 10) {
+            findTicks = 0; g_targetPid = GetSelectedOrTargetPid();
+            if (g_targetPid != 0) {
+                g_hTargetProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, g_targetPid);
+                if (g_hTargetProcess) g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
+            }
+        }
+    } else { findTicks = 0; }
+
+    if (g_targetInjected && g_targetPid != 0) MapSharedMemory();
+    else if (!g_targetInjected) UnmapSharedMemory();
+
+#ifdef _DEBUG
+    static bool wasF5Pressed = false;
+    bool isF5Pressed = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+    if (isF5Pressed && !wasF5Pressed) {
+        if (g_pSharedMemory) {
+            g_pSharedMemory->m_reqDumpAob = true;
+            LogToConsole(L"[INFO] Requested AOB dump.");
+        }
+    }
+    wasF5Pressed = isF5Pressed;
+#endif
+
+    if (g_hWnd) InvalidateRect(g_hWnd, nullptr, FALSE);
+}
+
+bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
+    if (g_pSharedMemory) {
+        g_pSharedMemory->m_statusShutdownDone = false;
+        g_pSharedMemory->m_reqShutdown = true;
+        // Wait for DLL threads to exit cleanly (up to 1500 ms)
+        int waitLimit = 150;
+        while (waitLimit-- > 0 && !g_pSharedMemory->m_statusShutdownDone) {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(10);
+        }
+    }
+    return Injector::EjectDLL(pid, dllPath);
+}
+
+void DoInjectOrEject() {
+    DWORD pid = GetSelectedOrTargetPid();
+    if (!pid) { SetStatus(L"Error: cemu.exe not found."); return; }
+    std::wstring dllPath = GetCompanionDllPath();
+    if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
+        SetStatus(L"Ejecting...");
+        if (SafeEjectDLL(pid, dllPath)) { SetStatus(L"Ejection successful!"); UpdateUiState(); }
+        else SetStatus(L"Error: ejection failed.");
+    } else {
+        SetStatus(L"Injecting...");
+        if (MapSharedMemory()) {
+            WriteConfigToSharedMemory();
+        }
+        if (Injector::InjectDLL(pid, dllPath)) { SetStatus(L"Injection successful!"); UpdateUiState(); }
+        else SetStatus(L"Error: injection failed \x2014 try running as Administrator.");
+    }
+}
+
+void DoReinject() {
+    DWORD pid = GetSelectedOrTargetPid();
+    if (!pid) return;
+    std::wstring dllPath = GetCompanionDllPath();
+    if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
+        SetStatus(L"Reloading...");
+        if (!SafeEjectDLL(pid, dllPath)) { SetStatus(L"Error: reload failed."); return; }
+        Sleep(50);
+    }
+    g_ki.ReloadSettings();
+    SetStatus(L"Reloading...");
+    if (MapSharedMemory()) {
+        WriteConfigToSharedMemory();
+    }
+    if (Injector::InjectDLL(pid, dllPath)) SetStatus(L"Reinjected successfully!");
+    else SetStatus(L"Reinject error: injection failed.");
+}
+
+void DoEjectOnClose() {
+    DWORD pid = GetSelectedOrTargetPid();
+    if (pid && Injector::IsModuleLoaded(pid, Injector::GetFileName(GetCompanionDllPath()))) {
+        SetStatus(L"Ejecting DLL on close...");
+        UpdateWindow(g_hWnd); // Force immediate redraw to show status
+        SafeEjectDLL(pid, GetCompanionDllPath());
+    }
+}
+
+static uint32_t g_logReadIdx = 0;
+
+void UpdateTelemetryGui() {
+    if (!g_pSharedMemory) {
+        g_addrGameRomCamera = 0; g_addrMagneTarget = 0; g_addrShortcutMenu = 0; g_addrMenuState = 0; g_writersFound = 0;
+        g_liveCamPosX = 0; g_liveCamPosY = 0; g_liveCamPosZ = 0; g_liveCamFocX = 0; g_liveCamFocY = 0; g_liveCamFocZ = 0; g_liveCamFOV = 0;
+        g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
+        g_logReadIdx = 0;
+    } else {
+        if (g_pSharedMemory->m_statusAddrGameRomCamera != 0 && g_addrGameRomCamera == 0) {
+            LogToConsole(L"[INFO] Found GameRomCamera");
+        } else if (g_pSharedMemory->m_statusAddrGameRomCamera == 0 && g_addrGameRomCamera != 0) {
+            LogToConsole(L"[WARNING] GameRomCamera lost! Re-scanning memory...");
+        }
+        if (g_pSharedMemory->m_statusAddrMagneTarget != 0 && g_addrMagneTarget == 0) LogToConsole(L"[INFO] Found Magne Target Sig");
+        if (g_pSharedMemory->m_statusAddrShortcutMenu != 0 && g_addrShortcutMenu == 0) LogToConsole(L"[INFO] Found ShortcutMenu");
+        if (g_pSharedMemory->m_statusAddrMenuState != 0 && g_addrMenuState == 0) LogToConsole(L"[INFO] Found MenuState");
+        if (g_pSharedMemory->m_statusWritersFound > g_writersFound) LogToConsole(L"[INFO] Dynamic writer discovered");
+
+        g_addrGameRomCamera = g_pSharedMemory->m_statusAddrGameRomCamera;
+        g_addrMagneTarget = g_pSharedMemory->m_statusAddrMagneTarget;
+        g_addrShortcutMenu = g_pSharedMemory->m_statusAddrShortcutMenu;
+        g_addrMenuState = g_pSharedMemory->m_statusAddrMenuState;
+        g_writersFound = g_pSharedMemory->m_statusWritersFound;
+
+        g_liveCamPosX = g_pSharedMemory->m_teleLiveCamPosX; g_liveCamPosY = g_pSharedMemory->m_teleLiveCamPosY; g_liveCamPosZ = g_pSharedMemory->m_teleLiveCamPosZ;
+        g_liveCamFocX = g_pSharedMemory->m_teleLiveCamFocX; g_liveCamFocY = g_pSharedMemory->m_teleLiveCamFocY; g_liveCamFocZ = g_pSharedMemory->m_teleLiveCamFocZ;
+        g_liveCamFOV = g_pSharedMemory->m_teleLiveCamFOV; g_liveShortcutMenu = g_pSharedMemory->m_teleLiveShortcutMenu; g_liveMenuState = g_pSharedMemory->m_teleLiveMenuState;
+        g_magneDetourActive = g_pSharedMemory->m_patchMagneDetourActive;
+
+        // Read new logs from shared memory
+        uint32_t writeIdx = g_pSharedMemory->m_logWriteIdx;
+        if (writeIdx < g_logReadIdx) {
+            g_logReadIdx = writeIdx;
+        }
+        if (writeIdx - g_logReadIdx > 8) {
+            g_logReadIdx = writeIdx - 8;
+        }
+        while (g_logReadIdx < writeIdx) {
+            uint32_t idx = g_logReadIdx % 8;
+            char localLog[129];
+            memcpy(localLog, g_pSharedMemory->m_logQueue[idx], 128);
+            localLog[128] = '\0'; // Guarantee null termination
+            std::string logMsg(localLog);
+            std::wstring wLogMsg = Utf8ToWstr(logMsg);
+            LogToConsole(wLogMsg.c_str());
+            g_logReadIdx++;
+        }
+    }
+}

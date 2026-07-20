@@ -107,10 +107,32 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="injector.cpp" />
+    <ClCompile Include="string_utils.cpp" />
+    <ClCompile Include="shared_memory_manager.cpp" />
+    <ClCompile Include="theme.cpp" />
+    <ClCompile Include="config.cpp" />
+    <ClCompile Include="console.cpp" />
+    <ClCompile Include="cemu_key_injector.cpp" />
+    <ClCompile Include="injector_ops.cpp" />
+    <ClCompile Include="ui_layout.cpp" />
+    <ClCompile Include="ui_draw.cpp" />
+    <ClCompile Include="ui_paint.cpp" />
+    <ClCompile Include="ui_input.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="injector.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="string_utils.h" />
+    <ClInclude Include="shared_memory_manager.h" />
+    <ClInclude Include="theme.h" />
+    <ClInclude Include="config.h" />
+    <ClInclude Include="console.h" />
+    <ClInclude Include="cemu_key_injector.h" />
+    <ClInclude Include="injector_ops.h" />
+    <ClInclude Include="ui_layout.h" />
+    <ClInclude Include="ui_draw.h" />
+    <ClInclude Include="ui_paint.h" />
+    <ClInclude Include="ui_input.h" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="companion.rc" />
