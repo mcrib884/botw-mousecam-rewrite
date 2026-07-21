@@ -723,10 +723,15 @@ namespace Mod {
     static bool g_shortcutHookActive = false;
 
     // --- MenuState hook ---
+    struct MenuStateWrite {
+        uintptr_t address;
+        int32_t value;
+    };
     static CodePatch g_menuStateHookPatch = {};
     static LPVOID g_menuStateTrampoline = nullptr;
-    static std::atomic<uintptr_t> g_tempMenuStateAddress{0};
-    static std::atomic<int32_t> g_tempMenuStateValue{0};
+    static MenuStateWrite g_menuStateQueue[32] = {};
+    static std::atomic<uint32_t> g_menuStateQueueWriteIdx{0};
+    static uint32_t g_menuStateQueueReadIdx{0};
     static bool g_menuStateHookActive = false;
     static std::unordered_set<uintptr_t> g_menuStateCandidates;
     static CRITICAL_SECTION g_menuCandidateCS;
@@ -878,7 +883,7 @@ namespace Mod {
     static bool SetupMenuStateHook(uintptr_t foundAddress) {
         if (g_menuStateHookActive) return true;
 
-        g_menuStateTrampoline = AllocateWithin2GB(foundAddress, 64);
+        g_menuStateTrampoline = AllocateWithin2GB(foundAddress, 128);
         if (!g_menuStateTrampoline) {
             return false;
         }
@@ -891,18 +896,20 @@ namespace Mod {
             return false;
         }
 
-        g_tempMenuStateAddress = 0;
-        g_tempMenuStateValue = 0;
+        memset(g_menuStateQueue, 0, sizeof(g_menuStateQueue));
+        g_menuStateQueueWriteIdx = 0;
+        g_menuStateQueueReadIdx = 0;
 
         uint8_t originalSib = g_menuStateHookPatch.g_originalBytes[5];
 
-        uint8_t code[64] = {};
+        uint8_t code[128] = {};
         size_t idx = 0;
 
         code[idx++] = 0x9C; // pushfq
         code[idx++] = 0x50; // push rax
         code[idx++] = 0x51; // push rcx
         code[idx++] = 0x52; // push rdx
+        code[idx++] = 0x53; // push rbx
 
         // lea rax, [r13 + index + 0x3C]
         code[idx++] = 0x49;
@@ -911,35 +918,69 @@ namespace Mod {
         code[idx++] = originalSib;
         code[idx++] = 0x3C;
 
-        // mov rdx, <address of g_tempMenuStateAddress>
+        // mov rcx, <address of g_menuStateQueueWriteIdx>
         code[idx++] = 0x48;
-        code[idx++] = 0xBA;
-        uintptr_t addrAddress = (uintptr_t)&g_tempMenuStateAddress;
-        memcpy(&code[idx], &addrAddress, 8);
+        code[idx++] = 0xB9;
+        uintptr_t writeIdxAddr = (uintptr_t)&g_menuStateQueueWriteIdx;
+        memcpy(&code[idx], &writeIdxAddr, 8);
         idx += 8;
 
-        // mov [rdx], rax
+        // mov ebx, [rcx]
+        code[idx++] = 0x8B;
+        code[idx++] = 0x19;
+
+        // inc ebx
+        code[idx++] = 0xFF;
+        code[idx++] = 0xC3;
+
+        // mov [rcx], ebx
+        code[idx++] = 0x89;
+        code[idx++] = 0x19;
+
+        // dec ebx
+        code[idx++] = 0xFF;
+        code[idx++] = 0xCB;
+
+        // and ebx, 31
+        code[idx++] = 0x83;
+        code[idx++] = 0xE3;
+        code[idx++] = 0x1F;
+
+        // shl rbx, 4
+        code[idx++] = 0x48;
+        code[idx++] = 0xC1;
+        code[idx++] = 0xE3;
+        code[idx++] = 0x04;
+
+        // mov rcx, <address of g_menuStateQueue>
+        code[idx++] = 0x48;
+        code[idx++] = 0xB9;
+        uintptr_t queueAddr = (uintptr_t)&g_menuStateQueue;
+        memcpy(&code[idx], &queueAddr, 8);
+        idx += 8;
+
+        // add rcx, rbx
+        code[idx++] = 0x48;
+        code[idx++] = 0x03;
+        code[idx++] = 0xCB;
+
+        // mov [rcx], rax
         code[idx++] = 0x48;
         code[idx++] = 0x89;
-        code[idx++] = 0x02;
+        code[idx++] = 0x01;
 
-        // mov eax, [rsp + 0x10]
+        // mov eax, [rsp + 0x18]
         code[idx++] = 0x8B;
         code[idx++] = 0x44;
         code[idx++] = 0x24;
-        code[idx++] = 0x10;
+        code[idx++] = 0x18;
 
-        // mov rdx, <address of g_tempMenuStateValue>
-        code[idx++] = 0x48;
-        code[idx++] = 0xBA;
-        uintptr_t valAddress = (uintptr_t)&g_tempMenuStateValue;
-        memcpy(&code[idx], &valAddress, 8);
-        idx += 8;
-
-        // mov [rdx], eax
+        // mov [rcx + 8], eax
         code[idx++] = 0x89;
-        code[idx++] = 0x02;
+        code[idx++] = 0x41;
+        code[idx++] = 0x08;
 
+        code[idx++] = 0x5B; // pop rbx
         code[idx++] = 0x5A; // pop rdx
         code[idx++] = 0x59; // pop rcx
         code[idx++] = 0x58; // pop rax
@@ -1625,64 +1666,34 @@ namespace Mod {
                     }
                 } else if (targetIdx == 3) {
                     if (g_menuStateHookActive) {
-                        uintptr_t tempAddr = g_tempMenuStateAddress.load();
-                        if (tempAddr != 0) {
-                            int32_t tempVal = g_tempMenuStateValue.load();
-                            // Convert from big-endian (swapped in register eax) to host byte order
-                            int32_t hostVal = (int32_t)_byteswap_ulong((unsigned long)tempVal);
-                            
-                            if (hostVal == 1 || hostVal == 2) {
-                                EnterCriticalSection(&g_menuCandidateCS);
-                                g_menuStateCandidates.insert(tempAddr);
-                                LeaveCriticalSection(&g_menuCandidateCS);
-                            } else {
-                                DllLog("[WARNING] MenuState hook fired with host value %d (raw: 0x%X). Ignoring.", hostVal, tempVal);
-                            }
-                            g_tempMenuStateAddress = 0;
-                            g_tempMenuStateValue = 0;
-                        }
+                        uint32_t writeIdx = g_menuStateQueueWriteIdx.load();
+                        bool matched = false;
 
-                        size_t candCount = 0;
-                        EnterCriticalSection(&g_menuCandidateCS);
-                        candCount = g_menuStateCandidates.size();
-                        LeaveCriticalSection(&g_menuCandidateCS);
+                        while (g_menuStateQueueReadIdx != writeIdx) {
+                            uint32_t idx = g_menuStateQueueReadIdx & 31;
+                            uintptr_t tempAddr = g_menuStateQueue[idx].address;
+                            int32_t tempVal = g_menuStateQueue[idx].value;
+                            g_menuStateQueueReadIdx++;
 
-                        static auto firstCandTime = std::chrono::steady_clock::now();
-                        static bool collecting = false;
-
-                        if (candCount > 0 && !collecting) {
-                            collecting = true;
-                            firstCandTime = std::chrono::steady_clock::now();
-                            DllLog("[INFO] First MenuState candidate found. Collecting candidates for 500ms...");
-                        }
-
-                        if (collecting) {
-                            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - firstCandTime
-                            ).count();
-                            if (elapsed >= 500) {
-                                EnterCriticalSection(&g_menuCandidateCS);
-                                if (!g_menuStateCandidates.empty()) {
-                                    auto it = g_menuStateCandidates.begin();
-                                    int randIndex = rand() % g_menuStateCandidates.size();
-                                    std::advance(it, randIndex);
-                                    uintptr_t chosenAddr = *it;
-
-                                    g_addrMenuState = chosenAddr - 96;
-                                    if (g_pSharedMemory) {
-                                        g_pSharedMemory->m_statusAddrMenuState = g_addrMenuState;
-                                    }
-                                    DllLog("[SUCCESS] Collected %zu MenuState candidate(s). Randomly selected 0x%llX (actual write addr: 0x%llX)", 
-                                           g_menuStateCandidates.size(), g_addrMenuState.load(), chosenAddr);
-                                    
-                                    tasks[3].found = true;
-                                    RemoveMenuStateHook();
-                                    foundAny = true;
+                            if (tempVal == 1 || tempVal == 2) {
+                                g_addrMenuState = tempAddr - 96;
+                                if (g_pSharedMemory) {
+                                    g_pSharedMemory->m_statusAddrMenuState = g_addrMenuState;
                                 }
-                                collecting = false;
-                                LeaveCriticalSection(&g_menuCandidateCS);
+                                DllLog("[SUCCESS] Found MenuState address! Fired write value: %d at write addr: 0x%llX. Selected structure base: 0x%llX", 
+                                       tempVal, tempAddr, g_addrMenuState.load());
+                                
+                                tasks[3].found = true;
+                                RemoveMenuStateHook();
+                                foundAny = true;
+                                matched = true;
+                                break;
+                            } else {
+                                DllLog("[WARNING] MenuState hook fired with value %d at address 0x%llX. Ignoring.", tempVal, tempAddr);
                             }
-                        } else {
+                        }
+
+                        if (!matched && !tasks[3].found) {
                             static int waitCounterMenu = 0;
                             if (waitCounterMenu++ % 5 == 0) {
                                 DllLog("[INFO] MenuState trampoline hook is active. Waiting for game write...");
