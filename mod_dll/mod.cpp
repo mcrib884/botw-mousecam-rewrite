@@ -1,6 +1,7 @@
 #include "mod.h"
 #pragma comment(lib, "winmm.lib")
 #include <vector>
+#include <unordered_set>
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -69,6 +70,7 @@ namespace Mod {
         std::string gameRomCameraAob;
         std::string magnesisAob;
         std::string shortcutMenuAob;
+        std::string menuStateAob;
         size_t magnesisXOffset;
         size_t magnesisYOffset;
         size_t magnesisZOffset;
@@ -83,6 +85,7 @@ namespace Mod {
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "45 0F 38 F1 74 2D 68 F3 0F 5A C0 F2 0F 10 AC 24 68 02 00 00 31 F6 66 0F 2E E5 41 0F 9B C6 40 0F 92 C6 44 20 F6 31 FF 66 0F 2E E5 40 0F 97 C7 45 31 C0 66 0F 2E E5 41 0F 9B C6 41 0F 94 C0 45 20 F0 45 31 C9 66 0F 2E E5 41 0F 9A C1 F2 0F 11 A4 24 88 00 00 00 41 89 5C 0D 70 0F CA 89 54 24 2C 45 0F 38 F0 74 0D 70 66 41 0F 6E E6 F2 0F 10 FC F3 0F 5A FF F2 0F 11 BC 24 60 01 00 00 66 41 0F 7E F6 45 0F 38 F1 74 2D 6C F3 0F 5A F6 F2 0F 11 B4 24 48 01 00 00 66 41 0F 7E E6 45 0F 38 F1 74 2D 70";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
+            cfg.menuStateAob    = "41 0F 38 F1 44 0D 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
             cfg.magnesisXOffset = 0x00;
             cfg.magnesisYOffset = 0x82;
             cfg.magnesisZOffset = 0x8D;
@@ -93,6 +96,7 @@ namespace Mod {
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
+            cfg.menuStateAob    = "41 0F 38 F1 44 15 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
             cfg.magnesisXOffset = 0x40;
             cfg.magnesisYOffset = 0xBA;
             cfg.magnesisZOffset = 0xCE;
@@ -718,6 +722,15 @@ namespace Mod {
     static std::atomic<int32_t> g_tempShortcutValue{0};
     static bool g_shortcutHookActive = false;
 
+    // --- MenuState hook ---
+    static CodePatch g_menuStateHookPatch = {};
+    static LPVOID g_menuStateTrampoline = nullptr;
+    static std::atomic<uintptr_t> g_tempMenuStateAddress{0};
+    static std::atomic<int32_t> g_tempMenuStateValue{0};
+    static bool g_menuStateHookActive = false;
+    static std::unordered_set<uintptr_t> g_menuStateCandidates;
+    static CRITICAL_SECTION g_menuCandidateCS;
+
     static LPVOID AllocateWithin2GB(uintptr_t targetAddr, size_t size) {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
@@ -851,6 +864,120 @@ namespace Mod {
         return true;
     }
 
+    static void RemoveMenuStateHook() {
+        if (!g_menuStateHookActive) return;
+        DllLog("[INFO] Removing MenuState detour hook.");
+        g_menuStateHookPatch.Restore();
+        if (g_menuStateTrampoline) {
+            VirtualFree(g_menuStateTrampoline, 0, MEM_RELEASE);
+            g_menuStateTrampoline = nullptr;
+        }
+        g_menuStateHookActive = false;
+    }
+
+    static bool SetupMenuStateHook(uintptr_t foundAddress) {
+        if (g_menuStateHookActive) return true;
+
+        g_menuStateTrampoline = AllocateWithin2GB(foundAddress, 64);
+        if (!g_menuStateTrampoline) {
+            return false;
+        }
+
+        g_menuStateHookPatch.address = foundAddress;
+        g_menuStateHookPatch.size = 7;
+        if (!g_menuStateHookPatch.Backup()) {
+            VirtualFree(g_menuStateTrampoline, 0, MEM_RELEASE);
+            g_menuStateTrampoline = nullptr;
+            return false;
+        }
+
+        g_tempMenuStateAddress = 0;
+        g_tempMenuStateValue = 0;
+
+        uint8_t originalSib = g_menuStateHookPatch.g_originalBytes[5];
+
+        uint8_t code[64] = {};
+        size_t idx = 0;
+
+        code[idx++] = 0x9C; // pushfq
+        code[idx++] = 0x50; // push rax
+        code[idx++] = 0x51; // push rcx
+        code[idx++] = 0x52; // push rdx
+
+        // lea rax, [r13 + index + 0x3C]
+        code[idx++] = 0x49;
+        code[idx++] = 0x8D;
+        code[idx++] = 0x44;
+        code[idx++] = originalSib;
+        code[idx++] = 0x3C;
+
+        // mov rdx, <address of g_tempMenuStateAddress>
+        code[idx++] = 0x48;
+        code[idx++] = 0xBA;
+        uintptr_t addrAddress = (uintptr_t)&g_tempMenuStateAddress;
+        memcpy(&code[idx], &addrAddress, 8);
+        idx += 8;
+
+        // mov [rdx], rax
+        code[idx++] = 0x48;
+        code[idx++] = 0x89;
+        code[idx++] = 0x02;
+
+        // mov eax, [rsp + 0x10]
+        code[idx++] = 0x8B;
+        code[idx++] = 0x44;
+        code[idx++] = 0x24;
+        code[idx++] = 0x10;
+
+        // mov rdx, <address of g_tempMenuStateValue>
+        code[idx++] = 0x48;
+        code[idx++] = 0xBA;
+        uintptr_t valAddress = (uintptr_t)&g_tempMenuStateValue;
+        memcpy(&code[idx], &valAddress, 8);
+        idx += 8;
+
+        // mov [rdx], eax
+        code[idx++] = 0x89;
+        code[idx++] = 0x02;
+
+        code[idx++] = 0x5A; // pop rdx
+        code[idx++] = 0x59; // pop rcx
+        code[idx++] = 0x58; // pop rax
+        code[idx++] = 0x9D; // popfq
+
+        // Original instruction: movbe [r13 + index + 0x3C], eax
+        memcpy(&code[idx], g_menuStateHookPatch.g_originalBytes.data(), 7);
+        idx += 7;
+
+        // jmp [rip + 0]
+        code[idx++] = 0xFF;
+        code[idx++] = 0x25;
+        code[idx++] = 0x00;
+        code[idx++] = 0x00;
+        code[idx++] = 0x00;
+        code[idx++] = 0x00;
+
+        uintptr_t returnAddress = foundAddress + 7;
+        memcpy(&code[idx], &returnAddress, 8);
+        idx += 8;
+
+        memcpy(g_menuStateTrampoline, code, idx);
+
+        std::vector<uint8_t> patchBytes(7, 0x90);
+        patchBytes[0] = 0xE9;
+        intptr_t diff = (intptr_t)g_menuStateTrampoline - (intptr_t)(foundAddress + 5);
+        *(int32_t*)(&patchBytes[1]) = (int32_t)diff;
+
+        if (!g_menuStateHookPatch.ApplyBytes(patchBytes.data(), 7)) {
+            VirtualFree(g_menuStateTrampoline, 0, MEM_RELEASE);
+            g_menuStateTrampoline = nullptr;
+            return false;
+        }
+
+        g_menuStateHookActive = true;
+        return true;
+    }
+
     static void RestoreAllPatches() {
         EnterCriticalSection(&g_patchCS);
         if (g_magnePatchesInitialized) {
@@ -860,6 +987,7 @@ namespace Mod {
             g_magneZPatch.Restore();
         }
         RemoveShortcutHook();
+        RemoveMenuStateHook();
         LeaveCriticalSection(&g_patchCS);
     }
 
@@ -1302,7 +1430,8 @@ namespace Mod {
         std::vector<AobTask> tasks = {
             { L"GameRomCamera",  vCfg.gameRomCameraAob, false, 0 },
             { L"Magne Target Sig", vCfg.magnesisAob, false, 0 },
-            { L"ShortcutMenu",    vCfg.shortcutMenuAob, false, 0 }
+            { L"ShortcutMenu",    vCfg.shortcutMenuAob, false, 0 },
+            { L"MenuState",       vCfg.menuStateAob, false, 0 }
         };
 
         bool allOtherFound = false;
@@ -1329,6 +1458,7 @@ namespace Mod {
                     tasks[0].patternStr = vCfg.gameRomCameraAob;
                     tasks[1].patternStr = vCfg.magnesisAob;
                     tasks[2].patternStr = vCfg.shortcutMenuAob;
+                    tasks[3].patternStr = vCfg.menuStateAob;
 
                     for (size_t i = 0; i < tasks.size(); ++i) {
                         tasks[i].found = false;
@@ -1340,6 +1470,10 @@ namespace Mod {
                     g_addrMenuState = 0;
                     
                     RemoveShortcutHook();
+                    RemoveMenuStateHook();
+                    EnterCriticalSection(&g_menuCandidateCS);
+                    g_menuStateCandidates.clear();
+                    LeaveCriticalSection(&g_menuCandidateCS);
 
                     g_writerHuntActive = false;
                     DisarmPageGuard();
@@ -1391,6 +1525,10 @@ namespace Mod {
                     g_addrMagneTarget = 0;
                     g_addrShortcutMenu = 0;
                     g_addrMenuState = 0;
+
+                    EnterCriticalSection(&g_menuCandidateCS);
+                    g_menuStateCandidates.clear();
+                    LeaveCriticalSection(&g_menuCandidateCS);
 
                     RestoreAllPatches();
 
@@ -1483,6 +1621,53 @@ namespace Mod {
                             }
                         } else {
                             DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
+                        }
+                    }
+                } else if (targetIdx == 3) {
+                    if (g_menuStateHookActive) {
+                        uintptr_t tempAddr = g_tempMenuStateAddress.load();
+                        if (tempAddr != 0) {
+                            int32_t tempVal = g_tempMenuStateValue.load();
+                            if (tempVal >= 1 && tempVal <= 20) {
+                                EnterCriticalSection(&g_menuCandidateCS);
+                                g_menuStateCandidates.insert(tempAddr);
+                                LeaveCriticalSection(&g_menuCandidateCS);
+
+                                if (g_addrMenuState.load() == 0) {
+                                    g_addrMenuState = tempAddr - 96;
+                                    if (g_pSharedMemory) {
+                                        g_pSharedMemory->m_statusAddrMenuState = g_addrMenuState;
+                                    }
+                                    DllLog("[SUCCESS] Selected MenuState address candidate: 0x%llX (value: %d)", g_addrMenuState.load(), tempVal);
+                                    tasks[3].found = true;
+                                    RemoveMenuStateHook();
+                                    foundAny = true;
+                                }
+                            } else {
+                                DllLog("[WARNING] MenuState hook fired with value %d (out of range 1-20). Ignoring.", tempVal);
+                            }
+                            g_tempMenuStateAddress = 0;
+                            g_tempMenuStateValue = 0;
+                        } else {
+                            static int waitCounterMenu = 0;
+                            if (waitCounterMenu++ % 5 == 0) {
+                                DllLog("[INFO] MenuState trampoline hook is active. Waiting for game write...");
+                            }
+                        }
+                    } else {
+                        DllLog("[INFO] Scanning for MenuState instruction pattern...");
+                        Pattern pat = ParseAOB(tasks[3].patternStr);
+                        uintptr_t foundAddress = 0;
+                        if (ScanProcessAOB(pat, foundAddress)) {
+                            DllLog("[SUCCESS] Found MenuState instruction at 0x%llX. Setting up trampoline hook...", foundAddress);
+                            tasks[3].address = foundAddress;
+                            if (SetupMenuStateHook(foundAddress)) {
+                                DllLog("[SUCCESS] Trampoline hook set up successfully. Waiting for game write...");
+                            } else {
+                                DllLog("[ERROR] Failed to set up trampoline hook for MenuState.");
+                            }
+                        } else {
+                            DllLog("[WARNING] MenuState instruction pattern not found. Retrying in 1s...");
                         }
                     }
                 } else {
@@ -1861,7 +2046,7 @@ namespace Mod {
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_teleLiveMenuState = g_liveMenuState;
                 }
-                menu_active = (g_liveMenuState == 2);
+                menu_active = (g_liveMenuState >= 2 && g_liveMenuState <= 20);
             }
 
             bool is_shortcut_open = false;
@@ -2631,6 +2816,7 @@ namespace Mod {
         g_hModule = hModule;
         InitializeCriticalSection(&g_patchCS);
         InitializeCriticalSection(&g_writerCS);
+        InitializeCriticalSection(&g_menuCandidateCS);
 
         if (g_sharedMemory.Create(L"Local\\BotwMousecamSharedMemory")) {
             if (g_pSharedMemory) {
@@ -2680,6 +2866,7 @@ namespace Mod {
 
         DeleteCriticalSection(&g_patchCS);
         DeleteCriticalSection(&g_writerCS);
+        DeleteCriticalSection(&g_menuCandidateCS);
 
         g_sharedMemory.Close();
     }
