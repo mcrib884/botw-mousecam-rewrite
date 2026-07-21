@@ -1628,26 +1628,60 @@ namespace Mod {
                         uintptr_t tempAddr = g_tempMenuStateAddress.load();
                         if (tempAddr != 0) {
                             int32_t tempVal = g_tempMenuStateValue.load();
-                            if (tempVal >= 1 && tempVal <= 20) {
+                            // Convert from big-endian (swapped in register eax) to host byte order
+                            int32_t hostVal = (int32_t)_byteswap_ulong((unsigned long)tempVal);
+                            
+                            if (hostVal == 1 || hostVal == 2) {
                                 EnterCriticalSection(&g_menuCandidateCS);
                                 g_menuStateCandidates.insert(tempAddr);
                                 LeaveCriticalSection(&g_menuCandidateCS);
+                            } else {
+                                DllLog("[WARNING] MenuState hook fired with host value %d (raw: 0x%X). Ignoring.", hostVal, tempVal);
+                            }
+                            g_tempMenuStateAddress = 0;
+                            g_tempMenuStateValue = 0;
+                        }
 
-                                if (g_addrMenuState.load() == 0) {
-                                    g_addrMenuState = tempAddr - 96;
+                        size_t candCount = 0;
+                        EnterCriticalSection(&g_menuCandidateCS);
+                        candCount = g_menuStateCandidates.size();
+                        LeaveCriticalSection(&g_menuCandidateCS);
+
+                        static auto firstCandTime = std::chrono::steady_clock::now();
+                        static bool collecting = false;
+
+                        if (candCount > 0 && !collecting) {
+                            collecting = true;
+                            firstCandTime = std::chrono::steady_clock::now();
+                            DllLog("[INFO] First MenuState candidate found. Collecting candidates for 500ms...");
+                        }
+
+                        if (collecting) {
+                            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - firstCandTime
+                            ).count();
+                            if (elapsed >= 500) {
+                                EnterCriticalSection(&g_menuCandidateCS);
+                                if (!g_menuStateCandidates.empty()) {
+                                    auto it = g_menuStateCandidates.begin();
+                                    int randIndex = rand() % g_menuStateCandidates.size();
+                                    std::advance(it, randIndex);
+                                    uintptr_t chosenAddr = *it;
+
+                                    g_addrMenuState = chosenAddr - 96;
                                     if (g_pSharedMemory) {
                                         g_pSharedMemory->m_statusAddrMenuState = g_addrMenuState;
                                     }
-                                    DllLog("[SUCCESS] Selected MenuState address candidate: 0x%llX (value: %d)", g_addrMenuState.load(), tempVal);
+                                    DllLog("[SUCCESS] Collected %zu MenuState candidate(s). Randomly selected 0x%llX (actual write addr: 0x%llX)", 
+                                           g_menuStateCandidates.size(), g_addrMenuState.load(), chosenAddr);
+                                    
                                     tasks[3].found = true;
                                     RemoveMenuStateHook();
                                     foundAny = true;
                                 }
-                            } else {
-                                DllLog("[WARNING] MenuState hook fired with value %d (out of range 1-20). Ignoring.", tempVal);
+                                collecting = false;
+                                LeaveCriticalSection(&g_menuCandidateCS);
                             }
-                            g_tempMenuStateAddress = 0;
-                            g_tempMenuStateValue = 0;
                         } else {
                             static int waitCounterMenu = 0;
                             if (waitCounterMenu++ % 5 == 0) {
@@ -2042,11 +2076,12 @@ namespace Mod {
 
             bool menu_active = false;
             if (g_addrMenuState != 0) {
-                g_liveMenuState = ReadByte(g_addrMenuState + 96);
+                int32_t val = ReadInt32BE(g_addrMenuState + 96);
+                g_liveMenuState = val;
                 if (g_pSharedMemory) {
-                    g_pSharedMemory->m_teleLiveMenuState = g_liveMenuState;
+                    g_pSharedMemory->m_teleLiveMenuState = static_cast<uint8_t>(val);
                 }
-                menu_active = (g_liveMenuState >= 2 && g_liveMenuState <= 20);
+                menu_active = (val == 2);
             }
 
             bool is_shortcut_open = false;
