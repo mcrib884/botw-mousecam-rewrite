@@ -49,6 +49,9 @@ float g_liveMagneTargetY = 0.0f;
 float g_liveMagneTargetZ = 0.0f;
 float g_magneSpeedH = 0.0f;
 float g_magneSpeedV = 0.0f;
+float g_magneDeactSpeedH = 0.0f;
+float g_magneDeactSpeedV = 0.0f;
+bool  g_hasDeactSpeed = false;
 
 std::wstring GetCompanionDllPath() {
     wchar_t path[MAX_PATH] = {};
@@ -124,8 +127,14 @@ void WriteConfigToSharedMemory() {
         g_pSharedMemory->m_cfgFullOrbitCamera = g_config.full_orbit_camera ? 1 : 0;
         g_pSharedMemory->m_cfgCemuExperimental = g_config.cemu_experimental;
         g_pSharedMemory->m_cfgMagnesisSpeedMode = static_cast<uint8_t>(g_config.magnesis_speed_mode);
-        g_pSharedMemory->m_cfgMagneYDeadzone = g_config.magnesis_y_deadzone;
+        g_pSharedMemory->m_cfgFpsMagnesis = g_config.fps_magnesis;
+        g_pSharedMemory->m_cfgFpsMagneEyeHeight = g_config.fps_magne_eye_height;
+        g_pSharedMemory->m_cfgFpsMagneOffsetForward = g_config.fps_magne_offset_forward;
+        g_pSharedMemory->m_cfgFpsMagneOffsetSide = g_config.fps_magne_offset_side;
         g_pSharedMemory->m_cfgMagneSens = g_config.magnesis_sensitivity;
+        g_pSharedMemory->m_cfgMagneSensY = g_config.magnesis_sensitivity_y;
+        g_pSharedMemory->m_cfgUseIndependentMagneSens = g_config.use_independent_magne_sens;
+        g_pSharedMemory->m_cfgMagnePullSens = g_config.magnesis_pull_sensitivity;
         g_pSharedMemory->m_cfgSensitivityX = g_config.sensitivity_x;
         g_pSharedMemory->m_cfgSensitivityY = g_config.sensitivity_y;
         g_pSharedMemory->m_cfgUseIndependentSens = g_config.use_independent_sens ? 1 : 0;
@@ -271,7 +280,6 @@ void UpdateTelemetryGui() {
         if (g_pSharedMemory->m_statusAddrMagneTarget != 0 && g_addrMagneTarget == 0) LogToConsole(L"[INFO] Found Magne Target Sig");
         if (g_pSharedMemory->m_statusAddrShortcutMenu != 0 && g_addrShortcutMenu == 0) LogToConsole(L"[INFO] Found ShortcutMenu");
         if (g_pSharedMemory->m_statusAddrMenuState != 0 && g_addrMenuState == 0) LogToConsole(L"[INFO] Found MenuState");
-        if (g_pSharedMemory->m_statusWritersFound > g_writersFound) LogToConsole(L"[INFO] Dynamic writer discovered");
 
         g_addrGameRomCamera = g_pSharedMemory->m_statusAddrGameRomCamera;
         g_addrMagneTarget = g_pSharedMemory->m_statusAddrMagneTarget;
@@ -288,27 +296,88 @@ void UpdateTelemetryGui() {
         g_liveMagneTargetY = g_pSharedMemory->m_teleMagneTargetY;
         g_liveMagneTargetZ = g_pSharedMemory->m_teleMagneTargetZ;
 
-        // Compute magnesis object horizontal/vertical speed from per-frame position deltas.
+        // Compute magnesis object horizontal angular speed (from player) and vertical linear speed.
         static float s_prevMagneX = 0.0f, s_prevMagneY = 0.0f, s_prevMagneZ = 0.0f;
         static bool s_prevMagneValid = false;
         static std::chrono::steady_clock::time_point s_prevMagneTime = std::chrono::steady_clock::now();
+        static float s_lastActiveSpeedH = 0.0f;
+        static float s_lastActiveSpeedV = 0.0f;
+        static bool s_wasMagneActive = false;
 
         auto now = std::chrono::steady_clock::now();
         float dt = std::chrono::duration<float>(now - s_prevMagneTime).count();
-        if (g_magneDetourActive && s_prevMagneValid && dt > 0.0f && dt < 1.0f) {
-            float dx = g_liveMagneTargetX - s_prevMagneX;
-            float dy = g_liveMagneTargetY - s_prevMagneY;
-            float dz = g_liveMagneTargetZ - s_prevMagneZ;
-            g_magneSpeedH = std::sqrt(dx * dx + dz * dz) / dt;
-            g_magneSpeedV = dy / dt;
+        bool isMagneCurrentlyActive = g_magneDetourActive && (g_liveMagneTargetX != 0.0f || g_liveMagneTargetY != 0.0f || g_liveMagneTargetZ != 0.0f);
+
+        float px = g_pSharedMemory ? g_pSharedMemory->m_telePivotX : 0.0f;
+        float pz = g_pSharedMemory ? g_pSharedMemory->m_telePivotZ : 0.0f;
+
+        if (isMagneCurrentlyActive) {
+            if (s_prevMagneValid && dt >= 0.010f && dt < 1.0f) {
+                float dxPrev = s_prevMagneX - px;
+                float dzPrev = s_prevMagneZ - pz;
+                float dxCurr = g_liveMagneTargetX - px;
+                float dzCurr = g_liveMagneTargetZ - pz;
+
+                float distPrevSq = dxPrev * dxPrev + dzPrev * dzPrev;
+                float distCurrSq = dxCurr * dxCurr + dzCurr * dzCurr;
+
+                if (distPrevSq > 0.1f && distCurrSq > 0.1f) {
+                    float anglePrev = std::atan2(dzPrev, dxPrev);
+                    float angleCurr = std::atan2(dzCurr, dxCurr);
+
+                    float dTheta = angleCurr - anglePrev;
+                    constexpr float PI = 3.14159265358979323846f;
+                    while (dTheta > PI)  dTheta -= 2.0f * PI;
+                    while (dTheta < -PI) dTheta += 2.0f * PI;
+
+                    float angularSpeedRad = std::fabs(dTheta) / dt;
+                    float angularSpeedDeg = angularSpeedRad * (180.0f / PI);
+
+                    if (angularSpeedDeg < 2000.0f) {
+                        g_magneSpeedH = 0.6f * g_magneSpeedH + 0.4f * angularSpeedDeg;
+                    }
+
+                    float dy = g_liveMagneTargetY - s_prevMagneY;
+                    float vSpeed = dy / dt;
+                    if (std::fabs(vSpeed) < 500.0f) {
+                        g_magneSpeedV = 0.6f * g_magneSpeedV + 0.4f * vSpeed;
+                    }
+
+                    if (g_magneSpeedH > 0.1f || std::fabs(g_magneSpeedV) > 0.1f) {
+                        s_lastActiveSpeedH = g_magneSpeedH;
+                        s_lastActiveSpeedV = g_magneSpeedV;
+                    }
+                }
+
+                s_prevMagneX = g_liveMagneTargetX;
+                s_prevMagneY = g_liveMagneTargetY;
+                s_prevMagneZ = g_liveMagneTargetZ;
+                s_prevMagneTime = now;
+            } else if (!s_prevMagneValid) {
+                s_prevMagneX = g_liveMagneTargetX;
+                s_prevMagneY = g_liveMagneTargetY;
+                s_prevMagneZ = g_liveMagneTargetZ;
+                s_prevMagneValid = true;
+                s_prevMagneTime = now;
+                g_magneSpeedH = 0.0f;
+                g_magneSpeedV = 0.0f;
+            }
+            s_wasMagneActive = true;
         } else {
+            if (s_wasMagneActive) {
+                g_magneDeactSpeedH = s_lastActiveSpeedH;
+                g_magneDeactSpeedV = s_lastActiveSpeedV;
+                g_hasDeactSpeed = true;
+                s_wasMagneActive = false;
+            }
+            s_prevMagneValid = false;
             g_magneSpeedH = 0.0f;
             g_magneSpeedV = 0.0f;
         }
         s_prevMagneX = g_liveMagneTargetX;
         s_prevMagneY = g_liveMagneTargetY;
         s_prevMagneZ = g_liveMagneTargetZ;
-        s_prevMagneValid = g_magneDetourActive && (g_liveMagneTargetX != 0.0f || g_liveMagneTargetY != 0.0f || g_liveMagneTargetZ != 0.0f);
+        s_prevMagneValid = isMagneCurrentlyActive;
         s_prevMagneTime = now;
 
         // Read new logs from shared memory

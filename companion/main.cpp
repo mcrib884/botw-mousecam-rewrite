@@ -95,11 +95,17 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_animScrollHelper += (g_config.scroll_helper ? 0.075f : -0.075f);
         g_animOrbitCam += (g_config.full_orbit_camera ? 0.075f : -0.075f);
         g_animIndepSens += (g_config.use_independent_sens ? 0.075f : -0.075f);
+        g_animIndepMagneSens += (g_config.use_independent_magne_sens ? 0.075f : -0.075f);
         g_animCemuExperimental += (g_config.cemu_experimental ? 0.075f : -0.075f);
         g_animSensH += (g_hoverSensH ? 0.05f : -0.05f);
         g_animSensV += (g_hoverSensV ? 0.05f : -0.05f);
-        g_animMagneYDeadzone += (g_hoverMagneYDeadzone ? 0.05f : -0.05f);
         g_animMagneSens += (g_hoverMagneSens ? 0.05f : -0.05f);
+        g_animMagneSensV += (g_hoverMagneSensV ? 0.05f : -0.05f);
+        g_animMagnePullSens += (g_hoverMagnePullSens ? 0.05f : -0.05f);
+        g_animFpsMagnesis += (g_config.fps_magnesis ? 0.075f : -0.075f);
+        g_animFpsMagneEyeHeight += (g_hoverFpsMagneEyeHeight ? 0.05f : -0.05f);
+        g_animFpsMagneOffsetForward += (g_hoverFpsMagneOffsetForward ? 0.05f : -0.05f);
+        g_animFpsMagneOffsetSide += (g_hoverFpsMagneOffsetSide ? 0.05f : -0.05f);
         g_animClearLog += (g_hoverClearLog ? 0.05f : -0.05f);
         for (int i = 0; i < 5; ++i) g_animDrop[i] += (g_hoverDrop == i ? 0.05f : -0.05f);
 
@@ -108,7 +114,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         clampF(g_animDarkBtn); clampF(g_animLightBtn);
         clampF(g_animPath); clampF(g_animPathReset);
         clampF(g_animScrollHelper); clampF(g_animOrbitCam);
-        clampF(g_animIndepSens); clampF(g_animCemuExperimental); clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneYDeadzone); clampF(g_animMagneSens); clampF(g_animClearLog);
+        clampF(g_animIndepSens); clampF(g_animIndepMagneSens); clampF(g_animCemuExperimental); clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneSens); clampF(g_animMagneSensV); clampF(g_animMagnePullSens);
+        clampF(g_animFpsMagnesis); clampF(g_animFpsMagneEyeHeight); clampF(g_animFpsMagneOffsetForward); clampF(g_animFpsMagneOffsetSide); clampF(g_animClearLog);
         for (int i = 0; i < 5; ++i) clampF(g_animDrop[i]);
 
         float targetTheme = g_config.use_light_theme ? 0.0f : 1.0f;
@@ -143,11 +150,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                        (g_animPath > 0 && g_animPath < 1) || (g_animPathReset > 0 && g_animPathReset < 1) ||
                        (g_animTheme != (g_config.use_light_theme ? 0.0f : 1.0f)) ||
                        (g_animScrollHelper > 0 && g_animScrollHelper < 1) ||
-                       (g_animOrbitCam > 0 && g_animOrbitCam < 1) || (g_animIndepSens > 0 && g_animIndepSens < 1) ||
+                       (g_animOrbitCam > 0 && g_animOrbitCam < 1) || (g_animIndepSens > 0 && g_animIndepSens < 1) || (g_animIndepMagneSens > 0 && g_animIndepMagneSens < 1) ||
                        (g_animCemuExperimental > 0 && g_animCemuExperimental < 1) ||
                        (g_animSensH > 0 && g_animSensH < 1) || (g_animSensV > 0 && g_animSensV < 1) ||
-                       (g_animMagneYDeadzone > 0 && g_animMagneYDeadzone < 1) ||
-                       (g_animMagneSens > 0 && g_animMagneSens < 1) || (g_animClearLog > 0 && g_animClearLog < 1);
+                       (g_animMagneSens > 0 && g_animMagneSens < 1) || (g_animMagneSensV > 0 && g_animMagneSensV < 1) || (g_animMagnePullSens > 0 && g_animMagnePullSens < 1) ||
+                       (g_animFpsMagnesis > 0 && g_animFpsMagnesis < 1) || (g_animFpsMagneEyeHeight > 0 && g_animFpsMagneEyeHeight < 1) ||
+                       (g_animFpsMagneOffsetForward > 0 && g_animFpsMagneOffsetForward < 1) || (g_animFpsMagneOffsetSide > 0 && g_animFpsMagneOffsetSide < 1) ||
+                       (g_animClearLog > 0 && g_animClearLog < 1);
         for (int i = 0; i < 5; ++i) if (g_animDrop[i] > 0 && g_animDrop[i] < 1) hasAnim = true;
         if (changed || g_dragSlider != -1 || !g_targetInjected || hasAnim) {
             InvalidateRect(hWnd, nullptr, FALSE);

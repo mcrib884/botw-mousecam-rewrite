@@ -19,8 +19,14 @@ struct AppConfig {
     bool use_light_theme = false;
     bool cemu_experimental = false;
     int  magnesis_speed_mode = 0; // 0=Vanilla, 1=Extended, 2=Unlimited
-    float magnesis_y_deadzone = 1.5f; // Vertical deadzone in raw pixels
-    float magnesis_sensitivity = 1.0f; // Magnesis sensitivity multiplier
+    bool  fps_magnesis = false;
+    float fps_magne_eye_height = 0.5f;
+    float fps_magne_offset_forward = 0.0f;
+    float fps_magne_offset_side = 0.0f;
+    bool  use_independent_magne_sens = false;
+    float magnesis_sensitivity = 1.0f; // Magnesis sensitivity multiplier (H)
+    float magnesis_sensitivity_y = 1.0f; // Magnesis sensitivity multiplier (V)
+    float magnesis_pull_sensitivity = 1.0f; // Magnesis pull sensitivity multiplier
 };
 
 extern AppConfig g_config;

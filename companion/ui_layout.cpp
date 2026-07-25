@@ -8,6 +8,8 @@ const int WND_W = 580;
 const int WND_H = 910;
 const float SENS_MIN = 0.1f;
 const float SENS_MAX = 10.0f;
+const float MAGNE_SENS_MIN = 0.01f;
+const float MAGNE_SENS_MAX = 2.0f;
 
 bool g_collapsedMem = false;
 bool g_collapsedTele = false;
@@ -19,6 +21,8 @@ static UIRects g_cachedUIRects;
 static int g_cachedWidth = 0;
 static int g_cachedHeight = 0;
 static bool g_cachedIndepSens = false;
+static bool g_cachedIndepMagneSens = false;
+static bool g_cachedFpsMagne = false;
 static bool g_cachedCollapsedMem = false;
 static bool g_cachedCollapsedTele = false;
 static bool g_cachedCollapsedSet = false;
@@ -31,7 +35,12 @@ void InvalidateUIRectsCache() {
 
 void CalculateUIRects(UIRects& r, int w, int h) {
     bool indepSens = g_config.use_independent_sens;
-    if (w == g_cachedWidth && h == g_cachedHeight && indepSens == g_cachedIndepSens &&
+    bool indepMagneSens = g_config.use_independent_magne_sens;
+    bool fpsMagne = g_config.fps_magnesis;
+    if (w == g_cachedWidth && h == g_cachedHeight &&
+        indepSens == g_cachedIndepSens &&
+        indepMagneSens == g_cachedIndepMagneSens &&
+        fpsMagne == g_cachedFpsMagne &&
         g_openDropdown == -1 &&
         g_collapsedMem == g_cachedCollapsedMem &&
         g_collapsedTele == g_cachedCollapsedTele &&
@@ -50,52 +59,76 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     r.rDarkBtn = Rect(w / 2 - 20, 15, 14, 14);
     r.rLightBtn = Rect(w / 2 + 5, 15, 14, 14);
 
-    int connH = 85;
+    int connH = 110;
     r.rConnPanel = Rect(pad, curY, panelW, connH);
-    r.rInj = Rect(pad + panelW - 260, curY + 45, 80, 26);
-    r.rReinj = Rect(pad + panelW - 175, curY + 45, 80, 26);
-    r.rRst = Rect(pad + panelW - 90, curY + 45, 80, 26);
-    r.rPath = Rect(pad + 10, curY + 50, 115, 20);
-    r.rPathReset = g_config.cemu_path_override.empty() ? Rect(0, 0, 0, 0) : Rect(pad + 130, curY + 50, 18, 20);
-    r.rCemuExperimental = Rect(pad + 155, curY + 50, 125, 20);
-    r.rStatusDot = Rect(pad + panelW - 25, curY + 15, 12, 12);
+    r.rInj = Rect(pad + panelW - 260, curY + 70, 80, 26);
+    r.rReinj = Rect(pad + panelW - 175, curY + 70, 80, 26);
+    r.rRst = Rect(pad + panelW - 90, curY + 70, 80, 26);
+    r.rPath = Rect(pad + 10, curY + 75, 115, 20);
+    r.rPathReset = g_config.cemu_path_override.empty() ? Rect(0, 0, 0, 0) : Rect(pad + 130, curY + 75, 18, 20);
+    r.rCemuExperimental = Rect(pad + 155, curY + 75, 125, 20);
+    r.rStatusDot = Rect(pad + 10, curY + 40, 12, 12);
     curY += connH + spacing;
 
-    int memH = g_collapsedMem ? 30 : 115;
+    int memH = g_collapsedMem ? 30 : 100;
     r.rMemPanel = Rect(pad, curY, panelW, memH);
     curY += memH + spacing;
 
-    int teleH = g_collapsedTele ? 30 : 145;
+    int teleH = g_collapsedTele ? 30 : 105;
     r.rTelePanel = Rect(pad, curY, panelW, teleH);
     curY += teleH + spacing;
 
-    int setH = g_collapsedSet ? 30 : (indepSens ? 265 : 235);
-    r.rSetPanel = Rect(pad, curY, panelW, setH);
+    int nextSetY = curY + 35;
     if (g_collapsedSet) {
         r.rScrollHelper = Rect(0, 0, 0, 0);
         r.rOrbitCam = Rect(0, 0, 0, 0);
         r.rIndepSens = Rect(0, 0, 0, 0);
+        r.rIndepMagneSens = Rect(0, 0, 0, 0);
         r.rSensH = Rect(0, 0, 0, 0);
         r.rSensV = Rect(0, 0, 0, 0);
         r.rMagneSpeedMode = Rect(0, 0, 0, 0);
-        r.rMagneYDeadzone = Rect(0, 0, 0, 0);
         r.rMagneSens = Rect(0, 0, 0, 0);
+        r.rMagneSensV = Rect(0, 0, 0, 0);
+        r.rMagnePullSens = Rect(0, 0, 0, 0);
+        r.rFpsMagnesis = Rect(0, 0, 0, 0);
+        r.rFpsMagneEyeHeight = Rect(0, 0, 0, 0);
+        r.rFpsMagneOffsetForward = Rect(0, 0, 0, 0);
+        r.rFpsMagneOffsetSide = Rect(0, 0, 0, 0);
     } else {
-        r.rScrollHelper = Rect(pad + 10, curY + 35, (std::min)(250, panelW - 20), 20);
-        r.rOrbitCam = Rect(pad + 10, curY + 60, (std::min)(175, panelW - 20), 20);
-        r.rIndepSens = Rect(pad + 10, curY + 85, (std::min)(290, panelW - 20), 20);
-        r.rSensH = Rect(pad + 10, curY + 115, panelW - 40, 24);
-        if (indepSens)
-            r.rSensV = Rect(pad + 10, curY + 145, panelW - 40, 24);
-        else
+        r.rScrollHelper = Rect(pad + 10, nextSetY, (std::min)(250, panelW - 20), 20); nextSetY += 25;
+        r.rOrbitCam = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 25;
+        r.rIndepSens = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 25;
+        r.rIndepMagneSens = Rect(pad + 10, nextSetY, (std::min)(340, panelW - 20), 20); nextSetY += 30;
+
+        r.rSensH = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        if (indepSens) {
+            r.rSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        } else {
             r.rSensV = Rect(0, 0, 0, 0);
-        int magneSensY = indepSens ? curY + 175 : curY + 145;
-        r.rMagneSens = Rect(pad + 10, magneSensY, panelW - 40, 24);
-        int deadzoneY = indepSens ? curY + 205 : curY + 175;
-        r.rMagneYDeadzone = Rect(pad + 10, deadzoneY, panelW - 40, 24);
-        int magneSpeedY = indepSens ? curY + 235 : curY + 205;
-        r.rMagneSpeedMode = Rect(pad + 10, magneSpeedY, (std::min)(290, panelW - 20), 20);
+        }
+
+        r.rMagneSpeedMode = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 30;
+        r.rMagneSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        if (indepMagneSens) {
+            r.rMagneSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        } else {
+            r.rMagneSensV = Rect(0, 0, 0, 0);
+        }
+        r.rMagnePullSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+
+        r.rFpsMagnesis = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 30;
+        if (fpsMagne) {
+            r.rFpsMagneEyeHeight = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+            r.rFpsMagneOffsetForward = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+            r.rFpsMagneOffsetSide = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        } else {
+            r.rFpsMagneEyeHeight = Rect(0, 0, 0, 0);
+            r.rFpsMagneOffsetForward = Rect(0, 0, 0, 0);
+            r.rFpsMagneOffsetSide = Rect(0, 0, 0, 0);
+        }
     }
+    int setH = g_collapsedSet ? 30 : (nextSetY - curY + 5);
+    r.rSetPanel = Rect(pad, curY, panelW, setH);
     curY += setH + spacing;
 
     int bindH = g_collapsedBind ? 30 : 120;
@@ -130,6 +163,8 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     g_cachedWidth = w;
     g_cachedHeight = h;
     g_cachedIndepSens = indepSens;
+    g_cachedIndepMagneSens = indepMagneSens;
+    g_cachedFpsMagne = fpsMagne;
     g_cachedCollapsedMem = g_collapsedMem;
     g_cachedCollapsedTele = g_collapsedTele;
     g_cachedCollapsedSet = g_collapsedSet;

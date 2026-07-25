@@ -46,6 +46,9 @@ extern float g_liveMagneTargetY;
 extern float g_liveMagneTargetZ;
 extern float g_magneSpeedH;
 extern float g_magneSpeedV;
+extern float g_magneDeactSpeedH;
+extern float g_magneDeactSpeedV;
+extern bool  g_hasDeactSpeed;
 
 extern bool g_mousecamActive;
 extern uint32_t g_writersFound;

@@ -16,6 +16,12 @@
 
 AppConfig g_config;
 
+extern bool g_collapsedMem;
+extern bool g_collapsedTele;
+extern bool g_collapsedSet;
+extern bool g_collapsedBind;
+extern bool g_collapsedLog;
+
 std::string extract_tag(const std::string& s, const std::string& open, const std::string& close, size_t start_pos) {
     size_t open_pos = s.find(open, start_pos);
     if (open_pos == std::string::npos) return "";
@@ -88,8 +94,19 @@ void SaveConfig() {
     f << "  \"use_light_theme\": " << (g_config.use_light_theme ? "true" : "false") << ",\n";
     f << "  \"cemu_experimental\": " << (g_config.cemu_experimental ? "true" : "false") << ",\n";
     f << "  \"magnesis_speed_mode\": " << g_config.magnesis_speed_mode << ",\n";
-    f << "  \"magnesis_y_deadzone\": " << g_config.magnesis_y_deadzone << ",\n";
-    f << "  \"magnesis_sensitivity\": " << g_config.magnesis_sensitivity << "\n";
+    f << "  \"fps_magnesis\": " << (g_config.fps_magnesis ? "true" : "false") << ",\n";
+    f << "  \"fps_magne_eye_height\": " << g_config.fps_magne_eye_height << ",\n";
+    f << "  \"fps_magne_offset_forward\": " << g_config.fps_magne_offset_forward << ",\n";
+    f << "  \"fps_magne_offset_side\": " << g_config.fps_magne_offset_side << ",\n";
+    f << "  \"use_independent_magne_sens\": " << (g_config.use_independent_magne_sens ? "true" : "false") << ",\n";
+    f << "  \"magnesis_sensitivity\": " << g_config.magnesis_sensitivity << ",\n";
+    f << "  \"magnesis_sensitivity_y\": " << g_config.magnesis_sensitivity_y << ",\n";
+    f << "  \"magnesis_pull_sensitivity\": " << g_config.magnesis_pull_sensitivity << ",\n";
+    f << "  \"collapsed_mem\": " << (g_collapsedMem ? "true" : "false") << ",\n";
+    f << "  \"collapsed_tele\": " << (g_collapsedTele ? "true" : "false") << ",\n";
+    f << "  \"collapsed_set\": " << (g_collapsedSet ? "true" : "false") << ",\n";
+    f << "  \"collapsed_bind\": " << (g_collapsedBind ? "true" : "false") << ",\n";
+    f << "  \"collapsed_log\": " << (g_collapsedLog ? "true" : "false") << "\n";
     f << "}\n";
     f.close();
 }
@@ -215,12 +232,27 @@ void LoadConfig() {
     g_config.cemu_experimental = extract_json_bool("cemu_experimental", false);
     g_config.magnesis_speed_mode = (int)extract_json_double("magnesis_speed_mode", 0.0);
     if (g_config.magnesis_speed_mode < 0 || g_config.magnesis_speed_mode > 2) g_config.magnesis_speed_mode = 0;
-    g_config.magnesis_y_deadzone = (float)extract_json_double("magnesis_y_deadzone", 1.5);
-    if (g_config.magnesis_y_deadzone < 0.0f) g_config.magnesis_y_deadzone = 0.0f;
-    if (g_config.magnesis_y_deadzone > 10.0f) g_config.magnesis_y_deadzone = 10.0f;
+    g_config.fps_magnesis = extract_json_bool("fps_magnesis", false);
+    g_config.fps_magne_eye_height = (float)extract_json_double("fps_magne_eye_height", 0.5);
+    g_config.fps_magne_offset_forward = (float)extract_json_double("fps_magne_offset_forward", 0.0);
+    g_config.fps_magne_offset_side = (float)extract_json_double("fps_magne_offset_side", 0.0);
+    g_config.use_independent_magne_sens = extract_json_bool("use_independent_magne_sens", false);
     g_config.magnesis_sensitivity = (float)extract_json_double("magnesis_sensitivity", 1.0);
-    if (g_config.magnesis_sensitivity < 0.1f) g_config.magnesis_sensitivity = 0.1f;
-    if (g_config.magnesis_sensitivity > 10.0f) g_config.magnesis_sensitivity = 10.0f;
+    if (g_config.magnesis_sensitivity < 0.01f) g_config.magnesis_sensitivity = 0.01f;
+    if (g_config.magnesis_sensitivity > 2.0f) g_config.magnesis_sensitivity = 2.0f;
+    g_config.magnesis_sensitivity_y = (float)extract_json_double("magnesis_sensitivity_y", 1.0);
+    if (g_config.magnesis_sensitivity_y < 0.01f) g_config.magnesis_sensitivity_y = 0.01f;
+    if (g_config.magnesis_sensitivity_y > 2.0f) g_config.magnesis_sensitivity_y = 2.0f;
+    g_config.magnesis_pull_sensitivity = (float)extract_json_double("magnesis_pull_sensitivity", 1.0);
+    if (g_config.magnesis_pull_sensitivity < 1.0f) g_config.magnesis_pull_sensitivity = 1.0f;
+    if (g_config.magnesis_pull_sensitivity > 10.0f) g_config.magnesis_pull_sensitivity = 10.0f;
+
+    g_collapsedMem = extract_json_bool("collapsed_mem", false);
+    g_collapsedTele = extract_json_bool("collapsed_tele", false);
+    g_collapsedSet = extract_json_bool("collapsed_set", false);
+    g_collapsedBind = extract_json_bool("collapsed_bind", false);
+    g_collapsedLog = extract_json_bool("collapsed_log", false);
+
     if (!g_config.theme_initialized) {
         g_config.use_light_theme = IsWindowsLightTheme();
         g_config.theme_initialized = true;

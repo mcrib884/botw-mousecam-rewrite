@@ -8,6 +8,8 @@ extern const int WND_W;
 extern const int WND_H;
 extern const float SENS_MIN;
 extern const float SENS_MAX;
+extern const float MAGNE_SENS_MIN;
+extern const float MAGNE_SENS_MAX;
 
 struct UIRects {
     Rect rConnPanel;
@@ -23,12 +25,18 @@ struct UIRects {
     Rect rScrollHelper;
     Rect rOrbitCam;
     Rect rIndepSens;
+    Rect rIndepMagneSens;
     Rect rCemuExperimental;
     Rect rSensH;
     Rect rSensV;
     Rect rMagneSpeedMode;
-    Rect rMagneYDeadzone;
     Rect rMagneSens;
+    Rect rMagneSensV;
+    Rect rMagnePullSens;
+    Rect rFpsMagnesis;
+    Rect rFpsMagneEyeHeight;
+    Rect rFpsMagneOffsetForward;
+    Rect rFpsMagneOffsetSide;
 
     Rect rDrops[5];
     Rect rDropMenu;

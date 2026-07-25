@@ -1,7 +1,6 @@
 #include "mod.h"
 #pragma comment(lib, "winmm.lib")
 #include <vector>
-#include <unordered_set>
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -556,6 +555,9 @@ namespace Mod {
         return false;
     }
 
+    static bool SafeReadMarker(uintptr_t addr, uint16_t& out);
+    static void PollHooksAndSyncSharedMemory();
+
     static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress) {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
@@ -608,6 +610,7 @@ namespace Mod {
                     if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
                         return false;
                     }
+                    PollHooksAndSyncSharedMemory();
                     size_t toRead = (std::min)(chunkSize, regionSize - offset);
                     __try {
                         size_t matchOffset = 0;
@@ -733,7 +736,7 @@ namespace Mod {
     static std::atomic<uint32_t> g_menuStateQueueWriteIdx{0};
     static uint32_t g_menuStateQueueReadIdx{0};
     static bool g_menuStateHookActive = false;
-    static std::unordered_set<uintptr_t> g_menuStateCandidates;
+    static std::vector<uintptr_t> g_menuStateAddrList;
     static CRITICAL_SECTION g_menuCandidateCS;
 
     static LPVOID AllocateWithin2GB(uintptr_t targetAddr, size_t size) {
@@ -766,6 +769,7 @@ namespace Mod {
         if (!g_shortcutHookActive) return;
         DllLog("[INFO] Removing ShortcutMenu detour hook.");
         g_shortcutHookPatch.Restore();
+        Sleep(50); // Allow any game thread inside the trampoline to exit
         if (g_shortcutTrampoline) {
             VirtualFree(g_shortcutTrampoline, 0, MEM_RELEASE);
             g_shortcutTrampoline = nullptr;
@@ -873,6 +877,7 @@ namespace Mod {
         if (!g_menuStateHookActive) return;
         DllLog("[INFO] Removing MenuState detour hook.");
         g_menuStateHookPatch.Restore();
+        Sleep(50); // Allow any game thread inside the trampoline to exit
         if (g_menuStateTrampoline) {
             VirtualFree(g_menuStateTrampoline, 0, MEM_RELEASE);
             g_menuStateTrampoline = nullptr;
@@ -881,7 +886,7 @@ namespace Mod {
     }
 
     static bool SetupMenuStateHook(uintptr_t foundAddress) {
-        if (g_menuStateHookActive) return true;
+        if (g_menuStateHookActive || g_addrMenuState != 0) return false;
 
         g_menuStateTrampoline = AllocateWithin2GB(foundAddress, 128);
         if (!g_menuStateTrampoline) {
@@ -1030,6 +1035,83 @@ namespace Mod {
         RemoveShortcutHook();
         RemoveMenuStateHook();
         LeaveCriticalSection(&g_patchCS);
+    }
+
+    static void PollHooksAndSyncSharedMemory() {
+        if (!g_pSharedMemory) return;
+
+        if (g_shortcutHookActive && g_addrShortcutMenu == 0) {
+            uintptr_t tempAddr = g_tempShortcutAddress.load();
+            if (tempAddr != 0) {
+                int32_t tempVal = g_tempShortcutValue.load();
+                if (tempVal >= -1 && tempVal <= 4) {
+                    DllLog("[SUCCESS] Hook fired! Verified ShortcutMenu address: 0x%llX (value: %d). Hook removed.", tempAddr - 128, tempVal);
+                    g_addrShortcutMenu = tempAddr - 128;
+                    g_pSharedMemory->m_statusAddrShortcutMenu = g_addrShortcutMenu;
+                    RemoveShortcutHook();
+                } else {
+                    DllLog("[WARNING] Hook fired on incorrect value %d at address 0x%llX. Ignoring and waiting.", tempVal, tempAddr);
+                    g_tempShortcutAddress = 0;
+                    g_tempShortcutValue = 0;
+                }
+            }
+        }
+
+        if (g_menuStateHookActive && g_addrMenuState == 0) {
+            uint32_t writeIdx = g_menuStateQueueWriteIdx.load();
+            while (g_menuStateQueueReadIdx != writeIdx && g_addrMenuState == 0) {
+                uint32_t idx = g_menuStateQueueReadIdx & 31;
+                uintptr_t tempAddr = g_menuStateQueue[idx].address;
+                int32_t tempVal = g_menuStateQueue[idx].value;
+                g_menuStateQueueReadIdx++;
+
+                if (tempVal >= 5 && tempVal <= 10) {
+                    bool patternValid = false;
+                    uint16_t marker = 0;
+                    if (SafeReadMarker(tempAddr - 4, marker) && (marker & 0xFF) == 0x6E) {
+                        patternValid = true;
+                    }
+
+                    {
+                        uint16_t markerLo = 0, markerHi = 0;
+                        bool okLo = SafeReadMarker(tempAddr - 4, markerLo);
+                        bool okHi = SafeReadMarker(tempAddr - 2, markerHi);
+                        uint32_t fullBlock = okLo && okHi
+                            ? (uint32_t)markerLo | ((uint32_t)markerHi << 16)
+                            : 0xFFFFFFFF;
+                        DllLog("[DEBUG] MenuState pattern check: val=%d, addr=0x%llX, marker=0x%04X, valid=%d, block=0x%08X",
+                               tempVal, tempAddr, marker, patternValid ? 1 : 0, fullBlock);
+                    }
+
+                    if (patternValid) {
+                        uintptr_t baseAddr = tempAddr;
+                        EnterCriticalSection(&g_menuCandidateCS);
+                        if (g_addrMenuState == 0) {
+                            g_addrMenuState = baseAddr;
+                            g_menuStateAddrList.clear();
+
+                            RemoveMenuStateHook();
+                            g_menuStateQueueWriteIdx = 0;
+                            g_menuStateQueueReadIdx = 0;
+                            memset(g_menuStateQueue, 0, sizeof(g_menuStateQueue));
+                            g_pSharedMemory->m_statusAddrMenuState = baseAddr;
+                            DllLog("[INFO] MenuState candidate selected at 0x%llX. Trampoline hook removed. All candidate testing ended.", baseAddr);
+                        }
+                        LeaveCriticalSection(&g_menuCandidateCS);
+                        break;
+                    } else {
+                        DllLog("[WARNING] MenuState hook fired with value %d at address 0x%llX, but pattern 6E** ** ** not found at -4.", tempVal, tempAddr);
+                    }
+                } else {
+                    DllLog("[WARNING] MenuState hook fired with unexpected value %d at address 0x%llX. Ignoring.", tempVal, tempAddr);
+                }
+            }
+        }
+
+        g_pSharedMemory->m_statusAddrGameRomCamera = g_addrGameRomCamera.load();
+        g_pSharedMemory->m_statusAddrShortcutMenu  = g_addrShortcutMenu.load();
+        g_pSharedMemory->m_statusAddrMenuState     = g_addrMenuState.load();
+        g_pSharedMemory->m_statusAddrMagneTarget   = g_addrMagneTarget.load();
     }
 
     // -------------------------------------------------------------------------
@@ -1450,6 +1532,16 @@ namespace Mod {
         return true;
     }
 
+    // Helper: safely read 2 bytes from the target process (SEH-guarded, no C++ unwinding)
+    static bool SafeReadMarker(uintptr_t addr, uint16_t& out) {
+        __try {
+            out = *(const uint16_t*)addr;
+            return true;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
         static DWORD WINAPI ScanAobThread(LPVOID lpParam) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         LoadWriterBlacklist();
@@ -1470,9 +1562,9 @@ namespace Mod {
 
         std::vector<AobTask> tasks = {
             { L"GameRomCamera",  vCfg.gameRomCameraAob, false, 0 },
-            { L"Magne Target Sig", vCfg.magnesisAob, false, 0 },
             { L"ShortcutMenu",    vCfg.shortcutMenuAob, false, 0 },
-            { L"MenuState",       vCfg.menuStateAob, false, 0 }
+            { L"MenuState",       vCfg.menuStateAob, false, 0 },
+            { L"Magne Target Sig", vCfg.magnesisAob, false, 0 }
         };
 
         bool allOtherFound = false;
@@ -1497,23 +1589,23 @@ namespace Mod {
                     vCfg = GetCemuVersionConfig(currentExperimental);
                     DllLog("[INFO] Scanner reset applied. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
                     tasks[0].patternStr = vCfg.gameRomCameraAob;
-                    tasks[1].patternStr = vCfg.magnesisAob;
-                    tasks[2].patternStr = vCfg.shortcutMenuAob;
-                    tasks[3].patternStr = vCfg.menuStateAob;
+                    tasks[1].patternStr = vCfg.shortcutMenuAob;
+                    tasks[2].patternStr = vCfg.menuStateAob;
+                    tasks[3].patternStr = vCfg.magnesisAob;
 
                     for (size_t i = 0; i < tasks.size(); ++i) {
                         tasks[i].found = false;
                         tasks[i].address = 0;
                     }
                     g_addrGameRomCamera = 0;
-                    g_addrMagneTarget = 0;
                     g_addrShortcutMenu = 0;
                     g_addrMenuState = 0;
+                    g_addrMagneTarget = 0;
                     
                     RemoveShortcutHook();
                     RemoveMenuStateHook();
                     EnterCriticalSection(&g_menuCandidateCS);
-                    g_menuStateCandidates.clear();
+                    g_menuStateAddrList.clear();
                     LeaveCriticalSection(&g_menuCandidateCS);
 
                     g_writerHuntActive = false;
@@ -1525,9 +1617,9 @@ namespace Mod {
                     
                     g_pSharedMemory->m_statusWritersFound = 0;
                     g_pSharedMemory->m_statusAddrGameRomCamera = 0;
-                    g_pSharedMemory->m_statusAddrMagneTarget = 0;
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
                     g_pSharedMemory->m_statusAddrMenuState = 0;
+                    g_pSharedMemory->m_statusAddrMagneTarget = 0;
                     
                     allOtherFound = false;
                     nextIdx = 1;
@@ -1563,12 +1655,12 @@ namespace Mod {
                         tasks[i].address = 0;
                     }
 
-                    g_addrMagneTarget = 0;
                     g_addrShortcutMenu = 0;
                     g_addrMenuState = 0;
+                    g_addrMagneTarget = 0;
 
                     EnterCriticalSection(&g_menuCandidateCS);
-                    g_menuStateCandidates.clear();
+                    g_menuStateAddrList.clear();
                     LeaveCriticalSection(&g_menuCandidateCS);
 
                     RestoreAllPatches();
@@ -1618,132 +1710,167 @@ namespace Mod {
             }
 
             bool foundAny = false;
+
+            if (g_addrShortcutMenu != 0) {
+                tasks[1].found = true;
+            }
+
+            // 1. Asynchronously poll active detour hooks on every loop pass (not tied to scan order)
+            if (g_shortcutHookActive && !tasks[1].found && g_addrShortcutMenu == 0) {
+                uintptr_t tempAddr = g_tempShortcutAddress.load();
+                if (tempAddr != 0) {
+                    int32_t tempVal = g_tempShortcutValue.load();
+                    if (tempVal == -1 || tempVal == 0 || tempVal == 1 || tempVal == 2 || tempVal == 3 || tempVal == 4) {
+                        DllLog("[SUCCESS] Hook fired! Verified ShortcutMenu address: 0x%llX (value: %d). Hook removed.", tempAddr - 128, tempVal);
+                        tasks[1].found = true;
+                        g_addrShortcutMenu = tempAddr - 128;
+                        if (g_pSharedMemory) {
+                            g_pSharedMemory->m_statusAddrShortcutMenu = g_addrShortcutMenu;
+                        }
+                        RemoveShortcutHook();
+                        foundAny = true;
+                    } else {
+                        DllLog("[WARNING] Hook fired on incorrect value %d at address 0x%llX. Ignoring and waiting.", tempVal, tempAddr);
+                        g_tempShortcutAddress = 0;
+                        g_tempShortcutValue = 0;
+                    }
+                } else {
+                    static int waitCounter = 0;
+                    if (waitCounter++ % 5 == 0) {
+                        DllLog("[INFO] ShortcutMenu detour hook is active. Waiting for game write...");
+                    }
+                }
+            }
+
+            if (g_menuStateHookActive && !tasks[2].found) {
+                uint32_t writeIdx = g_menuStateQueueWriteIdx.load();
+                while (g_menuStateQueueReadIdx != writeIdx && !tasks[2].found) {
+                    uint32_t idx = g_menuStateQueueReadIdx & 31;
+                    uintptr_t tempAddr = g_menuStateQueue[idx].address;
+                    int32_t tempVal = g_menuStateQueue[idx].value;
+                    g_menuStateQueueReadIdx++;
+
+                    if (tempVal >= 5 && tempVal <= 10) {
+                        bool patternValid = false;
+                        uint16_t marker = 0;
+                        if (SafeReadMarker(tempAddr - 4, marker) && (marker & 0xFF) == 0x6E) {
+                            patternValid = true;
+                        }
+
+                        {
+                            uint16_t markerLo = 0, markerHi = 0;
+                            bool okLo = SafeReadMarker(tempAddr - 4, markerLo);
+                            bool okHi = SafeReadMarker(tempAddr - 2, markerHi);
+                            uint32_t fullBlock = okLo && okHi
+                                ? (uint32_t)markerLo | ((uint32_t)markerHi << 16)
+                                : 0xFFFFFFFF;
+                            DllLog("[DEBUG] MenuState pattern check: val=%d, addr=0x%llX, marker=0x%04X, valid=%d, block=0x%08X",
+                                   tempVal, tempAddr, marker, patternValid ? 1 : 0, fullBlock);
+                        }
+
+                        if (patternValid) {
+                            uintptr_t baseAddr = tempAddr;
+                            EnterCriticalSection(&g_menuCandidateCS);
+                            if (g_addrMenuState == 0) {
+                                g_addrMenuState = baseAddr;
+                                g_menuStateAddrList.clear();
+                                g_menuStateAddrList.push_back(baseAddr);
+
+                                tasks[2].found = true;
+                                foundAny = true;
+                                RemoveMenuStateHook();
+                                if (g_pSharedMemory) {
+                                    g_pSharedMemory->m_statusAddrMenuState = baseAddr;
+                                }
+                                DllLog("[INFO] MenuState active candidate set to 0x%llX. Trampoline removed. Backup list cleared.", baseAddr);
+                            }
+                            LeaveCriticalSection(&g_menuCandidateCS);
+                            break; // Stop evaluating remaining queue entries once candidate is found and hook removed!
+                        } else {
+                            DllLog("[WARNING] MenuState hook fired with value %d at address 0x%llX, but pattern 6E** ** ** not found at -4.", tempVal, tempAddr);
+                        }
+                    } else {
+                        DllLog("[WARNING] MenuState hook fired with unexpected value %d at address 0x%llX. Ignoring.", tempVal, tempAddr);
+                    }
+                }
+
+                if (g_addrMenuState != 0) {
+                    tasks[2].found = true;
+                }
+
+                if (!tasks[2].found && g_addrMenuState == 0) {
+                    static int waitCounterMenu = 0;
+                    if (waitCounterMenu++ % 5 == 0) {
+                        EnterCriticalSection(&g_menuCandidateCS);
+                        size_t candidateCount = g_menuStateAddrList.size();
+                        LeaveCriticalSection(&g_menuCandidateCS);
+                        if (candidateCount == 0) {
+                            DllLog("[INFO] MenuState trampoline hook is active. Waiting for game write...");
+                        } else {
+                            DllLog("[INFO] MenuState candidates: %zu. Waiting for value 5-10 write with 6E** ** ** pattern...", candidateCount);
+                        }
+                    }
+                }
+            }
+
+            // 2. Perform AOB pattern scanning for the current target task
             if (targetIdx != 0) {
                 nextIdx = (targetIdx % (tasks.size() - 1)) + 1;
 
-                if (targetIdx == 2) {
-                    if (g_shortcutHookActive) {
-                        uintptr_t tempAddr = g_tempShortcutAddress.load();
-                        if (tempAddr != 0) {
-                            int32_t tempVal = g_tempShortcutValue.load();
-                            if (tempVal == -1 || tempVal == 0 || tempVal == 1 || tempVal == 2 || tempVal == 3 || tempVal == 4) {
-                                DllLog("[SUCCESS] Hook fired! Verified ShortcutMenu address: 0x%llX (value: %d). Hook removed.", tempAddr - 128, tempVal);
-                                // Correct!
-                                tasks[2].found = true;
-                                g_addrShortcutMenu = tempAddr - 128;
-                                if (g_pSharedMemory) {
-                                    g_pSharedMemory->m_statusAddrShortcutMenu = g_addrShortcutMenu;
-                                }
-                                RemoveShortcutHook();
-                                foundAny = true;
-                            } else {
-                                DllLog("[WARNING] Hook fired on incorrect value %d at address 0x%llX. Ignoring and waiting.", tempVal, tempAddr);
-                                // Incorrect target address. Reset and wait for another write.
-                                g_tempShortcutAddress = 0;
-                                g_tempShortcutValue = 0;
-                            }
-                        } else {
-                            static int waitCounter = 0;
-                            if (waitCounter++ % 5 == 0) {
-                                DllLog("[INFO] ShortcutMenu detour hook is active. Waiting for game write...");
-                            }
-                        }
-                    } else {
-                        DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
-                        Pattern pat = ParseAOB(tasks[2].patternStr);
-                        uintptr_t foundAddress = 0;
-                        if (ScanProcessAOB(pat, foundAddress)) {
-                            DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
-                            tasks[2].address = foundAddress;
-                            if (SetupShortcutHook(foundAddress)) {
-                                DllLog("[SUCCESS] Detour hook set up successfully. Waiting for game write...");
-                            } else {
-                                DllLog("[ERROR] Failed to set up detour hook for ShortcutMenu.");
-                            }
-                        } else {
-                            DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
-                        }
-                    }
-                } else if (targetIdx == 3) {
-                    if (g_menuStateHookActive) {
-                        uint32_t writeIdx = g_menuStateQueueWriteIdx.load();
-                        bool matched = false;
-
-                        while (g_menuStateQueueReadIdx != writeIdx) {
-                            uint32_t idx = g_menuStateQueueReadIdx & 31;
-                            uintptr_t tempAddr = g_menuStateQueue[idx].address;
-                            int32_t tempVal = g_menuStateQueue[idx].value;
-                            g_menuStateQueueReadIdx++;
-
-                            if (tempVal == 1 || tempVal == 2) {
-                                g_addrMenuState = tempAddr - 96;
-                                if (g_pSharedMemory) {
-                                    g_pSharedMemory->m_statusAddrMenuState = g_addrMenuState;
-                                }
-                                DllLog("[SUCCESS] Found MenuState address! Fired write value: %d at write addr: 0x%llX. Selected structure base: 0x%llX", 
-                                       tempVal, tempAddr, g_addrMenuState.load());
-                                
-                                tasks[3].found = true;
-                                RemoveMenuStateHook();
-                                foundAny = true;
-                                matched = true;
-                                break;
-                            } else {
-                                DllLog("[WARNING] MenuState hook fired with value %d at address 0x%llX. Ignoring.", tempVal, tempAddr);
-                            }
-                        }
-
-                        if (!matched && !tasks[3].found) {
-                            static int waitCounterMenu = 0;
-                            if (waitCounterMenu++ % 5 == 0) {
-                                DllLog("[INFO] MenuState trampoline hook is active. Waiting for game write...");
-                            }
-                        }
-                    } else {
-                        DllLog("[INFO] Scanning for MenuState instruction pattern...");
-                        Pattern pat = ParseAOB(tasks[3].patternStr);
-                        uintptr_t foundAddress = 0;
-                        if (ScanProcessAOB(pat, foundAddress)) {
-                            DllLog("[SUCCESS] Found MenuState instruction at 0x%llX. Setting up trampoline hook...", foundAddress);
-                            tasks[3].address = foundAddress;
-                            if (SetupMenuStateHook(foundAddress)) {
-                                DllLog("[SUCCESS] Trampoline hook set up successfully. Waiting for game write...");
-                            } else {
-                                DllLog("[ERROR] Failed to set up trampoline hook for MenuState.");
-                            }
-                        } else {
-                            DllLog("[WARNING] MenuState instruction pattern not found. Retrying in 1s...");
-                        }
-                    }
-                } else {
-                    if (targetIdx == 1) {
-                        DllLog("[INFO] Scanning for Magne Target Sig...");
-                    }
-                    Pattern pat = ParseAOB(tasks[targetIdx].patternStr);
+                if (targetIdx == 1 && !tasks[1].found && !g_shortcutHookActive) {
+                    DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
+                    Pattern pat = ParseAOB(tasks[1].patternStr);
                     uintptr_t foundAddress = 0;
                     if (ScanProcessAOB(pat, foundAddress)) {
-                        tasks[targetIdx].address = foundAddress;
-                        tasks[targetIdx].found = true;
-                        foundAny = true;
-
-                        if (targetIdx == 1) {
-                            DllLog("[SUCCESS] Found Magne Target Sig at 0x%llX. Detour hooks injected.", foundAddress);
+                        DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
+                        tasks[1].address = foundAddress;
+                        if (SetupShortcutHook(foundAddress)) {
+                            DllLog("[SUCCESS] Detour hook set up successfully. Waiting for game write...");
+                        } else {
+                            DllLog("[ERROR] Failed to set up detour hook for ShortcutMenu.");
                         }
+                    } else {
+                        DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
+                    }
+                } else if (targetIdx == 2 && !tasks[2].found && !g_menuStateHookActive && g_addrMenuState == 0) {
+                    DllLog("[INFO] Scanning for MenuState instruction pattern...");
+                    Pattern pat = ParseAOB(tasks[2].patternStr);
+                    uintptr_t foundAddress = 0;
+                    if (ScanProcessAOB(pat, foundAddress)) {
+                        DllLog("[SUCCESS] Found MenuState instruction at 0x%llX. Setting up trampoline hook...", foundAddress);
+                        tasks[2].address = foundAddress;
+                        if (SetupMenuStateHook(foundAddress)) {
+                            DllLog("[SUCCESS] Trampoline hook set up successfully. Waiting for game write...");
+                        } else {
+                            DllLog("[ERROR] Failed to set up trampoline hook for MenuState.");
+                        }
+                    } else {
+                        DllLog("[WARNING] MenuState instruction pattern not found. Retrying in 1s...");
+                    }
+                } else if (targetIdx == 3 && !tasks[3].found) {
+                    DllLog("[INFO] Scanning for Magne Target Sig...");
+                    Pattern pat = ParseAOB(tasks[3].patternStr);
+                    uintptr_t foundAddress = 0;
+                    if (ScanProcessAOB(pat, foundAddress)) {
+                        tasks[3].address = foundAddress;
+                        tasks[3].found = true;
+                        foundAny = true;
+                        DllLog("[SUCCESS] Found Magne Target Sig at 0x%llX. Detour hooks injected.", foundAddress);
 
                         // Write to shared memory immediately!
                         if (g_pSharedMemory) {
                             switch (targetIdx) {
-                                case 1: g_pSharedMemory->m_statusAddrMagneTarget  = foundAddress; break;
+                                case 3: g_pSharedMemory->m_statusAddrMagneTarget  = foundAddress; break;
                             }
                         }
 
                         // Assign to global variable immediately!
                         switch (targetIdx) {
-                            case 1: g_addrMagneTarget  = foundAddress; break;
+                            case 3: g_addrMagneTarget  = foundAddress; break;
                         }
 
                         // Initialize magnesis detour patches when MagneTarget is found
-                        if (targetIdx == 1) {
+                        if (targetIdx == 3) {
                             EnterCriticalSection(&g_patchCS);
                             if (!g_magnePatchesInitialized) {
                                 g_magneXPatch = { foundAddress + vCfg.magnesisXOffset, 7, {}, false };
@@ -1778,7 +1905,7 @@ namespace Mod {
                             LeaveCriticalSection(&g_patchCS);
                         }
                     } else {
-                        if (targetIdx == 1) {
+                        if (targetIdx == 3) {
                             DllLog("[WARNING] Magne Target Sig not found. Retrying in 1s...");
                         }
                     }
@@ -1795,9 +1922,9 @@ namespace Mod {
 
             if (g_pSharedMemory) {
                 g_pSharedMemory->m_statusAddrGameRomCamera = g_addrGameRomCamera.load();
-                g_pSharedMemory->m_statusAddrMagneTarget   = g_addrMagneTarget.load();
                 g_pSharedMemory->m_statusAddrShortcutMenu  = g_addrShortcutMenu.load();
                 g_pSharedMemory->m_statusAddrMenuState     = g_addrMenuState.load();
+                g_pSharedMemory->m_statusAddrMagneTarget   = g_addrMagneTarget.load();
 
                 EnterCriticalSection(&g_patchCS);
                 g_pSharedMemory->m_patchMagneDetourActive = g_magnePatchesInitialized && g_magneDetourPatch.active;
@@ -1924,6 +2051,8 @@ namespace Mod {
         }
     }
 
+    static HWND g_hCemuWnd = nullptr;
+
     static void CemuKeyInjector_SendKey(uint16_t keycode, bool up) {
         UINT scan = MapVirtualKeyW(keycode, MAPVK_VK_TO_VSC);
         DWORD flags = up ? KEYEVENTF_KEYUP : 0;
@@ -1948,11 +2077,22 @@ namespace Mod {
         input.ki.time = 0;
         input.ki.dwExtraInfo = 0;
 
-        // SendInput can fail under UIPI; log to debug output since this runs
-        // inside the DLL where we have no console.
-        UINT sent = SendInput(1, &input, sizeof(INPUT));
-        if (sent != 1) {
-            OutputDebugStringW(L"[Mousecam DLL] SendInput failed — possible UIPI block.\n");
+        // SendInput works when Cemu has focus
+        SendInput(1, &input, sizeof(INPUT));
+
+        // Post WM_KEYDOWN/WM_KEYUP directly to Cemu window message queue so input works when out of focus
+        if (!g_hCemuWnd) {
+            g_hCemuWnd = GetTargetWindow(GetCurrentProcessId());
+        }
+        if (g_hCemuWnd) {
+            LPARAM lp = 1 | (scan << 16);
+            if (is_extended) lp |= (1 << 24);
+            if (up) {
+                lp |= (1u << 30) | (1u << 31);
+                PostMessageW(g_hCemuWnd, WM_KEYUP, keycode, lp);
+            } else {
+                PostMessageW(g_hCemuWnd, WM_KEYDOWN, keycode, lp);
+            }
         }
     }
 
@@ -2031,6 +2171,11 @@ namespace Mod {
             last_frame_time = loop_now;
 
             uintptr_t gc_addr = g_addrGameRomCamera ? (g_addrGameRomCamera + 0x630) : 0;
+            if (g_pSharedMemory && g_addrGameRomCamera != 0) {
+                g_pSharedMemory->m_telePivotX = ReadFloatBE(g_addrGameRomCamera + 0x674);
+                g_pSharedMemory->m_telePivotY = ReadFloatBE(g_addrGameRomCamera + 0x678);
+                g_pSharedMemory->m_telePivotZ = ReadFloatBE(g_addrGameRomCamera + 0x67C);
+            }
             static uintptr_t last_gc_addr = 0;
             if (gc_addr != last_gc_addr) {
                 last_gc_addr = gc_addr;
@@ -2087,12 +2232,12 @@ namespace Mod {
 
             bool menu_active = false;
             if (g_addrMenuState != 0) {
-                int32_t val = ReadInt32BE(g_addrMenuState + 96);
+                int32_t val = ReadInt32BE(g_addrMenuState);
                 g_liveMenuState = val;
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_teleLiveMenuState = static_cast<uint8_t>(val);
                 }
-                menu_active = (val == 2);
+                menu_active = (val == 10);
             }
 
             bool is_shortcut_open = false;
@@ -2119,6 +2264,7 @@ namespace Mod {
             }
 
             bool magnesis_mode = magnesis_auto_active && g_mousecamActive;
+            bool fps_magne_active = magnesis_mode && g_pSharedMemory && g_pSharedMemory->m_cfgFpsMagnesis;
 
             // The JIT compiler periodically recompiles code paths, which can
             // overwrite our injected detour bytes (jmp [AsmMagnesisXWriter]).
@@ -2187,7 +2333,7 @@ namespace Mod {
                 LeaveCriticalSection(&g_patchCS);
             }
 
-            bool should_nop = g_mousecamActive && !magnesis_mode && !menu_active && !is_shortcut_open;
+            bool should_nop = g_mousecamActive && (!magnesis_mode || fps_magne_active) && !menu_active && !is_shortcut_open;
             if (should_nop != last_should_nop) {
                 last_should_nop = should_nop;
                 if (should_nop) {
@@ -2201,13 +2347,6 @@ namespace Mod {
                     last_written_y = 0.0f;
                     last_written_z = 0.0f;
                     has_written_once = false;
-                    if (active_menu != ScrollMenuType::None) {
-                        uint16_t dpad_left_key = g_pSharedMemory ? g_pSharedMemory->m_cfgDpadLeftKey : 0;
-                        uint16_t dpad_right_key = g_pSharedMemory ? g_pSharedMemory->m_cfgDpadRightKey : 0;
-                        if (dpad_left_key != 0) { CemuKeyInjector_SendKey(dpad_left_key, true); }
-                        if (dpad_right_key != 0) { CemuKeyInjector_SendKey(dpad_right_key, true); }
-                        active_menu = ScrollMenuType::None;
-                    }
                 }
 
                 // SMOOTH TRANSITION: Restore orbital camera angles from the game camera on recapture (1:1 with Rust)
@@ -2367,31 +2506,42 @@ namespace Mod {
                             magne_initialized = true;
                         }
 
-                        float magne_sens = g_pSharedMemory ? g_pSharedMemory->m_cfgMagneSens : 1.0f;
-                        float d_theta = dx * sens_x * magne_sens * 5.0f;
-                        
-                        // Apply vertical deadzone to dy
-                        float deadzone = g_pSharedMemory ? g_pSharedMemory->m_cfgMagneYDeadzone : 1.5f;
-                        float raw_dy = dy;
-                        if (fabs(raw_dy) <= deadzone) {
-                            raw_dy = 0.0f;
-                        } else {
-                            raw_dy = (raw_dy > 0.0f) ? (raw_dy - deadzone) : (raw_dy + deadzone);
-                        }
-                        float dy_world = -raw_dy * sens_y * magne_sens * 42.5f;
+                        float magne_sens_h = g_pSharedMemory ? g_pSharedMemory->m_cfgMagneSens : 1.0f;
+                        bool indep_magne_sens = g_pSharedMemory ? g_pSharedMemory->m_cfgUseIndependentMagneSens : false;
 
-                        // Apply magnesis speed limits based on configuration
+                        float d_theta = dx * sens_x * magne_sens_h * 5.0f;
+
+                        float dy_world = 0.0f;
+                        if (indep_magne_sens) {
+                            float magne_sens_v = g_pSharedMemory ? g_pSharedMemory->m_cfgMagneSensY : 1.0f;
+                            dy_world = -dy * sens_y * magne_sens_v * 42.5f;
+                        } else {
+                            // Dynamic 1:1 Auto-Match: scale vertical speed with distance R
+                            // Arc length S_H = R * d_theta = R * (dx * sens_x * magne_sens_h * 5.0)
+                            // Matching dy_world = dy * sens_y * magne_sens_h * (5.0 * R)
+                            float h_dist = sqrt(magne_off_x * magne_off_x + magne_off_z * magne_off_z);
+                            if (h_dist < 1.0f) h_dist = 1.0f;
+                            dy_world = -dy * sens_y * magne_sens_h * (5.0f * h_dist);
+                        }
+
+                        // Apply magnesis speed & distance limits based on configuration
                         uint8_t speedMode = g_pSharedMemory ? g_pSharedMemory->m_cfgMagnesisSpeedMode : 2;
                         float maxAngularSpeedH = 0.0f; // 0 = unlimited
                         float maxSpeedV = 0.0f;
+                        float v_clamp = 999999.0f;     // 999999 = unlimited height
+                        float h_clamp_max = 999999.0f; // 999999 = unlimited radius
                         const float PI = 3.14159265f;
 
                         if (speedMode == 0) {
                             maxAngularSpeedH = (2.5f * PI) / 7.0f; // 1.25x Vanilla
                             maxSpeedV = 18.75f;
+                            v_clamp = 15.0f;
+                            h_clamp_max = 22.0f;
                         } else if (speedMode == 1) {
                             maxAngularSpeedH = (6.25f * PI) / 7.0f; // 2.5x Vanilla
                             maxSpeedV = 46.875f;
+                            v_clamp = 30.0f;
+                            h_clamp_max = 50.0f;
                         }
 
                         // Accumulate dt for speed clamping to match input frequency
@@ -2428,21 +2578,33 @@ namespace Mod {
                             magne_off_z = new_off_z;
                         }
 
-                        float v_clamp = 15.0f;
                         if (magne_off_y < -v_clamp) magne_off_y = -v_clamp;
                         if (magne_off_y > v_clamp) magne_off_y = v_clamp;
 
                         int scroll = g_scrollDelta.exchange(0);
-                        float h_clamp_max = 22.0f;
                         if (scroll != 0) {
-                            float h_dist = sqrt(magne_off_x * magne_off_x + magne_off_z * magne_off_z);
-                            if (h_dist > 0.01f) {
-                                float new_h_dist = h_dist + (static_cast<float>(scroll) * 0.5f / 120.0f);
-                                if (new_h_dist < 2.0f) new_h_dist = 2.0f;
-                                if (new_h_dist > h_clamp_max) new_h_dist = h_clamp_max;
-                                float scale = new_h_dist / h_dist;
-                                magne_off_x *= scale;
-                                magne_off_z *= scale;
+                            float pull_sens = g_pSharedMemory ? g_pSharedMemory->m_cfgMagnePullSens : 1.0f;
+                            if (fps_magne_active) {
+                                float r_3d = sqrt(magne_off_x * magne_off_x + magne_off_y * magne_off_y + magne_off_z * magne_off_z);
+                                if (r_3d > 0.01f) {
+                                    float new_r_3d = r_3d + (static_cast<float>(scroll) * 0.5f / 120.0f) * pull_sens;
+                                    if (new_r_3d < 1.0f) new_r_3d = 1.0f;
+                                    if (new_r_3d > h_clamp_max) new_r_3d = h_clamp_max;
+                                    float scale = new_r_3d / r_3d;
+                                    magne_off_x *= scale;
+                                    magne_off_y *= scale;
+                                    magne_off_z *= scale;
+                                }
+                            } else {
+                                float h_dist = sqrt(magne_off_x * magne_off_x + magne_off_z * magne_off_z);
+                                if (h_dist > 0.01f) {
+                                    float new_h_dist = h_dist + (static_cast<float>(scroll) * 0.5f / 120.0f) * pull_sens;
+                                    if (new_h_dist < 2.0f) new_h_dist = 2.0f;
+                                    if (new_h_dist > h_clamp_max) new_h_dist = h_clamp_max;
+                                    float scale = new_h_dist / h_dist;
+                                    magne_off_x *= scale;
+                                    magne_off_z *= scale;
+                                }
                             }
                         }
 
@@ -2509,9 +2671,17 @@ namespace Mod {
                             }
 
                             bool scroll_helper = g_pSharedMemory ? g_pSharedMemory->m_cfgScrollHelper : false;
-                            if (scroll_helper) {
+                            if (scroll_helper && g_mousecamActive && is_foreground) {
                                 int scroll = g_scrollDelta.exchange(0);
-                                if (is_main_menu_open || (is_shortcut_open && active_menu == ScrollMenuType::None)) {
+                                uint16_t dpad_left_key = g_pSharedMemory ? g_pSharedMemory->m_cfgDpadLeftKey : 0;
+                                uint16_t dpad_right_key = g_pSharedMemory ? g_pSharedMemory->m_cfgDpadRightKey : 0;
+                                uint16_t rstick_left_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickLeftKey : 0;
+                                uint16_t rstick_right_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickRightKey : 0;
+
+                                bool is_shortcut_in_game = (g_addrShortcutMenu != 0 && ReadInt32BE(g_addrShortcutMenu + 128) != -1);
+                                bool is_any_menu_active = is_main_menu_open || is_shortcut_in_game || (active_menu != ScrollMenuType::None);
+
+                                if (is_any_menu_active) {
                                     if (scroll != 0) {
                                         scroll_accumulator += scroll;
                                     }
@@ -2520,8 +2690,6 @@ namespace Mod {
                                         int sign = scroll_accumulator > 0 ? 1 : -1;
                                         scroll_accumulator -= sign * notches * 120;
 
-                                        uint16_t rstick_left_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickLeftKey : 0;
-                                        uint16_t rstick_right_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickRightKey : 0;
                                         uint16_t target_key = (sign > 0) ? rstick_right_key : rstick_left_key;
                                         if (target_key != 0) {
                                             for (int n = 0; n < notches; ++n) {
@@ -2531,13 +2699,23 @@ namespace Mod {
                                                 Sleep(15);
                                             }
                                         }
+                                        menu_hold_timer = std::chrono::steady_clock::now();
+                                    }
+
+                                    // Release D-Pad key and clear active_menu state only after scroll inactivity timeout
+                                    if (active_menu != ScrollMenuType::None) {
+                                        auto elapsed_sec = std::chrono::duration<float>(std::chrono::steady_clock::now() - menu_hold_timer).count();
+                                        if (elapsed_sec > 0.6f) {
+                                            if (active_menu == ScrollMenuType::Left && dpad_left_key != 0) {
+                                                CemuKeyInjector_SendKey(dpad_left_key, true);
+                                            } else if (active_menu == ScrollMenuType::Right && dpad_right_key != 0) {
+                                                CemuKeyInjector_SendKey(dpad_right_key, true);
+                                            }
+                                            active_menu = ScrollMenuType::None;
+                                            scroll_accumulator = 0;
+                                        }
                                     }
                                 } else {
-                                    uint16_t dpad_left_key = g_pSharedMemory ? g_pSharedMemory->m_cfgDpadLeftKey : 0;
-                                    uint16_t dpad_right_key = g_pSharedMemory ? g_pSharedMemory->m_cfgDpadRightKey : 0;
-                                    uint16_t rstick_left_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickLeftKey : 0;
-                                    uint16_t rstick_right_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickRightKey : 0;
-
                                     if (scroll != 0) {
                                         scroll_accumulator += scroll;
                                     }
@@ -2547,49 +2725,20 @@ namespace Mod {
                                         int sign = scroll_accumulator > 0 ? 1 : -1;
                                         scroll_accumulator -= sign * notches * 120;
 
-                                        if (active_menu == ScrollMenuType::None) {
-                                            active_menu = (sign > 0) ? ScrollMenuType::Right : ScrollMenuType::Left;
-                                            menu_hold_timer = std::chrono::steady_clock::now();
+                                        active_menu = (sign > 0) ? ScrollMenuType::Right : ScrollMenuType::Left;
+                                        menu_hold_timer = std::chrono::steady_clock::now();
 
-                                            uint16_t dpad = (sign > 0) ? dpad_right_key : dpad_left_key;
-                                            if (dpad != 0) { CemuKeyInjector_SendKey(dpad, false); }
-                                            
-                                            uint16_t rstick = (sign > 0) ? rstick_right_key : rstick_left_key;
-                                            if (rstick != 0) {
-                                                for (int n = 0; n < notches; ++n) {
-                                                    CemuKeyInjector_SendKey(rstick, false);
-                                                    Sleep(15);
-                                                    CemuKeyInjector_SendKey(rstick, true);
-                                                    Sleep(15);
-                                                }
-                                            }
-                                        } else {
-                                            menu_hold_timer = std::chrono::steady_clock::now();
-                                            uint16_t rstick = (sign > 0) ? rstick_right_key : rstick_left_key;
-                                            if (rstick != 0) {
-                                                for (int n = 0; n < notches; ++n) {
-                                                    CemuKeyInjector_SendKey(rstick, false);
-                                                    Sleep(15);
-                                                    CemuKeyInjector_SendKey(rstick, true);
-                                                    Sleep(15);
-                                                }
-                                            }
-                                        }
-                                    }
+                                        uint16_t dpad = (sign > 0) ? dpad_right_key : dpad_left_key;
+                                        if (dpad != 0) { CemuKeyInjector_SendKey(dpad, false); }
 
-                                    if (active_menu != ScrollMenuType::None) {
-                                        auto elapsed_sec = std::chrono::duration<float>(std::chrono::steady_clock::now() - menu_hold_timer).count();
-                                        if (elapsed_sec > 0.5f) {
-                                            switch (active_menu) {
-                                                case ScrollMenuType::Left:
-                                                    if (dpad_left_key != 0) { CemuKeyInjector_SendKey(dpad_left_key, true); }
-                                                    break;
-                                                case ScrollMenuType::Right:
-                                                    if (dpad_right_key != 0) { CemuKeyInjector_SendKey(dpad_right_key, true); }
-                                                    break;
+                                        uint16_t rstick = (sign > 0) ? rstick_right_key : rstick_left_key;
+                                        if (rstick != 0) {
+                                            for (int n = 0; n < notches; ++n) {
+                                                CemuKeyInjector_SendKey(rstick, false);
+                                                Sleep(15);
+                                                CemuKeyInjector_SendKey(rstick, true);
+                                                Sleep(15);
                                             }
-                                            active_menu = ScrollMenuType::None;
-                                            scroll_accumulator = 0;
                                         }
                                     }
                                 }
@@ -2607,7 +2756,8 @@ namespace Mod {
                         }
                     }
 
-                    orbit_pitch = (std::max)(-1.5f, (std::min)(1.5f, orbit_pitch));
+                    const float MAX_PITCH_RAD = 1.5620697f; // 89.5 degrees (179 degrees total range)
+                    orbit_pitch = (std::max)(-MAX_PITCH_RAD, (std::min)(MAX_PITCH_RAD, orbit_pitch));
 
                     if (!virt_cam_initialized) {
                         vcam_pos_x = ReadFloatBE(gc_addr + 0);
@@ -2683,6 +2833,7 @@ namespace Mod {
                     float mouse_factor = 1.0f - exp(-45.0f * dt);
                     current_orbit_angle += (orbit_angle - current_orbit_angle) * mouse_factor;
                     current_orbit_pitch += (orbit_pitch - current_orbit_pitch) * mouse_factor;
+                    current_orbit_pitch = (std::max)(-MAX_PITCH_RAD, (std::min)(MAX_PITCH_RAD, current_orbit_pitch));
 
                     float current_radius = 5.5f;
                     bool full_orbit = (g_pSharedMemory && g_pSharedMemory->m_cfgFullOrbitCamera);
@@ -2694,6 +2845,31 @@ namespace Mod {
                     vcam_pos_x = pivot_x + horizontal_r * sin(current_orbit_angle);
                     vcam_pos_y = pivot_y + current_radius * sin(current_orbit_pitch);
                     vcam_pos_z = pivot_z + horizontal_r * cos(current_orbit_angle);
+
+                    if (fps_magne_active && magne_ideal_base != 0) {
+                        float eye_height = g_pSharedMemory ? g_pSharedMemory->m_cfgFpsMagneEyeHeight : 0.5f;
+                        float fwd_offset = g_pSharedMemory ? g_pSharedMemory->m_cfgFpsMagneOffsetForward : 0.0f;
+                        float side_offset = g_pSharedMemory ? g_pSharedMemory->m_cfgFpsMagneOffsetSide : 0.0f;
+
+                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7D4);
+                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7D8);
+                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7DC);
+                        if (link_x == 0.0f && link_y == 0.0f && link_z == 0.0f) {
+                            link_x = raw_pivot_x; link_y = raw_pivot_y; link_z = raw_pivot_z;
+                        }
+
+                        vcam_pos_x = link_x + side_offset;
+                        vcam_pos_y = link_y + eye_height;
+                        vcam_pos_z = link_z + fwd_offset;
+
+                        float focus_x = ReadFloatBE(magne_ideal_base);
+                        float focus_y = ReadFloatBE(magne_ideal_base + 4);
+                        float focus_z = ReadFloatBE(magne_ideal_base + 8);
+
+                        WriteFloatBE(g_addrGameRomCamera + 0x55C, focus_x);
+                        WriteFloatBE(g_addrGameRomCamera + 0x560, focus_y);
+                        WriteFloatBE(g_addrGameRomCamera + 0x564, focus_z);
+                    }
 
                     if (g_pSharedMemory) {
                         g_pSharedMemory->m_telePivotX = pivot_x;
@@ -2711,7 +2887,7 @@ namespace Mod {
                         }
                     }
 
-                    if (!magnesis_mode && !menu_active) {
+                    if ((!magnesis_mode || fps_magne_active) && !menu_active) {
                         static int g_huntFramesLeft = 0;
                         static uint32_t last_writers_found = 0;
 

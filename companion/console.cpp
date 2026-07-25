@@ -38,6 +38,20 @@ void ShowTooltip(HWND hWnd, const wchar_t* text, int x, int y) {
     }
 }
 
+static WNDPROC g_oldConsoleEditProc = nullptr;
+
+static LRESULT CALLBACK ConsoleEditSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_RBUTTONUP || msg == WM_CONTEXTMENU) {
+        CHARRANGE selRange;
+        SendMessageW(hWnd, EM_EXGETSEL, 0, (LPARAM)&selRange);
+        if (selRange.cpMin != selRange.cpMax) {
+            SendMessageW(hWnd, WM_COPY, 0, 0);
+            return 0;
+        }
+    }
+    return CallWindowProcW(g_oldConsoleEditProc, hWnd, msg, wParam, lParam);
+}
+
 void SetStatus(const wchar_t* msg) {
     g_statusText = msg;
     if (g_hWnd) InvalidateRect(g_hWnd, nullptr, FALSE);
@@ -70,6 +84,21 @@ void LogToConsole(const wchar_t* format, ...) {
     wchar_t buf[768];
     swprintf_s(buf, L"%02d:%02d:%02d %s\n", st.wHour, st.wMinute, st.wSecond, msg_content);
 
+    // Smart auto-scroll check: only scroll to bottom if scrollbar is already at or near bottom
+    SCROLLINFO si = { sizeof(SCROLLINFO), SIF_ALL };
+    BOOL hasScroll = GetScrollInfo(g_hConsoleEdit, SB_VERT, &si);
+    bool isAtBottom = true;
+    if (hasScroll && si.nMax > 0 && si.nPage > 0) {
+        isAtBottom = (si.nPos + (int)si.nPage >= si.nMax - 15);
+    }
+
+    POINT scrollPos = { 0, 0 };
+    CHARRANGE selRange = { 0, 0 };
+    if (!isAtBottom) {
+        SendMessageW(g_hConsoleEdit, EM_GETSCROLLPOS, 0, (LPARAM)&scrollPos);
+        SendMessageW(g_hConsoleEdit, EM_EXGETSEL, 0, (LPARAM)&selRange);
+    }
+
     GETTEXTLENGTHEX gtl = { GTL_DEFAULT, 1200 };
     int len = SendMessageW(g_hConsoleEdit, EM_GETTEXTLENGTHEX, (WPARAM)&gtl, 0);
     SendMessageW(g_hConsoleEdit, EM_SETSEL, len, len);
@@ -83,11 +112,15 @@ void LogToConsole(const wchar_t* format, ...) {
     else if (type == 3) cf.crTextColor = RGB(g_theme.error.GetR(), g_theme.error.GetG(), g_theme.error.GetB());
     else cf.crTextColor = RGB(g_theme.text.GetR(), g_theme.text.GetG(), g_theme.text.GetB());
 
-    // B6: EM_SETCHARFORMAT + CFM_COLOR is correct for per-line coloring in rich edit.
-    // No change needed — this is the standard Win32 approach for colored console output.
     SendMessageW(g_hConsoleEdit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
     SendMessageW(g_hConsoleEdit, EM_REPLACESEL, 0, (LPARAM)buf);
-    SendMessageW(g_hConsoleEdit, WM_VSCROLL, SB_BOTTOM, 0);
+
+    if (isAtBottom) {
+        SendMessageW(g_hConsoleEdit, WM_VSCROLL, SB_BOTTOM, 0);
+    } else {
+        SendMessageW(g_hConsoleEdit, EM_EXSETSEL, 0, (LPARAM)&selRange);
+        SendMessageW(g_hConsoleEdit, EM_SETSCROLLPOS, 0, (LPARAM)&scrollPos);
+    }
 }
 
 void ClearConsole() {
@@ -99,6 +132,9 @@ void ClearConsole() {
 
 void UpdateConsoleEditPosition(HWND hWnd) {
     if (!g_hConsoleEdit) return;
+    if (!g_oldConsoleEditProc) {
+        g_oldConsoleEditProc = (WNDPROC)SetWindowLongPtrW(g_hConsoleEdit, GWLP_WNDPROC, (LONG_PTR)ConsoleEditSubclassProc);
+    }
     if (g_collapsedLog) {
         ShowWindow(g_hConsoleEdit, SW_HIDE);
         return;

@@ -36,15 +36,21 @@ struct SharedMemoryLayout {
     uint8_t  m_cfgFullOrbitCamera;
     bool     m_cfgCemuExperimental;
     uint8_t  m_cfgMagnesisSpeedMode; // 0=Vanilla, 1=Extended, 2=Unlimited
-    float    m_cfgMagneYDeadzone;    // Vertical deadzone in raw pixels
-    float    m_cfgMagneSens;         // Magnesis sensitivity multiplier
+    bool     m_cfgFpsMagnesis;
+    float    m_cfgFpsMagneEyeHeight;
+    float    m_cfgFpsMagneOffsetForward;
+    float    m_cfgFpsMagneOffsetSide;
+    float    m_cfgMagneSens;         // Magnesis sensitivity multiplier (H)
+    float    m_cfgMagneSensY;        // Magnesis sensitivity multiplier (V)
+    bool     m_cfgUseIndependentMagneSens; // Separate vertical Magnesis sensitivity
+    float    m_cfgMagnePullSens;     // Magnesis pull sensitivity multiplier
 
 
     // --- Status / scan results (written by DLL, read by companion) ---
     uint64_t m_statusAddrGameRomCamera;
-    uint64_t m_statusAddrMagneTarget;
     uint64_t m_statusAddrShortcutMenu;
     uint64_t m_statusAddrMenuState;
+    uint64_t m_statusAddrMagneTarget;
 
     // --- Live telemetry (written by DLL, read by companion) ---
     float   m_teleLiveCamPosX;
