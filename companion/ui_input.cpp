@@ -260,9 +260,14 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         SaveConfig();
         InvalidateRect(hWnd, nullptr, FALSE);
     }
-    if (!g_targetInjected && ui.rCemuExperimental.Contains(x, y)) {
+    if (ui.rCemuExperimental.Contains(x, y)) {
         g_config.cemu_experimental = !g_config.cemu_experimental;
         SaveConfig();
+        WriteConfigToSharedMemory();
+        if (g_pSharedMemory) {
+            g_pSharedMemory->m_reqResetScan = true;
+            LogToConsole(L"[INFO] Switched Cemu mode. Triggering scanner reset...");
+        }
         InvalidateRect(hWnd, nullptr, FALSE);
     }
     if (ui.rIndepSens.Contains(x, y)) {

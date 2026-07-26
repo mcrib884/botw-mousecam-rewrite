@@ -1,6 +1,7 @@
 #include "mod.h"
 #pragma comment(lib, "winmm.lib")
 #include <vector>
+#include <set>
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -69,7 +70,8 @@ namespace Mod {
         std::string gameRomCameraAob;
         std::string magnesisAob;
         std::string shortcutMenuAob;
-        std::string menuStateAob;
+        std::string menuStateAob1;
+        std::string menuStateAob2;
         size_t magnesisXOffset;
         size_t magnesisYOffset;
         size_t magnesisZOffset;
@@ -84,7 +86,8 @@ namespace Mod {
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "45 0F 38 F1 74 2D 68 F3 0F 5A C0 F2 0F 10 AC 24 68 02 00 00 31 F6 66 0F 2E E5 41 0F 9B C6 40 0F 92 C6 44 20 F6 31 FF 66 0F 2E E5 40 0F 97 C7 45 31 C0 66 0F 2E E5 41 0F 9B C6 41 0F 94 C0 45 20 F0 45 31 C9 66 0F 2E E5 41 0F 9A C1 F2 0F 11 A4 24 88 00 00 00 41 89 5C 0D 70 0F CA 89 54 24 2C 45 0F 38 F0 74 0D 70 66 41 0F 6E E6 F2 0F 10 FC F3 0F 5A FF F2 0F 11 BC 24 60 01 00 00 66 41 0F 7E F6 45 0F 38 F1 74 2D 6C F3 0F 5A F6 F2 0F 11 B4 24 48 01 00 00 66 41 0F 7E E6 45 0F 38 F1 74 2D 70";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
-            cfg.menuStateAob    = "41 0F 38 F1 44 0D 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
+            cfg.menuStateAob1    = "41 0F 38 F1 44 0D 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
+            cfg.menuStateAob2    = "41 0F 38 F1 44 0D 3C 89 44 24 30 83 AC 24 B0 02 00 00 02 8B 4C 24 78 89 C8 89 44 24 10 C7 84 24 B8 02 00 00 D4 3A";
             cfg.magnesisXOffset = 0x00;
             cfg.magnesisYOffset = 0x82;
             cfg.magnesisZOffset = 0x8D;
@@ -95,7 +98,8 @@ namespace Mod {
             cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
-            cfg.menuStateAob    = "41 0F 38 F1 44 15 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
+            cfg.menuStateAob1    = "41 0F 38 F1 44 15 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
+            cfg.menuStateAob2    = "41 0F 38 F1 44 15 3C 89 44 24 30 83 AC 24 B0 02 00 00 02 8B 44 24 78 89 C2 89 54 24 10 C7 84 24 B8 02 00 00 D4 3A";
             cfg.magnesisXOffset = 0x40;
             cfg.magnesisYOffset = 0xBA;
             cfg.magnesisZOffset = 0xCE;
@@ -166,14 +170,14 @@ namespace Mod {
     static void DllLog(const char* format, ...) {
         if (!g_pSharedMemory) return;
 
-        char msg[128];
+        char msg[128] = {};
         va_list args;
         va_start(args, format);
-        vsprintf_s(msg, format, args);
+        vsnprintf(msg, sizeof(msg), format, args);
         va_end(args);
 
         uint32_t idx = g_pSharedMemory->m_logWriteIdx % 8;
-        strcpy_s(g_pSharedMemory->m_logQueue[idx], msg);
+        memcpy(g_pSharedMemory->m_logQueue[idx], msg, 128);
         g_pSharedMemory->m_logWriteIdx++;
     }
 
@@ -262,20 +266,118 @@ namespace Mod {
         return pat;
     }
 
-    static bool CpuSupportsAvx2() {
-        int cpuInfo[4] = { 0 };
-        __cpuid(cpuInfo, 7);
-        return (cpuInfo[1] & (1 << 5)) != 0;
+    enum class CpuSimdTier {
+        SSE2 = 0,
+        AVX2 = 1,
+        AVX512 = 2
+    };
+
+    static CpuSimdTier GetCpuSimdTier() {
+        static CpuSimdTier tier = []() {
+            int cpuInfo[4] = { 0 };
+            __cpuid(cpuInfo, 0);
+            int numIds = cpuInfo[0];
+            if (numIds >= 7) {
+                __cpuid(cpuInfo, 7);
+                bool hasAvx512F  = (cpuInfo[1] & (1 << 16)) != 0;
+                bool hasAvx512BW = (cpuInfo[1] & (1 << 30)) != 0;
+                if (hasAvx512F && hasAvx512BW) {
+                    return CpuSimdTier::AVX512;
+                }
+                bool hasAvx2 = (cpuInfo[1] & (1 << 5)) != 0;
+                if (hasAvx2) {
+                    return CpuSimdTier::AVX2;
+                }
+            }
+            return CpuSimdTier::SSE2;
+        }();
+        return tier;
+    }
+
+    static const char* GetCpuSimdTierName() {
+        CpuSimdTier tier = GetCpuSimdTier();
+        switch (tier) {
+            case CpuSimdTier::AVX512: return "AVX-512 (64-byte ZMM)";
+            case CpuSimdTier::AVX2:   return "AVX2 (32-byte YMM)";
+            case CpuSimdTier::SSE2:   return "SSE2 (16-byte XMM)";
+            default:                  return "Scalar Fallback";
+        }
+    }
+
+    static bool SearchPatternAVX512(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
+        size_t patternLen = pattern.bytes.size();
+        if (bufferSize < patternLen) return false;
+        size_t limit = bufferSize - patternLen;
+
+        __m512i firstByteVec = _mm512_set1_epi8(firstByte);
+
+        size_t i = 0;
+        size_t maxSimdIndex = (bufferSize >= firstNonWildcard + 64) ? (bufferSize - firstNonWildcard - 64) : 0;
+        for (; i <= limit && i <= maxSimdIndex; i += 64) {
+            __m512i data = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(buffer + i + firstNonWildcard));
+            uint64_t mask = _mm512_cmpeq_epi8_mask(data, firstByteVec);
+
+            while (mask != 0) {
+                unsigned long bitIdx;
+                _BitScanForward64(&bitIdx, mask);
+                mask &= ~(1ULL << bitIdx);
+
+                size_t offset = i + bitIdx;
+                if (offset + patternLen <= bufferSize) {
+                    bool match = true;
+                    for (size_t j = 0; j < patternLen; ++j) {
+                        if (!pattern.isWildcard[j] && buffer[offset + j] != pattern.bytes[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + offset);
+                        uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
+                        if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
+                            continue;
+                        }
+                        foundOffset = offset;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        for (; i <= limit; ++i) {
+            if (buffer[i + firstNonWildcard] == firstByte) {
+                bool match = true;
+                for (size_t j = 0; j < patternLen; ++j) {
+                    if (!pattern.isWildcard[j] && buffer[i + j] != pattern.bytes[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + i);
+                    uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
+                    if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
+                        continue;
+                    }
+                    foundOffset = i;
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     static bool SearchPatternAVX2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
         size_t patternLen = pattern.bytes.size();
+        if (bufferSize < patternLen) return false;
         size_t limit = bufferSize - patternLen;
         
         __m256i firstByteVec = _mm256_set1_epi8(firstByte);
         
         size_t i = 0;
-        for (; i + 32 <= limit; i += 32) {
+        size_t maxSimdIndex = (bufferSize >= firstNonWildcard + 32) ? (bufferSize - firstNonWildcard - 32) : 0;
+        for (; i <= limit && i <= maxSimdIndex; i += 32) {
             __m256i data = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(buffer + i + firstNonWildcard));
             __m256i cmp = _mm256_cmpeq_epi8(data, firstByteVec);
             unsigned int mask = _mm256_movemask_epi8(cmp);
@@ -333,12 +435,14 @@ namespace Mod {
 
     static bool SearchPatternSSE2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
         size_t patternLen = pattern.bytes.size();
+        if (bufferSize < patternLen) return false;
         size_t limit = bufferSize - patternLen;
         
         __m128i firstByteVec = _mm_set1_epi8(firstByte);
         
         size_t i = 0;
-        for (; i + 16 <= limit; i += 16) {
+        size_t maxSimdIndex = (bufferSize >= firstNonWildcard + 16) ? (bufferSize - firstNonWildcard - 16) : 0;
+        for (; i <= limit && i <= maxSimdIndex; i += 16) {
             __m128i data = _mm_loadu_si128(reinterpret_cast<const __m128i*>(buffer + i + firstNonWildcard));
             __m128i cmp = _mm_cmpeq_epi8(data, firstByteVec);
             unsigned int mask = _mm_movemask_epi8(cmp);
@@ -411,8 +515,10 @@ namespace Mod {
 
         unsigned char firstByte = pattern.bytes[firstNonWildcard];
         
-        static bool hasAvx2 = CpuSupportsAvx2();
-        if (hasAvx2) {
+        CpuSimdTier tier = GetCpuSimdTier();
+        if (tier == CpuSimdTier::AVX512) {
+            return SearchPatternAVX512(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
+        } else if (tier == CpuSimdTier::AVX2) {
             return SearchPatternAVX2(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
         } else {
             return SearchPatternSSE2(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
@@ -422,6 +528,7 @@ namespace Mod {
     static uintptr_t g_emulatedRamBase = 0;
     static size_t g_emulatedRamSize = 0;
 
+    static int32_t ReadInt32BE(uintptr_t address);
     static std::atomic<uint64_t> g_lastBlacklistedWriteTime = 0;
 
     static std::vector<Pattern> g_writerBlacklist;
@@ -429,13 +536,14 @@ namespace Mod {
     static void LoadWriterBlacklist() {
         g_writerBlacklist.clear();
 
-        // 1. Internalized default patterns (including the new ones)
+        // 1. Internalized default patterns for non-camera or cutscene-specific writers that should NOT be NOP'd
         std::vector<std::string> internalPatterns = {
             "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 45 0F 38 F0 74 ?? ?? 66 41 0F 6E ?? ?? ?? ?? ?? ?? 66 41 0F 7E EE 45 0F 38 F1 74 ?? 00 F3 0F 5A ED F2 0F 12 ED 45 0F 38 F0 74 ?? ?? 66 41 0F 6E ?? 66 41 0F 7E D6 45 0F 38 F1 74 ?? 04 F3 0F 5A D2 F2 0F 12 D2 45 0F 38 F0 74 ?? ?? 66 41 0F 6E ?? 66 41 0F 7E DE 45 0F 38 F1 74 ?? 08 F3 0F 5A DB F2 0F 12 DB",
             "41 0F 6E F6 0F C8 89 44 24 1C 0F CB 89 5C 24 24 45 89 4C 15 4C 0F CD 89 6C 24 2C 66 41 0F 7E F6 45 0F 38 F1 74 3D 00 F3 0F 5A F6 F2 0F 12 F6 45 0F 38 F0 74 15 48 66 41 0F 6E C6 66 41 0F 7E C6 45 0F 38 F1 74 3D 04 F3 0F 5A C0 F2 0F 12 C0 45 0F 38 F0 74 15 4C 66 41 0F 6E CE 8B 54 24 70 89 D0 89 44 24 10 66 41 0F 7E CE 45 0F 38 F1 74 3D 08 F3 0F 5A C9 F2 0F 12 C9",
             "66 41 0F 6E F6 F2 44 0F 5A FC 66 45 0F 7E FE 45 0F 38 F1 74 1D 7C 41 8B 74 1D 7C 66 41 0F 7E EE [ 45 0F 38 F1 74 15 00 ] F3 0F 5A ED F2 0F 12 ED 41 89 74 1D 1C 45 0F 38 F0 74 1D 1C 66 41 0F 6E D6 8B 7C 24 7C 89 FB 89 5C 24 10 66 41 0F 7E F6 [ 45 0F 38 F1 74 15 04 ] F3 0F 5A F6 F2 0F 12 F6 89 D3 89 5C 24 14 66 41 0F 7E D6 [ 45 0F 38 F1 74 15 08 ] F3 0F 5A D2 F2 0F 12 D2 0F C8 89 44 24 1C 0F CD 89 6C 24 24 0F CE 89 74 24 04 66 0F 11 84 E4 38",
+            "6E C6 F2 45 0F 10 C8 F3 45 0F 5A C9 F2 44 0F 11 8C 24 10 01 00 00 41 89 4C 2D 1C 66 45 0F 7E C6 [ 45 0F 38 F1 74 1D 00 ] F3 45 0F 5A C0 F2 44 0F 11 84 24 08 01 00 00 45 0F 38 F0 74 2D 18 66 41 0F 6E E6 F2 0F 10 EC F3 0F 5A ED 66 41 0F 7E E6 [ 45 0F 38 F1 74 1D 04 ] F3 0F 5A E4 45 0F 38 F0 74 2D 1C 66 41 0F 6E F6 F2 0F 10 D6 0F C8 89 44 24 28 F3 0F 5A D2 66 41 0F 7E F6 [ 45 0F 38 F1 74 1D 08 ] F3 0F 5A F6 8B 54 24 7C 45 0F 38 F0 B4 15 84 00 00 00 66 41 0F 6E DE F3 0F 5A DB F2 0F 10 FB F2",
             "66 41 0F 6E E6 F2 0F 10 EC F3 0F 5A ED F2 0F 11 AC 24 00 01 00 00 41 89 4C 05 4C 66 41 0F 7E E6 [ 45 0F 38 F1 74 2D 00 ] F3 0F 5A E4 F2 0F 11 A4 24 F8 00 00 00 45 0F 38 F0 74 05 48 66 41 0F 6E C6 F2 0F 10 C8 F3 0F 5A C9 F2 0F 11 8C 24 10 01 00 00 66 41 0F 7E C6 [ 45 0F 38 F1 74 2D 04 ] F3 0F 5A C0 F2 0F 11 84 24 08 01 00 00 45 0F 38 F0 74 05 4C 66 41 0F 6E D6 0F CE 89 74 24 20 0F CF 89 7C 24 28 F2 0F 10 DA F3 0F 5A DB F2 0F 11 9C 24 20 01 00 00 8B 54 24 70 89 D0 89 44 24 10 66 41 0F 7E D6 [ 45 0F 38 F1 74 2D 08 ] F3 0F 5A D2 F2 0F 11 94 24 18 01 00 00 0F C9 89 4C 24 30 C7 84 24 B8 02 00 00 20 3B BA 02 BA C0",
-            "6E C6 F2 45 0F 10 C8 F3 45 0F 5A C9 F2 44 0F 11 8C 24 10 01 00 00 41 89 4C 2D 1C 66 45 0F 7E C6 [ 45 0F 38 F1 74 1D 00 ] F3 45 0F 5A C0 F2 44 0F 11 84 24 08 01 00 00 45 0F 38 F0 74 2D 18 66 41 0F 6E E6 F2 0F 10 EC F3 0F 5A ED 66 41 0F 7E E6 [ 45 0F 38 F1 74 1D 04 ] F3 0F 5A E4 45 0F 38 F0 74 2D 1C 66 41 0F 6E F6 F2 0F 10 D6 0F C8 89 44 24 28 F3 0F 5A D2 66 41 0F 7E F6 [ 45 0F 38 F1 74 1D 08 ] F3 0F 5A F6 8B 54 24 7C 45 0F 38 F0 B4 15 84 00 00 00 66 41 0F 6E DE F3 0F 5A DB F2 0F 10 FB F2"
+            "F8 66 45 0F 7E FE 45 0F 38 F1 74 ?? 7C F2 0F 11 84 24 F8 00 00 00 41 8B 6C 0D 7C 66 41 0F 7E CE 45 0F 38 F1 74 ?? 00 F3 0F 5A C9 F2 0F 11 8C 24 88 00 00 00 41 89 6C 0D 1C 45 0F 38 F0 74 ?? 1C 66 41 0F 6E E6 F2 0F 10 EC F3 0F 5A ED F2 0F 11 AC 24 30 01 00 00 8B 74 24 7C 89 F1 89 4C 24 10 0F CA 89 54 24 1C 66 41 0F 7E D6 45 0F 38 F1 74 ?? 04 F3 0F 5A D2 F2 0F 11 94 24 08 01 00 00 0F CB 89 5C 24 24 89 C1 89 4C 24 14 66 41 0F 7E E6 45 0F 38 F1 74 ?? 08 F3 0F 5A E4 F2 0F 11 A4 24 28 01 00 00 0F CD 89 6C 24 04"
         };
         for (const auto& s : internalPatterns) {
             Pattern pat = ParseAOB(s);
@@ -729,35 +837,53 @@ namespace Mod {
     struct MenuStateWrite {
         uintptr_t address;
         int32_t value;
+        uint32_t writerId;
     };
-    static CodePatch g_menuStateHookPatch = {};
-    static LPVOID g_menuStateTrampoline = nullptr;
+    static CodePatch g_menuStateHookPatch1 = {};
+    static CodePatch g_menuStateHookPatch2 = {};
+    static LPVOID g_menuStateTrampoline1 = nullptr;
+    static LPVOID g_menuStateTrampoline2 = nullptr;
     static MenuStateWrite g_menuStateQueue[32] = {};
     static std::atomic<uint32_t> g_menuStateQueueWriteIdx{0};
     static uint32_t g_menuStateQueueReadIdx{0};
-    static bool g_menuStateHookActive = false;
-    static std::vector<uintptr_t> g_menuStateAddrList;
+    static bool g_menuStateHook1Active = false;
+    static bool g_menuStateHook2Active = false;
+    static std::set<uintptr_t> g_menuStateCandidates1;
+    static std::set<uintptr_t> g_menuStateCandidates2;
     static CRITICAL_SECTION g_menuCandidateCS;
 
     static LPVOID AllocateWithin2GB(uintptr_t targetAddr, size_t size) {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
-        
-        // Search in a range of +/- 1 GB around targetAddr
-        uintptr_t minAddr = targetAddr > 0x3FFFFFFF ? targetAddr - 0x3FFFFFFF : reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
-        uintptr_t maxAddr = targetAddr < UINTPTR_MAX - 0x3FFFFFFF ? targetAddr + 0x3FFFFFFF : reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
 
-        // Align to dwAllocationGranularity
-        minAddr = (minAddr + si.dwAllocationGranularity - 1) & ~static_cast<uintptr_t>(si.dwAllocationGranularity - 1);
-        maxAddr = maxAddr & ~static_cast<uintptr_t>(si.dwAllocationGranularity - 1);
-
-        for (uintptr_t addr = minAddr; addr < maxAddr; addr += si.dwAllocationGranularity) {
+        for (intptr_t offset = si.dwAllocationGranularity; offset < 0x70000000LL; offset += si.dwAllocationGranularity) {
+            // Try +offset
+            uintptr_t highAddr = targetAddr + offset;
+            highAddr &= ~static_cast<uintptr_t>(si.dwAllocationGranularity - 1);
             MEMORY_BASIC_INFORMATION mbi;
-            if (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) != 0) {
-                if (mbi.State == MEM_FREE) {
-                    LPVOID allocated = VirtualAlloc((LPVOID)addr, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-                    if (allocated) {
+            if (VirtualQuery((LPCVOID)highAddr, &mbi, sizeof(mbi)) != 0 && mbi.State == MEM_FREE) {
+                LPVOID allocated = VirtualAlloc((LPVOID)highAddr, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                if (allocated) {
+                    intptr_t diff = (intptr_t)allocated - (intptr_t)(targetAddr + 5);
+                    if (diff >= -2147483647LL && diff <= 2147483647LL) {
                         return allocated;
+                    }
+                    VirtualFree(allocated, 0, MEM_RELEASE);
+                }
+            }
+
+            // Try -offset
+            if (targetAddr > static_cast<uintptr_t>(offset)) {
+                uintptr_t lowAddr = targetAddr - offset;
+                lowAddr &= ~static_cast<uintptr_t>(si.dwAllocationGranularity - 1);
+                if (VirtualQuery((LPCVOID)lowAddr, &mbi, sizeof(mbi)) != 0 && mbi.State == MEM_FREE) {
+                    LPVOID allocated = VirtualAlloc((LPVOID)lowAddr, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                    if (allocated) {
+                        intptr_t diff = (intptr_t)allocated - (intptr_t)(targetAddr + 5);
+                        if (diff >= -2147483647LL && diff <= 2147483647LL) {
+                            return allocated;
+                        }
+                        VirtualFree(allocated, 0, MEM_RELEASE);
                     }
                 }
             }
@@ -873,39 +999,47 @@ namespace Mod {
         return true;
     }
 
-    static void RemoveMenuStateHook() {
-        if (!g_menuStateHookActive) return;
-        DllLog("[INFO] Removing MenuState detour hook.");
-        g_menuStateHookPatch.Restore();
-        Sleep(50); // Allow any game thread inside the trampoline to exit
-        if (g_menuStateTrampoline) {
-            VirtualFree(g_menuStateTrampoline, 0, MEM_RELEASE);
-            g_menuStateTrampoline = nullptr;
+    static void RemoveMenuStateHooks() {
+        if (g_menuStateHook1Active) {
+            g_menuStateHookPatch1.Restore();
+            g_menuStateHook1Active = false;
         }
-        g_menuStateHookActive = false;
+        if (g_menuStateHook2Active) {
+            g_menuStateHookPatch2.Restore();
+            g_menuStateHook2Active = false;
+        }
+        Sleep(50); // Allow any game thread inside the trampoline to exit
+        if (g_menuStateTrampoline1) {
+            VirtualFree(g_menuStateTrampoline1, 0, MEM_RELEASE);
+            g_menuStateTrampoline1 = nullptr;
+        }
+        if (g_menuStateTrampoline2) {
+            VirtualFree(g_menuStateTrampoline2, 0, MEM_RELEASE);
+            g_menuStateTrampoline2 = nullptr;
+        }
     }
 
-    static bool SetupMenuStateHook(uintptr_t foundAddress) {
-        if (g_menuStateHookActive || g_addrMenuState != 0) return false;
+    static bool SetupMenuStateHook(uintptr_t foundAddress, int writerId) {
+        if (g_addrMenuState != 0) return false;
+        if (writerId == 1 && g_menuStateHook1Active) return true;
+        if (writerId == 2 && g_menuStateHook2Active) return true;
 
-        g_menuStateTrampoline = AllocateWithin2GB(foundAddress, 128);
-        if (!g_menuStateTrampoline) {
+        LPVOID& trampoline = (writerId == 1) ? g_menuStateTrampoline1 : g_menuStateTrampoline2;
+        CodePatch& patch = (writerId == 1) ? g_menuStateHookPatch1 : g_menuStateHookPatch2;
+        bool& active = (writerId == 1) ? g_menuStateHook1Active : g_menuStateHook2Active;
+
+        trampoline = AllocateWithin2GB(foundAddress, 128);
+        if (!trampoline) return false;
+
+        patch.address = foundAddress;
+        patch.size = 7;
+        if (!patch.Backup()) {
+            VirtualFree(trampoline, 0, MEM_RELEASE);
+            trampoline = nullptr;
             return false;
         }
 
-        g_menuStateHookPatch.address = foundAddress;
-        g_menuStateHookPatch.size = 7;
-        if (!g_menuStateHookPatch.Backup()) {
-            VirtualFree(g_menuStateTrampoline, 0, MEM_RELEASE);
-            g_menuStateTrampoline = nullptr;
-            return false;
-        }
-
-        memset(g_menuStateQueue, 0, sizeof(g_menuStateQueue));
-        g_menuStateQueueWriteIdx = 0;
-        g_menuStateQueueReadIdx = 0;
-
-        uint8_t originalSib = g_menuStateHookPatch.g_originalBytes[5];
+        uint8_t originalSib = patch.g_originalBytes[5];
 
         uint8_t code[128] = {};
         size_t idx = 0;
@@ -930,28 +1064,24 @@ namespace Mod {
         memcpy(&code[idx], &writeIdxAddr, 8);
         idx += 8;
 
-        // mov ebx, [rcx]
-        code[idx++] = 0x8B;
+        // mov ebx, 1
+        code[idx++] = 0xBB;
+        uint32_t one = 1;
+        memcpy(&code[idx], &one, 4);
+        idx += 4;
+
+        // lock xadd dword ptr [rcx], ebx
+        code[idx++] = 0xF0;
+        code[idx++] = 0x0F;
+        code[idx++] = 0xC1;
         code[idx++] = 0x19;
-
-        // inc ebx
-        code[idx++] = 0xFF;
-        code[idx++] = 0xC3;
-
-        // mov [rcx], ebx
-        code[idx++] = 0x89;
-        code[idx++] = 0x19;
-
-        // dec ebx
-        code[idx++] = 0xFF;
-        code[idx++] = 0xCB;
 
         // and ebx, 31
         code[idx++] = 0x83;
         code[idx++] = 0xE3;
         code[idx++] = 0x1F;
 
-        // shl rbx, 4
+        // shl rbx, 4 (16 bytes = sizeof(MenuStateWrite))
         code[idx++] = 0x48;
         code[idx++] = 0xC1;
         code[idx++] = 0xE3;
@@ -969,12 +1099,12 @@ namespace Mod {
         code[idx++] = 0x03;
         code[idx++] = 0xCB;
 
-        // mov [rcx], rax
+        // mov [rcx], rax (address)
         code[idx++] = 0x48;
         code[idx++] = 0x89;
         code[idx++] = 0x01;
 
-        // mov eax, [rsp + 0x18]
+        // mov eax, [rsp + 0x18] (value of rax saved on entry)
         code[idx++] = 0x8B;
         code[idx++] = 0x44;
         code[idx++] = 0x24;
@@ -985,6 +1115,14 @@ namespace Mod {
         code[idx++] = 0x41;
         code[idx++] = 0x08;
 
+        // mov dword ptr [rcx + 12], writerId
+        code[idx++] = 0xC7;
+        code[idx++] = 0x41;
+        code[idx++] = 0x0C;
+        uint32_t wId = static_cast<uint32_t>(writerId);
+        memcpy(&code[idx], &wId, 4);
+        idx += 4;
+
         code[idx++] = 0x5B; // pop rbx
         code[idx++] = 0x5A; // pop rdx
         code[idx++] = 0x59; // pop rcx
@@ -992,7 +1130,7 @@ namespace Mod {
         code[idx++] = 0x9D; // popfq
 
         // Original instruction: movbe [r13 + index + 0x3C], eax
-        memcpy(&code[idx], g_menuStateHookPatch.g_originalBytes.data(), 7);
+        memcpy(&code[idx], patch.g_originalBytes.data(), 7);
         idx += 7;
 
         // jmp [rip + 0]
@@ -1007,20 +1145,20 @@ namespace Mod {
         memcpy(&code[idx], &returnAddress, 8);
         idx += 8;
 
-        memcpy(g_menuStateTrampoline, code, idx);
+        memcpy(trampoline, code, idx);
 
         std::vector<uint8_t> patchBytes(7, 0x90);
         patchBytes[0] = 0xE9;
-        intptr_t diff = (intptr_t)g_menuStateTrampoline - (intptr_t)(foundAddress + 5);
+        intptr_t diff = (intptr_t)trampoline - (intptr_t)(foundAddress + 5);
         *(int32_t*)(&patchBytes[1]) = (int32_t)diff;
 
-        if (!g_menuStateHookPatch.ApplyBytes(patchBytes.data(), 7)) {
-            VirtualFree(g_menuStateTrampoline, 0, MEM_RELEASE);
-            g_menuStateTrampoline = nullptr;
+        if (!patch.ApplyBytes(patchBytes.data(), 7)) {
+            VirtualFree(trampoline, 0, MEM_RELEASE);
+            trampoline = nullptr;
             return false;
         }
 
-        g_menuStateHookActive = true;
+        active = true;
         return true;
     }
 
@@ -1033,7 +1171,7 @@ namespace Mod {
             g_magneZPatch.Restore();
         }
         RemoveShortcutHook();
-        RemoveMenuStateHook();
+        RemoveMenuStateHooks();
         LeaveCriticalSection(&g_patchCS);
     }
 
@@ -1057,53 +1195,53 @@ namespace Mod {
             }
         }
 
-        if (g_menuStateHookActive && g_addrMenuState == 0) {
+        if ((g_menuStateHook1Active || g_menuStateHook2Active) && g_addrMenuState == 0) {
             uint32_t writeIdx = g_menuStateQueueWriteIdx.load();
             while (g_menuStateQueueReadIdx != writeIdx && g_addrMenuState == 0) {
                 uint32_t idx = g_menuStateQueueReadIdx & 31;
                 uintptr_t tempAddr = g_menuStateQueue[idx].address;
                 int32_t tempVal = g_menuStateQueue[idx].value;
+                uint32_t writerId = g_menuStateQueue[idx].writerId;
                 g_menuStateQueueReadIdx++;
 
-                if (tempVal >= 5 && tempVal <= 10) {
+                if (tempVal == 3 || tempVal == 5 || tempVal == 6 || tempVal == 10) {
                     bool patternValid = false;
                     uint16_t marker = 0;
                     if (SafeReadMarker(tempAddr - 4, marker) && (marker & 0xFF) == 0x6E) {
                         patternValid = true;
                     }
 
-                    {
-                        uint16_t markerLo = 0, markerHi = 0;
-                        bool okLo = SafeReadMarker(tempAddr - 4, markerLo);
-                        bool okHi = SafeReadMarker(tempAddr - 2, markerHi);
-                        uint32_t fullBlock = okLo && okHi
-                            ? (uint32_t)markerLo | ((uint32_t)markerHi << 16)
-                            : 0xFFFFFFFF;
-                        DllLog("[DEBUG] MenuState pattern check: val=%d, addr=0x%llX, marker=0x%04X, valid=%d, block=0x%08X",
-                               tempVal, tempAddr, marker, patternValid ? 1 : 0, fullBlock);
-                    }
-
                     if (patternValid) {
                         uintptr_t baseAddr = tempAddr;
                         EnterCriticalSection(&g_menuCandidateCS);
                         if (g_addrMenuState == 0) {
-                            g_addrMenuState = baseAddr;
-                            g_menuStateAddrList.clear();
+                            if (writerId == 1) g_menuStateCandidates1.insert(baseAddr);
+                            if (writerId == 2) g_menuStateCandidates2.insert(baseAddr);
 
-                            RemoveMenuStateHook();
-                            g_menuStateQueueWriteIdx = 0;
-                            g_menuStateQueueReadIdx = 0;
-                            memset(g_menuStateQueue, 0, sizeof(g_menuStateQueue));
-                            g_pSharedMemory->m_statusAddrMenuState = baseAddr;
-                            DllLog("[INFO] MenuState candidate selected at 0x%llX. Trampoline hook removed. All candidate testing ended.", baseAddr);
+                            bool inBoth = (g_menuStateCandidates1.count(baseAddr) > 0) && (g_menuStateCandidates2.count(baseAddr) > 0);
+
+                            DllLog("[INFO] MenuState hook %u fired at 0x%llX (val: %d, Pattern 6E valid). Candidate sets: Writer1=%zu, Writer2=%zu",
+                                   writerId, baseAddr, tempVal, g_menuStateCandidates1.size(), g_menuStateCandidates2.size());
+
+                            if (inBoth) {
+                                g_addrMenuState = baseAddr;
+                                g_menuStateCandidates1.clear();
+                                g_menuStateCandidates2.clear();
+
+                                RemoveMenuStateHooks();
+                                g_menuStateQueueWriteIdx = 0;
+                                g_menuStateQueueReadIdx = 0;
+                                memset(g_menuStateQueue, 0, sizeof(g_menuStateQueue));
+                                g_pSharedMemory->m_statusAddrMenuState = baseAddr;
+                                DllLog("[SUCCESS] MenuState candidate WINNER selected at 0x%llX (FIRED BY BOTH PAIRED AOB WRITERS WITH VALUE %d & 6E VALID!). Trampoline hooks removed.", baseAddr, tempVal);
+                            }
                         }
                         LeaveCriticalSection(&g_menuCandidateCS);
-                        break;
                     } else {
-                        DllLog("[WARNING] MenuState hook fired with value %d at address 0x%llX, but pattern 6E** ** ** not found at -4.", tempVal, tempAddr);
+                        DllLog("[WARNING] MenuState hook %u fired at address 0x%llX (val: %d), but pattern 6E** ** ** not found at -4.", writerId, tempAddr, tempVal);
                     }
                 } else {
-                    DllLog("[WARNING] MenuState hook fired with unexpected value %d at address 0x%llX. Ignoring.", tempVal, tempAddr);
+                    DllLog("[INFO] MenuState hook %u fired at address 0x%llX. Actual memory value is %d (non-target). Ignoring for selection.", writerId, tempAddr, tempVal);
                 }
             }
         }
@@ -1293,15 +1431,18 @@ namespace Mod {
                             uintptr_t win_start = rip >= 128 ? rip - 128 : 0;
                             uintptr_t win_end = rip + 128;
                             for (const auto& pat : g_writerBlacklist) {
-                                for (uintptr_t search_ptr = win_start; search_ptr + pat.bytes.size() <= win_end; search_ptr++) {
+                                size_t patLen = pat.bytes.size();
+                                uintptr_t win_start = (rip >= patLen) ? (rip - patLen + 1) : 0;
+                                uintptr_t win_end = rip;
+                                for (uintptr_t search_ptr = win_start; search_ptr <= win_end; search_ptr++) {
                                     bool match = true;
-                                    for (size_t i = 0; i < pat.bytes.size(); ++i) {
+                                    for (size_t i = 0; i < patLen; ++i) {
                                         if (!pat.isWildcard[i] && *(uint8_t*)(search_ptr + i) != pat.bytes[i]) {
                                             match = false;
                                             break;
                                         }
                                     }
-                                    if (match && rip >= search_ptr && rip < search_ptr + pat.bytes.size()) {
+                                    if (match) {
                                         isBlacklisted = true;
                                         break;
                                     }
@@ -1480,34 +1621,10 @@ namespace Mod {
 
     static void OnThreadExit() {
         if (--g_runningThreads == 0) {
-            DllLog("[INFO] All DLL threads are exiting. Performing final cleanup...");
-            RemoveShortcutHook();
-            
-            g_writerHuntActive = false;
-            DisarmPageGuard();
-            RestoreAllWriterNops();
-
-            if (g_vehHandle) {
-                RemoveVectoredExceptionHandler(g_vehHandle);
-                g_vehHandle = nullptr;
-            }
-
-            RestoreAllPatches();
-
-            bool forceEject = false;
+            DllLog("[INFO] All DLL threads exited cleanly.");
             if (g_pSharedMemory) {
                 g_pSharedMemory->m_statusScanning = false;
                 g_pSharedMemory->m_statusShutdownDone = true;
-                if (!IsCompanionAlive()) {
-                    forceEject = true;
-                }
-            }
-
-            if (forceEject) {
-                g_sharedMemory.Close();
-                DeleteCriticalSection(&g_patchCS);
-                DeleteCriticalSection(&g_writerCS);
-                FreeLibraryAndExitThread(g_hModule, 0);
             }
         }
     }
@@ -1557,14 +1674,15 @@ namespace Mod {
         if (g_pSharedMemory) {
             currentExperimental = g_pSharedMemory->m_cfgCemuExperimental;
         }
-        DllLog("[INFO] Scanner thread started. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
+        DllLog("[INFO] Scanner started. SIMD: %s | Mode: %ls", GetCpuSimdTierName(), currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
         CemuVersionConfig vCfg = GetCemuVersionConfig(currentExperimental);
 
         std::vector<AobTask> tasks = {
             { L"GameRomCamera",  vCfg.gameRomCameraAob, false, 0 },
             { L"ShortcutMenu",    vCfg.shortcutMenuAob, false, 0 },
-            { L"MenuState",       vCfg.menuStateAob, false, 0 },
-            { L"Magne Target Sig", vCfg.magnesisAob, false, 0 }
+            { L"MenuState 1",     vCfg.menuStateAob1,   false, 0 },
+            { L"MenuState 2",     vCfg.menuStateAob2,   false, 0 },
+            { L"Magne Target Sig", vCfg.magnesisAob,     false, 0 }
         };
 
         bool allOtherFound = false;
@@ -1590,8 +1708,9 @@ namespace Mod {
                     DllLog("[INFO] Scanner reset applied. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
                     tasks[0].patternStr = vCfg.gameRomCameraAob;
                     tasks[1].patternStr = vCfg.shortcutMenuAob;
-                    tasks[2].patternStr = vCfg.menuStateAob;
-                    tasks[3].patternStr = vCfg.magnesisAob;
+                    tasks[2].patternStr = vCfg.menuStateAob1;
+                    tasks[3].patternStr = vCfg.menuStateAob2;
+                    tasks[4].patternStr = vCfg.magnesisAob;
 
                     for (size_t i = 0; i < tasks.size(); ++i) {
                         tasks[i].found = false;
@@ -1603,9 +1722,10 @@ namespace Mod {
                     g_addrMagneTarget = 0;
                     
                     RemoveShortcutHook();
-                    RemoveMenuStateHook();
+                    RemoveMenuStateHooks();
                     EnterCriticalSection(&g_menuCandidateCS);
-                    g_menuStateAddrList.clear();
+                    g_menuStateCandidates1.clear();
+                    g_menuStateCandidates2.clear();
                     LeaveCriticalSection(&g_menuCandidateCS);
 
                     g_writerHuntActive = false;
@@ -1629,14 +1749,14 @@ namespace Mod {
             if (tasks[0].found) {
                 bool verifySuccess = false;
                 if (g_addrGameRomCamera != 0) {
-                    float test_z = ReadFloatBE(g_addrGameRomCamera + 0x67C);
-                    if (test_z != 0.0f) {
+                    uint16_t marker = 0;
+                    if (SafeReadMarker(g_addrGameRomCamera, marker)) {
                         verifySuccess = true;
                     }
                 }
 
                 if (!verifySuccess) {
-                    DllLog("[WARNING] GameRomCamera verification failed (Z-coord is 0.0). Address voided! Resetting scanner.");
+                    DllLog("[WARNING] GameRomCamera memory inaccessible. Address voided! Resetting scanner.");
                     tasks[0].found = false;
                     tasks[0].address = 0;
                     g_addrGameRomCamera = 0;
@@ -1660,7 +1780,8 @@ namespace Mod {
                     g_addrMagneTarget = 0;
 
                     EnterCriticalSection(&g_menuCandidateCS);
-                    g_menuStateAddrList.clear();
+                    g_menuStateCandidates1.clear();
+                    g_menuStateCandidates2.clear();
                     LeaveCriticalSection(&g_menuCandidateCS);
 
                     RestoreAllPatches();
@@ -1711,106 +1832,15 @@ namespace Mod {
 
             bool foundAny = false;
 
+            // 1. Asynchronously poll active detour hooks on every loop pass
+            PollHooksAndSyncSharedMemory();
+
             if (g_addrShortcutMenu != 0) {
                 tasks[1].found = true;
             }
-
-            // 1. Asynchronously poll active detour hooks on every loop pass (not tied to scan order)
-            if (g_shortcutHookActive && !tasks[1].found && g_addrShortcutMenu == 0) {
-                uintptr_t tempAddr = g_tempShortcutAddress.load();
-                if (tempAddr != 0) {
-                    int32_t tempVal = g_tempShortcutValue.load();
-                    if (tempVal == -1 || tempVal == 0 || tempVal == 1 || tempVal == 2 || tempVal == 3 || tempVal == 4) {
-                        DllLog("[SUCCESS] Hook fired! Verified ShortcutMenu address: 0x%llX (value: %d). Hook removed.", tempAddr - 128, tempVal);
-                        tasks[1].found = true;
-                        g_addrShortcutMenu = tempAddr - 128;
-                        if (g_pSharedMemory) {
-                            g_pSharedMemory->m_statusAddrShortcutMenu = g_addrShortcutMenu;
-                        }
-                        RemoveShortcutHook();
-                        foundAny = true;
-                    } else {
-                        DllLog("[WARNING] Hook fired on incorrect value %d at address 0x%llX. Ignoring and waiting.", tempVal, tempAddr);
-                        g_tempShortcutAddress = 0;
-                        g_tempShortcutValue = 0;
-                    }
-                } else {
-                    static int waitCounter = 0;
-                    if (waitCounter++ % 5 == 0) {
-                        DllLog("[INFO] ShortcutMenu detour hook is active. Waiting for game write...");
-                    }
-                }
-            }
-
-            if (g_menuStateHookActive && !tasks[2].found) {
-                uint32_t writeIdx = g_menuStateQueueWriteIdx.load();
-                while (g_menuStateQueueReadIdx != writeIdx && !tasks[2].found) {
-                    uint32_t idx = g_menuStateQueueReadIdx & 31;
-                    uintptr_t tempAddr = g_menuStateQueue[idx].address;
-                    int32_t tempVal = g_menuStateQueue[idx].value;
-                    g_menuStateQueueReadIdx++;
-
-                    if (tempVal >= 5 && tempVal <= 10) {
-                        bool patternValid = false;
-                        uint16_t marker = 0;
-                        if (SafeReadMarker(tempAddr - 4, marker) && (marker & 0xFF) == 0x6E) {
-                            patternValid = true;
-                        }
-
-                        {
-                            uint16_t markerLo = 0, markerHi = 0;
-                            bool okLo = SafeReadMarker(tempAddr - 4, markerLo);
-                            bool okHi = SafeReadMarker(tempAddr - 2, markerHi);
-                            uint32_t fullBlock = okLo && okHi
-                                ? (uint32_t)markerLo | ((uint32_t)markerHi << 16)
-                                : 0xFFFFFFFF;
-                            DllLog("[DEBUG] MenuState pattern check: val=%d, addr=0x%llX, marker=0x%04X, valid=%d, block=0x%08X",
-                                   tempVal, tempAddr, marker, patternValid ? 1 : 0, fullBlock);
-                        }
-
-                        if (patternValid) {
-                            uintptr_t baseAddr = tempAddr;
-                            EnterCriticalSection(&g_menuCandidateCS);
-                            if (g_addrMenuState == 0) {
-                                g_addrMenuState = baseAddr;
-                                g_menuStateAddrList.clear();
-                                g_menuStateAddrList.push_back(baseAddr);
-
-                                tasks[2].found = true;
-                                foundAny = true;
-                                RemoveMenuStateHook();
-                                if (g_pSharedMemory) {
-                                    g_pSharedMemory->m_statusAddrMenuState = baseAddr;
-                                }
-                                DllLog("[INFO] MenuState active candidate set to 0x%llX. Trampoline removed. Backup list cleared.", baseAddr);
-                            }
-                            LeaveCriticalSection(&g_menuCandidateCS);
-                            break; // Stop evaluating remaining queue entries once candidate is found and hook removed!
-                        } else {
-                            DllLog("[WARNING] MenuState hook fired with value %d at address 0x%llX, but pattern 6E** ** ** not found at -4.", tempVal, tempAddr);
-                        }
-                    } else {
-                        DllLog("[WARNING] MenuState hook fired with unexpected value %d at address 0x%llX. Ignoring.", tempVal, tempAddr);
-                    }
-                }
-
-                if (g_addrMenuState != 0) {
-                    tasks[2].found = true;
-                }
-
-                if (!tasks[2].found && g_addrMenuState == 0) {
-                    static int waitCounterMenu = 0;
-                    if (waitCounterMenu++ % 5 == 0) {
-                        EnterCriticalSection(&g_menuCandidateCS);
-                        size_t candidateCount = g_menuStateAddrList.size();
-                        LeaveCriticalSection(&g_menuCandidateCS);
-                        if (candidateCount == 0) {
-                            DllLog("[INFO] MenuState trampoline hook is active. Waiting for game write...");
-                        } else {
-                            DllLog("[INFO] MenuState candidates: %zu. Waiting for value 5-10 write with 6E** ** ** pattern...", candidateCount);
-                        }
-                    }
-                }
+            if (g_addrMenuState != 0) {
+                tasks[2].found = true;
+                tasks[3].found = true;
             }
 
             // 2. Perform AOB pattern scanning for the current target task
@@ -1832,82 +1862,85 @@ namespace Mod {
                     } else {
                         DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
                     }
-                } else if (targetIdx == 2 && !tasks[2].found && !g_menuStateHookActive && g_addrMenuState == 0) {
-                    DllLog("[INFO] Scanning for MenuState instruction pattern...");
+                } else if (targetIdx == 2 && !tasks[2].found && !g_menuStateHook1Active && g_addrMenuState == 0) {
+                    DllLog("[INFO] Scanning for MenuState AOB 1 instruction pattern...");
                     Pattern pat = ParseAOB(tasks[2].patternStr);
                     uintptr_t foundAddress = 0;
                     if (ScanProcessAOB(pat, foundAddress)) {
-                        DllLog("[SUCCESS] Found MenuState instruction at 0x%llX. Setting up trampoline hook...", foundAddress);
+                        DllLog("[SUCCESS] Found MenuState AOB 1 instruction at 0x%llX. Setting up trampoline hook 1...", foundAddress);
                         tasks[2].address = foundAddress;
-                        if (SetupMenuStateHook(foundAddress)) {
-                            DllLog("[SUCCESS] Trampoline hook set up successfully. Waiting for game write...");
+                        if (SetupMenuStateHook(foundAddress, 1)) {
+                            DllLog("[SUCCESS] MenuState trampoline hook 1 set up successfully. Waiting for game write...");
                         } else {
-                            DllLog("[ERROR] Failed to set up trampoline hook for MenuState.");
+                            DllLog("[ERROR] Failed to set up trampoline hook 1 for MenuState.");
                         }
                     } else {
-                        DllLog("[WARNING] MenuState instruction pattern not found. Retrying in 1s...");
+                        DllLog("[WARNING] MenuState AOB 1 instruction pattern not found. Retrying in 1s...");
                     }
-                } else if (targetIdx == 3 && !tasks[3].found) {
-                    DllLog("[INFO] Scanning for Magne Target Sig...");
+                } else if (targetIdx == 3 && !tasks[3].found && !g_menuStateHook2Active && g_addrMenuState == 0) {
+                    DllLog("[INFO] Scanning for MenuState AOB 2 instruction pattern...");
                     Pattern pat = ParseAOB(tasks[3].patternStr);
                     uintptr_t foundAddress = 0;
                     if (ScanProcessAOB(pat, foundAddress)) {
+                        DllLog("[SUCCESS] Found MenuState AOB 2 instruction at 0x%llX. Setting up trampoline hook 2...", foundAddress);
                         tasks[3].address = foundAddress;
-                        tasks[3].found = true;
+                        if (SetupMenuStateHook(foundAddress, 2)) {
+                            DllLog("[SUCCESS] MenuState trampoline hook 2 set up successfully. Waiting for game write...");
+                        } else {
+                            DllLog("[ERROR] Failed to set up trampoline hook 2 for MenuState.");
+                        }
+                    } else {
+                        DllLog("[WARNING] MenuState AOB 2 instruction pattern not found. Retrying in 1s...");
+                    }
+                } else if (targetIdx == 4 && !tasks[4].found) {
+                    DllLog("[INFO] Scanning for Magne Target Sig...");
+                    Pattern pat = ParseAOB(tasks[4].patternStr);
+                    uintptr_t foundAddress = 0;
+                    if (ScanProcessAOB(pat, foundAddress)) {
+                        tasks[4].address = foundAddress;
+                        tasks[4].found = true;
                         foundAny = true;
                         DllLog("[SUCCESS] Found Magne Target Sig at 0x%llX. Detour hooks injected.", foundAddress);
 
-                        // Write to shared memory immediately!
                         if (g_pSharedMemory) {
-                            switch (targetIdx) {
-                                case 3: g_pSharedMemory->m_statusAddrMagneTarget  = foundAddress; break;
+                            g_pSharedMemory->m_statusAddrMagneTarget = foundAddress;
+                        }
+                        g_addrMagneTarget = foundAddress;
+
+                        EnterCriticalSection(&g_patchCS);
+                        if (!g_magnePatchesInitialized) {
+                            g_magneXPatch = { foundAddress + vCfg.magnesisXOffset, 7, {}, false };
+                            g_magneYPatch = { foundAddress + vCfg.magnesisYOffset, 7, {}, false };
+                            g_magneZPatch = { foundAddress + vCfg.magnesisZOffset, 7, {}, false };
+
+                            g_magneXPatch.Backup();
+                            g_magneYPatch.Backup();
+                            g_magneZPatch.Backup();
+
+                            if (vCfg.detourTargetAxis == 'Z') {
+                                g_magneDetourPatch = { foundAddress + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
+                                g_magneDetourPatch.Backup();
+                                g_magnesisZWriterReturn = foundAddress + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
+                                if (currentExperimental) {
+                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriterExp);
+                                } else {
+                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                                }
+                            } else if (vCfg.detourTargetAxis == 'Y') {
+                                g_magneDetourPatch = { foundAddress + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, false };
+                                g_magneDetourPatch.Backup();
+                                g_magnesisYWriterReturn = foundAddress + vCfg.magnesisYOffset + vCfg.magnesisDetourSize;
+                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
+                            }
+
+                            g_magnePatchesInitialized = true;
+                            if (g_pSharedMemory) {
+                                g_pSharedMemory->m_patchMagneDetourActive = true;
                             }
                         }
-
-                        // Assign to global variable immediately!
-                        switch (targetIdx) {
-                            case 3: g_addrMagneTarget  = foundAddress; break;
-                        }
-
-                        // Initialize magnesis detour patches when MagneTarget is found
-                        if (targetIdx == 3) {
-                            EnterCriticalSection(&g_patchCS);
-                            if (!g_magnePatchesInitialized) {
-                                g_magneXPatch = { foundAddress + vCfg.magnesisXOffset, 7, {}, false };
-                                g_magneYPatch = { foundAddress + vCfg.magnesisYOffset, 7, {}, false };
-                                g_magneZPatch = { foundAddress + vCfg.magnesisZOffset, 7, {}, false };
-
-                                g_magneXPatch.Backup();
-                                g_magneYPatch.Backup();
-                                g_magneZPatch.Backup();
-
-                                if (vCfg.detourTargetAxis == 'Z') {
-                                    g_magneDetourPatch = { foundAddress + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
-                                    g_magneDetourPatch.Backup();
-                                    g_magnesisZWriterReturn = foundAddress + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
-                                    if (currentExperimental) {
-                                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriterExp);
-                                    } else {
-                                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
-                                    }
-                                } else if (vCfg.detourTargetAxis == 'Y') {
-                                    g_magneDetourPatch = { foundAddress + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, false };
-                                    g_magneDetourPatch.Backup();
-                                    g_magnesisYWriterReturn = foundAddress + vCfg.magnesisYOffset + vCfg.magnesisDetourSize;
-                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
-                                }
-
-                                g_magnePatchesInitialized = true;
-                                if (g_pSharedMemory) {
-                                    g_pSharedMemory->m_patchMagneDetourActive = true;
-                                }
-                            }
-                            LeaveCriticalSection(&g_patchCS);
-                        }
+                        LeaveCriticalSection(&g_patchCS);
                     } else {
-                        if (targetIdx == 3) {
-                            DllLog("[WARNING] Magne Target Sig not found. Retrying in 1s...");
-                        }
+                        DllLog("[WARNING] Magne Target Sig not found. Retrying in 1s...");
                     }
                 }
             }
@@ -2231,13 +2264,26 @@ namespace Mod {
             }
 
             bool menu_active = false;
+            static bool resetTriggeredOnState2 = false;
             if (g_addrMenuState != 0) {
                 int32_t val = ReadInt32BE(g_addrMenuState);
                 g_liveMenuState = val;
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_teleLiveMenuState = static_cast<uint8_t>(val);
                 }
-                menu_active = (val == 10);
+                menu_active = (val == 6 || val == 10);
+
+                if (val == 2) {
+                    if (!resetTriggeredOnState2) {
+                        resetTriggeredOnState2 = true;
+                        DllLog("[INFO] MenuState is 2 (Game Reload / Save Load detected). Triggering scanner reset.");
+                        if (g_pSharedMemory) {
+                            g_pSharedMemory->m_reqResetScan = true;
+                        }
+                    }
+                } else {
+                    resetTriggeredOnState2 = false;
+                }
             }
 
             bool is_shortcut_open = false;
@@ -2334,6 +2380,9 @@ namespace Mod {
             }
 
             bool should_nop = g_mousecamActive && (!magnesis_mode || fps_magne_active) && !menu_active && !is_shortcut_open;
+            if (should_nop && !g_writerHuntActive) {
+                last_should_nop = false;
+            }
             if (should_nop != last_should_nop) {
                 last_should_nop = should_nop;
                 if (should_nop) {
@@ -3074,14 +3123,26 @@ namespace Mod {
         DWORD currentThreadId = GetCurrentThreadId();
 
         if (g_hScanThread && GetThreadId(g_hScanThread) != currentThreadId) {
-            WaitForSingleObject(g_hScanThread, 2000);
+            WaitForSingleObject(g_hScanThread, 1000);
             CloseHandle(g_hScanThread);
             g_hScanThread = nullptr;
         }
         if (g_hCameraControlThread && GetThreadId(g_hCameraControlThread) != currentThreadId) {
-            WaitForSingleObject(g_hCameraControlThread, 2000);
+            WaitForSingleObject(g_hCameraControlThread, 1000);
             CloseHandle(g_hCameraControlThread);
             g_hCameraControlThread = nullptr;
+        }
+
+        RemoveShortcutHook();
+        RemoveMenuStateHooks();
+
+        g_writerHuntActive = false;
+        DisarmPageGuard();
+        RestoreAllWriterNops();
+
+        if (g_vehHandle) {
+            RemoveVectoredExceptionHandler(g_vehHandle);
+            g_vehHandle = nullptr;
         }
 
         RestoreAllPatches();

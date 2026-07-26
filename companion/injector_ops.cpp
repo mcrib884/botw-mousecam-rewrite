@@ -202,8 +202,8 @@ bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
     if (g_pSharedMemory) {
         g_pSharedMemory->m_statusShutdownDone = false;
         g_pSharedMemory->m_reqShutdown = true;
-        // Wait for DLL threads to exit cleanly (up to 1500 ms)
-        int waitLimit = 150;
+        // Wait for DLL threads to exit cleanly (up to 250 ms)
+        int waitLimit = 25;
         while (waitLimit-- > 0 && !g_pSharedMemory->m_statusShutdownDone) {
             MSG msg;
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -239,12 +239,12 @@ void DoReinject() {
     if (!pid) return;
     std::wstring dllPath = GetCompanionDllPath();
     if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
-        SetStatus(L"Reloading...");
-        if (!SafeEjectDLL(pid, dllPath)) { SetStatus(L"Error: reload failed."); return; }
-        Sleep(50);
+        SetStatus(L"Unloading DLL...");
+        SafeEjectDLL(pid, dllPath);
+        Sleep(100);
     }
     g_ki.ReloadSettings();
-    SetStatus(L"Reloading...");
+    SetStatus(L"Injecting fresh DLL...");
     if (MapSharedMemory()) {
         WriteConfigToSharedMemory();
     }

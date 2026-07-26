@@ -113,7 +113,7 @@ bool EjectDLL(DWORD pid, const std::wstring& dllPath) {
     }
 
     bool success = false;
-    int safetyLimit = 15;
+    int safetyLimit = 2;
     while (safetyLimit-- > 0) {
         SafeHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
         if (!snap.IsValid()) {
@@ -145,14 +145,18 @@ bool EjectDLL(DWORD pid, const std::wstring& dllPath) {
             break;
         }
 
-        WaitForSingleObject(hThread, 5000);
+        DWORD waitResult = WaitForSingleObject(hThread, 500);
+        if (waitResult == WAIT_TIMEOUT) {
+            break;
+        }
+
         DWORD exitCode = 0;
         GetExitCodeThread(hThread, &exitCode);
         if (exitCode == 0) {
             break;
         }
 
-        Sleep(50);
+        Sleep(20);
     }
 
     return success;

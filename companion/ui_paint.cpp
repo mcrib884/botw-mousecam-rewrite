@@ -144,10 +144,10 @@ void PaintWindow(HWND hWnd) {
         drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found"), 50);
         wchar_t valBuf1[64], valBuf2[64];
         swprintf_s(valBuf1, L"Value: %d", g_liveShortcutMenu);
-        if (g_liveMenuState == 5) {
-            swprintf_s(valBuf2, L"Value: 5 (In World)");
-        } else if (g_liveMenuState == 10) {
-            swprintf_s(valBuf2, L"Value: 10 (In Menu)");
+        if (g_liveMenuState == 3 || g_liveMenuState == 5) {
+            swprintf_s(valBuf2, L"Value: %d (In World)", g_liveMenuState);
+        } else if (g_liveMenuState == 6 || g_liveMenuState == 10) {
+            swprintf_s(valBuf2, L"Value: %d (In Menu)", g_liveMenuState);
         } else {
             swprintf_s(valBuf2, L"Value: %d", g_liveMenuState);
         }

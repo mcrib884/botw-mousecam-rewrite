@@ -5,3 +5,4 @@ obj/
 *.suo
 .agents/
 agents.md
+.opencode/
