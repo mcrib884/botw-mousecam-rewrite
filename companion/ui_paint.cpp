@@ -43,7 +43,7 @@ void PaintWindow(HWND hWnd) {
     g.ScaleTransform(dpiScale, dpiScale);
 
     SolidBrush bgBrush(g_theme.bg);
-    g.FillRectangle(&bgBrush, 0, 0, w, h);
+    g.FillRectangle(&bgBrush, 0, 0, logicalW, logicalH);
 
     FontFamily ff(L"Segoe UI");
     Font fontSec(&ff, 15, FontStyleBold, UnitPixel);

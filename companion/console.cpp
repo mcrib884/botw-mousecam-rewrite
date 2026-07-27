@@ -60,11 +60,20 @@ void SetStatus(const wchar_t* msg) {
 void LogToConsole(const wchar_t* format, ...) {
     if (!g_hConsoleEdit) return;
 
-    wchar_t msg[512];
+    wchar_t msg[512] = {};
     va_list args;
     va_start(args, format);
-    vswprintf_s(msg, format, args);
+    // vswprintf_s returns negative on truncation/overflow and may NOT null-terminate
+    // in the release CRT. We init msg to all-zeros above so the buffer is guaranteed
+    // null-terminated regardless of the function's error behavior, and we treat any
+    // non-positive return as truncation (the preceding wcsncmp/swprintf_s would
+    // otherwise read uninitialized data and the final swprintf_s could also fail
+    // and leave buf un-terminated -> EM_REPLACESEL overrun).
+    int written = vswprintf_s(msg, format, args);
     va_end(args);
+    if (written < 0) {
+        msg[sizeof(msg) / sizeof(msg[0]) - 1] = L'\0';
+    }
 
     int type = 0;
     const wchar_t* msg_content = msg;
@@ -81,8 +90,15 @@ void LogToConsole(const wchar_t* format, ...) {
 
     SYSTEMTIME st;
     GetLocalTime(&st);
-    wchar_t buf[768];
-    swprintf_s(buf, L"%02d:%02d:%02d %s\n", st.wHour, st.wMinute, st.wSecond, msg_content);
+    wchar_t buf[768] = {};
+    // Same hardening as above: zero-init the buffer and treat a non-positive
+    // return as truncation. msg_content is at most 511 chars by construction
+    // (its source buffer is 512 and bounded above), plus 8 chars for the
+    // "HH:MM:SS " prefix and 1 for newline — well under 768 — but be defensive.
+    int written2 = swprintf_s(buf, L"%02d:%02d:%02d %s\n", st.wHour, st.wMinute, st.wSecond, msg_content);
+    if (written2 < 0) {
+        buf[sizeof(buf) / sizeof(buf[0]) - 1] = L'\0';
+    }
 
     // Smart auto-scroll check: only scroll to bottom if scrollbar is already at or near bottom
     SCROLLINFO si = { sizeof(SCROLLINFO), SIF_ALL };
@@ -100,8 +116,25 @@ void LogToConsole(const wchar_t* format, ...) {
     }
 
     GETTEXTLENGTHEX gtl = { GTL_DEFAULT, 1200 };
-    int len = SendMessageW(g_hConsoleEdit, EM_GETTEXTLENGTHEX, (WPARAM)&gtl, 0);
-    SendMessageW(g_hConsoleEdit, EM_SETSEL, len, len);
+    // Cap total content at ~1 GB chars to keep the EM_SETSEL signed-position math
+    // well clear of INT_MAX (~2 GB UTF-16). The rich edit doesn't auto-trim, so
+    // an extremely long-running companion with verbose DLL logging could otherwise
+    // push content past 2 GB chars and turn `len` negative → EM_SETSEL interprets
+    // negative position wrong → log appends at top instead of bottom (see P2-8).
+    LONGLONG len = (LONGLONG)SendMessageW(g_hConsoleEdit, EM_GETTEXTLENGTHEX, (WPARAM)&gtl, 0);
+    // Truncate ahead if we ever cross ~1 GB; trim oldest half to keep history readable.
+    if (len > 0x40000000LL) {
+        // Order-of-magnitude trim: set selection at 0..(len/2), replace with empty,
+        // then continue. EM_SETSEL takes signed positions so cast carefully.
+        LONGLONG half = len / 2;
+        int targetSel = (int)(half > INT_MAX ? INT_MAX : half);
+        SendMessageW(g_hConsoleEdit, EM_SETSEL, 0, (LPARAM)targetSel);
+        SendMessageW(g_hConsoleEdit, EM_REPLACESEL, FALSE, (LPARAM)L"");
+        len = (LONGLONG)SendMessageW(g_hConsoleEdit, EM_GETTEXTLENGTHEX, (WPARAM)&gtl, 0);
+    }
+    if (len < 0) len = 0;
+    SendMessageW(g_hConsoleEdit, EM_SETSEL, (WPARAM)len, (LPARAM)len);
+
 
     CHARFORMATW cf;
     ZeroMemory(&cf, sizeof(cf));

@@ -260,7 +260,7 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         SaveConfig();
         InvalidateRect(hWnd, nullptr, FALSE);
     }
-    if (ui.rCemuExperimental.Contains(x, y)) {
+    if (ui.rCemuExperimental.Contains(x, y) && !g_targetInjected) {
         g_config.cemu_experimental = !g_config.cemu_experimental;
         SaveConfig();
         WriteConfigToSharedMemory();
@@ -542,9 +542,16 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     if (g_dragSlider != -1) {
         int pad = 15;
         int w = ui.rSensH.Width;
+        // Guard against Settings being collapsed mid-drag (g_collapsedSet true =>
+        // CalculateUIRects zeroes rSensH => w == 0). Also guards against impl NaN:
+        // once pct is NaN, the subsequent clamp `pct < 0` / `pct > 1` returns
+        // false for all comparisons (IEEE 754), so NaN would propagate into
+        // g_config and into the saved JSON file as "nan".
+        if (w <= 0) return 0;
         float pct = (float)(x - pad - 10) / w;
         if (pct < 0) pct = 0;
         if (pct > 1) pct = 1;
+        if (pct != pct) return 0; // NaN guard (defensive)
         if (g_dragSlider == 0) {
             float val = SENS_MIN + pct * (SENS_MAX - SENS_MIN);
             g_config.sensitivity_x = val;

@@ -198,7 +198,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         DestroyWindow(hWnd);
         return 0;
     case WM_DESTROY:
-        DoEjectOnClose();
+        // WM_DESTROY fires synchronously from DestroyWindow above. DoEjectOnClose
+        // already ran in WM_CLOSE — calling it again here would re-eject / re-close
+        // an already-torn-down handle. Per Windows docs, session/logoff paths
+        // (WM_QUERYENDSESSION) terminate the process without re-entering here, so
+        // we don't need a fallback eject for those.
         if (g_hTargetProcess) {
             CloseHandle(g_hTargetProcess);
             g_hTargetProcess = nullptr;

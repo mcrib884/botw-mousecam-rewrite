@@ -176,9 +176,8 @@ namespace Mod {
         vsnprintf(msg, sizeof(msg), format, args);
         va_end(args);
 
-        uint32_t idx = g_pSharedMemory->m_logWriteIdx % 8;
-        memcpy(g_pSharedMemory->m_logQueue[idx], msg, 128);
-        g_pSharedMemory->m_logWriteIdx++;
+        uint32_t idx = InterlockedIncrement(reinterpret_cast<LONG volatile*>(&g_pSharedMemory->m_logWriteIdx)) - 1;
+        memcpy(g_pSharedMemory->m_logQueue[idx % 8], msg, 128);
     }
 
     static std::atomic<int> g_runningThreads{0};
@@ -332,11 +331,6 @@ namespace Mod {
                         }
                     }
                     if (match) {
-                        uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + offset);
-                        uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
-                        if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
-                            continue;
-                        }
                         foundOffset = offset;
                         return true;
                     }
@@ -354,11 +348,6 @@ namespace Mod {
                     }
                 }
                 if (match) {
-                    uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + i);
-                    uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
-                    if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
-                        continue;
-                    }
                     foundOffset = i;
                     return true;
                 }
@@ -397,11 +386,6 @@ namespace Mod {
                         }
                     }
                     if (match) {
-                        uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + offset);
-                        uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
-                        if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
-                            continue;
-                        }
                         foundOffset = offset;
                         return true;
                     }
@@ -419,11 +403,6 @@ namespace Mod {
                     }
                 }
                 if (match) {
-                    uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + i);
-                    uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
-                    if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
-                        continue;
-                    }
                     foundOffset = i;
                     return true;
                 }
@@ -462,11 +441,6 @@ namespace Mod {
                         }
                     }
                     if (match) {
-                        uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + offset);
-                        uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
-                        if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
-                            continue;
-                        }
                         foundOffset = offset;
                         return true;
                     }
@@ -484,11 +458,6 @@ namespace Mod {
                     }
                 }
                 if (match) {
-                    uintptr_t matchAddr = reinterpret_cast<uintptr_t>(buffer + i);
-                    uintptr_t patData = reinterpret_cast<uintptr_t>(pattern.bytes.data());
-                    if (patData != 0 && matchAddr >= patData && matchAddr < patData + patternLen) {
-                        continue;
-                    }
                     foundOffset = i;
                     return true;
                 }
@@ -815,6 +784,48 @@ namespace Mod {
             bytes[5] = 0x00;
             *(uint64_t*)(&bytes[6]) = targetFunction;
             return ApplyBytes(bytes.data(), size);
+        }
+
+        // Re-apply the FF 25 jmp rel32 detour to an already-backed-up site whose
+        // bytes were clobbered after initial setup (e.g. JIT recompile). Skips the
+        // g_originalBytes.empty() guard since we intentionally want to overwrite
+        // whatever is currently at `address` with a fresh detour to targetFunction.
+        bool ForceReapplyDetour(uintptr_t targetFunction) {
+            if (address == 0 || size < 14) return false;
+            std::vector<uint8_t> bytes(size, 0x90);
+            bytes[0] = 0xFF;
+            bytes[1] = 0x25;
+            bytes[2] = 0x00;
+            bytes[3] = 0x00;
+            bytes[4] = 0x00;
+            bytes[5] = 0x00;
+            *(uint64_t*)(&bytes[6]) = targetFunction;
+            DWORD oldProtect;
+            if (!VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+            // Atomic write path: tail first, then InterlockedExchange64 first 8 bytes.
+            memcpy((LPVOID)(address + 6), bytes.data() + 6, size - 6);
+            uint64_t first8;
+            memcpy(&first8, bytes.data(), 8);
+            InterlockedExchange64((LONG64*)address, (LONG64)first8);
+            VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, size);
+            active = true;
+            return true;
+        }
+
+        // Re-apply a NOP patch to an already-backed-up site whose bytes were
+        // clobbered. Skips the g_originalBytes.empty() guard for the same reason
+        // as ForceReapplyDetour.
+        bool ForceReapplyNop() {
+            if (address == 0 || size == 0) return false;
+            std::vector<uint8_t> nops(size, 0x90);
+            DWORD oldProtect;
+            if (!VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+            memcpy((LPVOID)address, nops.data(), size);
+            VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, size);
+            active = true;
+            return true;
         }
 
     };
@@ -1428,8 +1439,6 @@ namespace Mod {
                     if (!g_writerBlacklist.empty()) {
                         bool isBlacklisted = false;
                         __try {
-                            uintptr_t win_start = rip >= 128 ? rip - 128 : 0;
-                            uintptr_t win_end = rip + 128;
                             for (const auto& pat : g_writerBlacklist) {
                                 size_t patLen = pat.bytes.size();
                                 uintptr_t win_start = (rip >= patLen) ? (rip - patLen + 1) : 0;
@@ -1750,7 +1759,13 @@ namespace Mod {
                 bool verifySuccess = false;
                 if (g_addrGameRomCamera != 0) {
                     uint16_t marker = 0;
-                    if (SafeReadMarker(g_addrGameRomCamera, marker)) {
+                    // Validate both that the read succeeds AND that the marker
+                    // actually matches the AOB's expected first two bytes (0x10 0x1B
+                    // for both Cemu 2.6 and Experimental configs). A stale-but-
+                    // readable address (e.g. memory freed and reallocated to another
+                    // mapping) would otherwise pass the check and downstream code
+                    // would write into wrong memory.
+                    if (SafeReadMarker(g_addrGameRomCamera, marker) && marker == 0x1B10) {
                         verifySuccess = true;
                     }
                 }
@@ -2086,6 +2101,18 @@ namespace Mod {
 
     static HWND g_hCemuWnd = nullptr;
 
+    static HWND GetCemuWnd() {
+        if (!g_hCemuWnd) {
+            g_hCemuWnd = GetTargetWindow(GetCurrentProcessId());
+        }
+        return g_hCemuWnd;
+    }
+
+    static bool IsCemuForeground() {
+        HWND fore = GetForegroundWindow();
+        return fore != nullptr && fore == GetCemuWnd();
+    }
+
     static void CemuKeyInjector_SendKey(uint16_t keycode, bool up) {
         UINT scan = MapVirtualKeyW(keycode, MAPVK_VK_TO_VSC);
         DWORD flags = up ? KEYEVENTF_KEYUP : 0;
@@ -2102,29 +2129,37 @@ namespace Mod {
             flags |= KEYEVENTF_EXTENDEDKEY;
         }
 
-        INPUT input = {0};
-        input.type = INPUT_KEYBOARD;
-        input.ki.wVk = 0;
-        input.ki.wScan = static_cast<WORD>(scan);
-        input.ki.dwFlags = flags;
-        input.ki.time = 0;
-        input.ki.dwExtraInfo = 0;
-
-        // SendInput works when Cemu has focus
-        SendInput(1, &input, sizeof(INPUT));
-
-        // Post WM_KEYDOWN/WM_KEYUP directly to Cemu window message queue so input works when out of focus
-        if (!g_hCemuWnd) {
-            g_hCemuWnd = GetTargetWindow(GetCurrentProcessId());
+        LPARAM lp = 1 | (scan << 16);
+        if (is_extended) lp |= (1 << 24);
+        if (up) {
+            lp |= (1u << 30) | (1u << 31);
         }
-        if (g_hCemuWnd) {
-            LPARAM lp = 1 | (scan << 16);
-            if (is_extended) lp |= (1 << 24);
+
+        HWND hCemu = GetCemuWnd();
+        bool cemu_fg = hCemu != nullptr && GetForegroundWindow() == hCemu;
+
+        // Pick exactly ONE delivery path per press to avoid doubled key events
+        // (SendInput + PostMessage together were causing phantom stuck keys in
+        // Cemu's WM queue and stray keys in the focused app when Cemu wasn't fg).
+        if (cemu_fg) {
+            // Cemu has focus -> SendInput delivers the key into Cemu's input queue.
+            // PostMessage would ADD a synthetic duplicate; skip it here.
+            INPUT input = {0};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = 0;
+            input.ki.wScan = static_cast<WORD>(scan);
+            input.ki.dwFlags = flags;
+            input.ki.time = 0;
+            input.ki.dwExtraInfo = 0;
+            SendInput(1, &input, sizeof(INPUT));
+        } else if (hCemu != nullptr) {
+            // Cemu is backgrounded -> SendInput would hit whatever has focus
+            // (companion edit control, browser, etc.); deliver via PostMessage to
+            // Cemu's window queue instead.
             if (up) {
-                lp |= (1u << 30) | (1u << 31);
-                PostMessageW(g_hCemuWnd, WM_KEYUP, keycode, lp);
+                PostMessageW(hCemu, WM_KEYUP, keycode, lp);
             } else {
-                PostMessageW(g_hCemuWnd, WM_KEYDOWN, keycode, lp);
+                PostMessageW(hCemu, WM_KEYDOWN, keycode, lp);
             }
         }
     }
@@ -2178,7 +2213,6 @@ namespace Mod {
         bool  has_written_once = false; // avoid false overwrite on first frame after enable
         auto last_frame_time = std::chrono::steady_clock::now();
 
-        bool ki_enabled = true;
         bool prev_pressed[5] = {false, false, false, false, false};
         std::chrono::steady_clock::time_point press_time[5];
         bool press_time_valid[5] = {false, false, false, false, false};
@@ -2323,29 +2357,18 @@ namespace Mod {
                 SIZE_T bytesRead = 0;
                 if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)g_magneDetourPatch.address, &currentByte, 1, &bytesRead)) {
                     if (bytesRead == 1 && currentByte != 0xFF) {
-                        // The detour was overwritten! Re-inject it!
-                        g_magneDetourPatch.active = false; // Force it to allow reinjection
+                        // The detour was overwritten! Re-inject it with the force
+                        // path that skips the Backup-empty guard (the patch was
+                        // already backed up at initial setup).
                         bool experimental = g_pSharedMemory ? g_pSharedMemory->m_cfgCemuExperimental : false;
-                        if (vCfg.detourTargetAxis == 'Z') {
-                            if (experimental) {
-                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriterExp);
-                            } else {
-                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
-                            }
-                            if (magnesis_mode) {
-                                g_magneXPatch.active = false;
-                                g_magneYPatch.active = false;
-                                g_magneXPatch.ApplyNop();
-                                g_magneYPatch.ApplyNop();
-                            }
-                        } else if (vCfg.detourTargetAxis == 'Y') {
-                            g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
-                            if (magnesis_mode) {
-                                g_magneXPatch.active = false;
-                                g_magneZPatch.active = false;
-                                g_magneXPatch.ApplyNop();
-                                g_magneZPatch.ApplyNop();
-                            }
+                        if (experimental) {
+                            g_magneDetourPatch.ForceReapplyDetour((uintptr_t)&AsmMagnesisZWriterExp);
+                        } else {
+                            g_magneDetourPatch.ForceReapplyDetour((uintptr_t)&AsmMagnesisZWriter);
+                        }
+                        if (magnesis_mode) {
+                            g_magneXPatch.ForceReapplyNop();
+                            g_magneYPatch.ForceReapplyNop();
                         }
                     }
                 }
@@ -2495,7 +2518,7 @@ namespace Mod {
                     float sens_x = 0.001f * (sensitivity_x <= 0.0f ? 1.0f : sensitivity_x);
                     float sens_y = 0.001f * (sensitivity_y <= 0.0f ? 1.0f : sensitivity_y);
 
-                    if (ki_enabled && g_pSharedMemory) {
+                    if (g_pSharedMemory) {
                         if (is_foreground) {
                             for (int i = 0; i < 5; ++i) {
                                 uint16_t keycode = g_pSharedMemory->m_cfgMouseBindingKeys[i];
@@ -2967,6 +2990,15 @@ namespace Mod {
                         if (now - g_lastBlacklistedWriteTime.load() <= 50) {
                             // A blacklisted writer is currently in control. Pause mousecam.
                             virt_cam_initialized = false;
+                            // Clear last_written_* so the next frame's overwrite-detection
+                            // (2977-2983) doesn't immediately arm a fresh 10-frame hunt for
+                            // the very writer the VEH just blacklisted. Without this, every
+                            // 50ms tick boundary re-arms the hunt and the VEH blacklists it
+                            // again, causing infinite VEH churn.
+                            last_written_x = 0.0f;
+                            last_written_y = 0.0f;
+                            last_written_z = 0.0f;
+                            has_written_once = false;
                         } else {
                             WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
                             WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
@@ -2985,7 +3017,9 @@ namespace Mod {
                         }
                     } else {
                         // Not writing. If we were hunting, maintain the guard page.
-                        static int g_huntFramesLeft = 0; // shadowing, but menu state shouldn't leak hunt
+                        // (wasArmed was captured above before any Disarm; g_huntFramesLeft
+                        // is intentionally NOT touched here — menu state shouldn't leak
+                        // hunt countdown into the writing branch's static.)
                         if (wasArmed) {
                             ArmPageGuard(g_addrGameRomCamera + 0x550);
                         }
@@ -3122,14 +3156,30 @@ namespace Mod {
 
         DWORD currentThreadId = GetCurrentThreadId();
 
+        // Threads poll their respective run flags between work units (well under
+        // 1s response time), so 1s is normally plenty. If a thread is somehow
+        // stuck (rare), DO NOT delete critical sections the thread may still
+        // hold — that's UB. Leak them instead; the DLL is detaching and the
+        // process is about to free the address space anyway.
+        bool scanThreadExitedCleanly = true;
+        bool camThreadExitedCleanly  = true;
+
         if (g_hScanThread && GetThreadId(g_hScanThread) != currentThreadId) {
-            WaitForSingleObject(g_hScanThread, 1000);
-            CloseHandle(g_hScanThread);
+            DWORD waitResult = WaitForSingleObject(g_hScanThread, 1000);
+            if (waitResult == WAIT_OBJECT_0) {
+                CloseHandle(g_hScanThread);
+            } else {
+                scanThreadExitedCleanly = false; // timed out; do NOT close handle
+            }
             g_hScanThread = nullptr;
         }
         if (g_hCameraControlThread && GetThreadId(g_hCameraControlThread) != currentThreadId) {
-            WaitForSingleObject(g_hCameraControlThread, 1000);
-            CloseHandle(g_hCameraControlThread);
+            DWORD waitResult = WaitForSingleObject(g_hCameraControlThread, 1000);
+            if (waitResult == WAIT_OBJECT_0) {
+                CloseHandle(g_hCameraControlThread);
+            } else {
+                camThreadExitedCleanly = false;
+            }
             g_hCameraControlThread = nullptr;
         }
 
@@ -3147,9 +3197,14 @@ namespace Mod {
 
         RestoreAllPatches();
 
-        DeleteCriticalSection(&g_patchCS);
-        DeleteCriticalSection(&g_writerCS);
-        DeleteCriticalSection(&g_menuCandidateCS);
+        // Only delete CSs if both threads are confirmed exited. If either timed
+        // out we skip deletion to avoid UB on CS-still-held; leaking CSes on
+        // detach is harmless (process is tearing down the DLL's address space).
+        if (scanThreadExitedCleanly && camThreadExitedCleanly) {
+            DeleteCriticalSection(&g_patchCS);
+            DeleteCriticalSection(&g_writerCS);
+            DeleteCriticalSection(&g_menuCandidateCS);
+        }
 
         g_sharedMemory.Close();
     }
