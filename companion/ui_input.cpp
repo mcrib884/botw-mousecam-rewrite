@@ -10,7 +10,7 @@
 #include "injector_ops.h"
 #include "shared_memory_manager.h"
 #include "cemu_key_injector.h"
-#include "string_utils.h"
+#include "string_utils.h"  // P3-5: Utf8ToWstr for proper narrow->wide
 
 int g_hoverDropdown = -1;
 int g_openDropdown = -1;
@@ -25,6 +25,7 @@ bool g_hoverMagneSens = false, g_hoverMagneSensV = false;
 bool g_hoverMagnePullSens = false;
 bool g_hoverFpsMagnesis = false, g_hoverFpsMagneEyeHeight = false, g_hoverFpsMagneOffsetForward = false, g_hoverFpsMagneOffsetSide = false;
 bool g_hoverClearLog = false;
+bool g_hoverCopyLog = false;
 Rect g_clearLogRect;
 
 bool g_downInject = false, g_downReinject = false, g_downReset = false;
@@ -32,7 +33,7 @@ bool g_downInject = false, g_downReinject = false, g_downReset = false;
 float g_animInject = 0, g_animReinject = 0, g_animReset = 0;
 float g_animDarkBtn = 0, g_animLightBtn = 0, g_animPath = 0, g_animPathReset = 0;
 float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0, g_animIndepMagneSens = 0, g_animCemuExperimental = 0;
-float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0;
+float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0, g_animCopyLog = 0;
 float g_animMagneSens = 0, g_animMagneSensV = 0;
 float g_animMagnePullSens = 0;
 float g_animFpsMagnesis = 0, g_animFpsMagneEyeHeight = 0, g_animFpsMagneOffsetForward = 0, g_animFpsMagneOffsetSide = 0;
@@ -43,10 +44,17 @@ int g_hoverDrop = -1;
 int g_hoverDropMenuRow = -1;
 
 LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    // P3-12: Snapshot is_gamepad at popup creation so a profile-change (or any
+    // other mutation of g_ki.is_gamepad) while the popup is open doesn't cause
+    // the row the user clicks to silently map to a different button than they
+    // saw when they opened the popup. The snapshot lives for the popup's
+    // lifetime; a subsequent open re-snapshots.
+    static bool s_popupIsGamepad = false;
     switch (message) {
     case WM_CREATE: {
         CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
         SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        s_popupIsGamepad = g_ki.is_gamepad;
         g_hoverDropMenuRow = -1;
         return 0;
     }
@@ -76,7 +84,8 @@ LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LP
         int row = y / 18;
         if (row >= 0 && row < 18) {
             int dropdownIdx = (int)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
-            ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
+            // P3-12: use the snapshotted is_gamepad rather than the live one.
+            ButtonItem* buttons = s_popupIsGamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
             g_config.mouse_bindings[dropdownIdx] = buttons[row].val;
             g_ki.mouse_bindings[dropdownIdx] = buttons[row].val;
             SaveConfig();
@@ -111,16 +120,20 @@ LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LP
         g.DrawRectangle(&borderPen, 0, 0, logicalW - 1, logicalH - 1);
 
         FontFamily ff(L"Segoe UI");
-        Font font(&ff, 12, FontStyleRegular, UnitPixel);
+        // P2-3: cache the dropdown popup's row font across paints (the popup
+        // can repaint at 30-60 Hz while the mouse hovers over rows).
+        static Font s_font(&ff, 12, FontStyleRegular, UnitPixel);
         SolidBrush textBrush(g_theme.text);
-        ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
+        // P3-12: use the snapshotted is_gamepad for the whole popup lifetime.
+        ButtonItem* buttons = s_popupIsGamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
         for (int i = 0; i < 18; i++) {
             if (g_hoverDropMenuRow == i) {
                 SolidBrush hoverBrush(Color(255, 30, 30, 40));
                 g.FillRectangle(&hoverBrush, 0, i * 18, logicalW, 18);
             }
-            std::wstring name = std::wstring(buttons[i].name, buttons[i].name + strlen(buttons[i].name));
-            g.DrawString(name.c_str(), -1, &font, PointF(5.0f, (REAL)(i * 18)), &textBrush);
+            // P3-5: proper UTF-8 -> wide instead of byte-widening cast.
+            std::wstring name = Utf8ToWstr(std::string(buttons[i].name));
+            g.DrawString(name.c_str(), -1, &s_font, PointF(5.0f, (REAL)(i * 18)), &textBrush);
         }
 
         BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
@@ -195,6 +208,24 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hWnd, nullptr, FALSE);
         return 0;
     }
+    if (ui.rCopyLog.Contains(x, y)) {
+        // AD-1: Copy entire log to clipboard.
+        if (g_hConsoleEdit) {
+            if (g_consoleIsRichEdit) {
+                SendMessageW(g_hConsoleEdit, EM_SETSEL, 0, -1);
+                SendMessageW(g_hConsoleEdit, WM_COPY, 0, 0);
+                SendMessageW(g_hConsoleEdit, EM_SETSEL, -1, -1);
+            } else {
+                SendMessageW(g_hConsoleEdit, EM_SETSEL, 0,
+                    (LPARAM)SendMessageW(g_hConsoleEdit, WM_GETTEXTLENGTH, 0, 0));
+                SendMessageW(g_hConsoleEdit, WM_COPY, 0, 0);
+                SendMessageW(g_hConsoleEdit, EM_SETSEL, -1, -1);
+            }
+            LogToConsole(L"[INFO] Log copied to clipboard.");
+        }
+        InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
+    }
     if (Rect(ui.rLog.X, ui.rLog.Y, ui.rLog.Width, 30).Contains(x, y)) {
         g_collapsedLog = !g_collapsedLog;
         SaveConfig();
@@ -204,19 +235,33 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     if (ui.rDarkBtn.Contains(x, y)) {
+        // Phase 5: Dark button cycles through dark presets (skip light=1).
+        static const int darkPresets[] = {0, 2, 3, 4, 5, 6};
+        int idx = 0;
+        for (int i = 0; i < 6; ++i) if (darkPresets[i] == g_config.theme_preset) { idx = i; break; }
+        g_config.theme_preset = darkPresets[(idx + 1) % 6];
         g_config.use_light_theme = false;
+        g_animTheme = -1.0f;
         ApplyTheme();
         SaveConfig();
         InvalidateUIRectsCache();
         InvalidateRect(hWnd, nullptr, FALSE);
+        // Show a brief status toast
+        wchar_t buf[64];
+        swprintf_s(buf, L"Theme: %s", GetThemePresetName(g_config.theme_preset));
+        SetStatus(buf);
         return 0;
     }
     if (ui.rLightBtn.Contains(x, y)) {
+        // Phase 5: Light button jumps to light preset.
+        g_config.theme_preset = 1;
         g_config.use_light_theme = true;
+        g_animTheme = -1.0f;
         ApplyTheme();
         SaveConfig();
         InvalidateUIRectsCache();
         InvalidateRect(hWnd, nullptr, FALSE);
+        SetStatus(L"Theme: Light");
         return 0;
     }
     if (ui.rInj.Contains(x, y)) {
@@ -250,15 +295,21 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hWnd, nullptr, FALSE);
         return 0;
     }
+    // P3-10: Add `return 0;` to each toggle handler. The toggle rects don't
+    // overlap today, but if any layout change introduces an overlap, the
+    // current fall-through would silently fire both toggles on a single click.
+    // Each toggle is a complete action — early return is the correct semantic.
     if (ui.rScrollHelper.Contains(x, y)) {
         g_config.scroll_helper = !g_config.scroll_helper;
         SaveConfig();
         InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
     }
     if (ui.rOrbitCam.Contains(x, y)) {
         g_config.full_orbit_camera = !g_config.full_orbit_camera;
         SaveConfig();
         InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
     }
     if (ui.rCemuExperimental.Contains(x, y) && !g_targetInjected) {
         g_config.cemu_experimental = !g_config.cemu_experimental;
@@ -269,6 +320,7 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             LogToConsole(L"[INFO] Switched Cemu mode. Triggering scanner reset...");
         }
         InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
     }
     if (ui.rIndepSens.Contains(x, y)) {
         g_config.use_independent_sens = !g_config.use_independent_sens;
@@ -276,6 +328,7 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         InvalidateUIRectsCache();
         UpdateConsoleEditPosition(hWnd);
         InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
     }
     if (ui.rIndepMagneSens.Contains(x, y)) {
         g_config.use_independent_magne_sens = !g_config.use_independent_magne_sens;
@@ -283,12 +336,23 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         InvalidateUIRectsCache();
         UpdateConsoleEditPosition(hWnd);
         InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
     }
     if (ui.rMagneSpeedMode.Contains(x, y)) {
-        g_config.magnesis_speed_mode = (g_config.magnesis_speed_mode + 1) % 3;
+        // IM-10: Direct-segment click instead of round-robin cycling. Three
+        // segments (Vanilla | Extended | Unlimited) side by side; the click
+        // X offset maps to segment 0/1/2.
+        int segW = (ui.rMagneSpeedMode.Width - 4) / 3;
+        int relX = x - (ui.rMagneSpeedMode.X + 2);
+        if (relX < 0) relX = 0;
+        int segIdx = relX / (segW + 2);
+        if (segIdx < 0) segIdx = 0;
+        if (segIdx > 2) segIdx = 2;
+        g_config.magnesis_speed_mode = segIdx;
         SaveConfig();
         WriteConfigToSharedMemory();
         InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
     }
     if (ui.rFpsMagnesis.Contains(x, y)) {
         g_config.fps_magnesis = !g_config.fps_magnesis;
@@ -296,6 +360,7 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         InvalidateUIRectsCache();
         WriteConfigToSharedMemory();
         InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
     }
     Rect hBoxH = ui.rSensH;
     hBoxH.Y += 15;
@@ -403,20 +468,37 @@ LRESULT HandleLButtonUp(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         g_downPath = false;
         ReleaseCapture();
         if (ui.rPath.Contains(x, y)) {
+            // P2-4: Use a much larger buffer than MAX_PATH (260). Long Cemu
+            // installations inside layered Steam libraries / OneDrive folders
+            // can easily exceed 260 chars and silently truncate via
+            // FNERR_BUFFERTOOSMALL — the user clicked OK and nothing happened.
+            // 32K is the extended-length path cap on Windows; we size just
+            // under to be safe. If the picker returns < 0 we log it.
             OPENFILENAMEW ofn = {0};
-            wchar_t szFile[MAX_PATH] = {0};
+            constexpr size_t kPathBufChars = 32768;
+            std::wstring szFile(kPathBufChars, L'\0');
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hWnd;
-            ofn.lpstrFile = szFile;
-            ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
+            ofn.lpstrFile = &szFile[0];
+            ofn.nMaxFile = (DWORD)kPathBufChars;
             ofn.lpstrFilter = L"Executable Files\0*.exe\0All Files\0*.*\0";
             ofn.nFilterIndex = 1;
             ofn.lpstrTitle = L"Select Cemu Executable";
-            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_LONGNAMES;
             if (GetOpenFileNameW(&ofn)) {
                 g_config.cemu_path_override = WstrToUtf8(ofn.lpstrFile);
                 InvalidateUIRectsCache();
                 SaveConfig();
+            } else {
+                // P2-4: Surface the FNERR_BUFFERTOOSMALL / cancel cases so the
+                // user isn't left wondering why nothing happened.
+                DWORD err = CommDlgExtendedError();
+                if (err == FNERR_BUFFERTOOSMALL) {
+                    LogToConsole(L"[ERROR] Selected path exceeded %u chars (max supported).", (unsigned)kPathBufChars);
+                }
+                // FNERR_BUFFERTOOSMALL == 0x3003, CDERR_DIALOGFAILURE == 0, etc.
+                // On user cancel (no error), CommDlgExtendedError returns 0 — we
+                // don't log that, it's an expected action.
             }
         }
         InvalidateRect(hWnd, nullptr, FALSE);
@@ -538,6 +620,7 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     }
     checkHovI(g_hoverDrop, dropHov);
     checkHov(g_hoverClearLog, ui.rClearLog.Contains(x, y));
+    checkHov(g_hoverCopyLog, ui.rCopyLog.Contains(x, y));
 
     if (g_dragSlider != -1) {
         int pad = 15;
@@ -582,7 +665,12 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         needRedraw = true;
     }
 
-    if (!g_tooltipActive || g_tooltipText != nullptr) {
+    // P3-3: Removed dead outer tooltip guard. The condition
+    // `(!g_tooltipActive || g_tooltipText != nullptr)` was always true because
+    // ShowTooltip sets g_tooltipText to a non-null pointer when activating. We
+    // always enter the block now and let ShowTooltip's early-out handle the
+    // no-op case (it already does, see ShowTooltip line 2 in console.cpp).
+    {
         const wchar_t* tip = nullptr;
         if (ui.rInj.Contains(x, y))
             tip = g_targetInjected ? L"Eject the DLL from the target process" : L"Inject the DLL into the target process";
@@ -591,13 +679,13 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         else if (ui.rRst.Contains(x, y) && g_targetInjected)
             tip = L"Reset AOB scanner to re-scan memory signatures";
         else if (ui.rDarkBtn.Contains(x, y))
-            tip = L"Dark theme";
+            tip = L"Cycle theme (Dark/Nord/Solarized/Catppuccin/Gruvbox/Tokyo Night)";
         else if (ui.rLightBtn.Contains(x, y))
-            tip = L"Light theme";
+            tip = L"Switch to Light theme";
         else if (ui.rCemuExperimental.Contains(x, y))
             tip = g_targetInjected ? L"Cemu Experimental Mode (Cannot change settings while injected)" : L"Use AOB patterns and offsets optimized for Cemu Experimental";
         else if (ui.rMagneSpeedMode.Contains(x, y))
-            tip = L"Click to cycle: Vanilla -> Extended -> Unlimited";
+            tip = L"Magnesis object speed limit: Vanilla (default) | Extended (faster) | Unlimited (no limit)";
         else if (ui.rMagneSens.Contains(x, y))
             tip = L"Adjust sensitivity multiplier for Magnesis movement (0.01 to 2.0)";
         else if (ui.rMagneSensV.Contains(x, y))
@@ -621,9 +709,10 @@ LRESULT HandleMouseWheel(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         if (dpiScale <= 0) dpiScale = 1.0f;
         pt.x = (int)(pt.x / dpiScale);
         pt.y = (int)(pt.y / dpiScale);
-        int logicalW = (int)(((RECT{ 0 }) .right) / dpiScale);
+        // P3-2: Removed the dead `RECT{0}.right` computation that was
+        // immediately overwritten by the real GetClientRect call below.
         RECT rc; GetClientRect(hWnd, &rc);
-        logicalW = (int)(rc.right / dpiScale);
+        int logicalW = (int)(rc.right / dpiScale);
         int logicalH = (int)(rc.bottom / dpiScale);
         UIRects ui;
         CalculateUIRects(ui, logicalW, logicalH);
@@ -641,7 +730,7 @@ LRESULT HandleMouseLeave(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     g_hoverDarkBtn = g_hoverLightBtn = false;
     g_hoverPath = g_hoverPathReset = false;
     g_hoverScrollHelper = g_hoverOrbitCam = g_hoverIndepSens = g_hoverCemuExperimental = false;
-    g_hoverSensH = g_hoverSensV = g_hoverMagneSens = g_hoverMagnePullSens = g_hoverFpsMagnesis = g_hoverClearLog = false;
+    g_hoverSensH = g_hoverSensV = g_hoverMagneSens = g_hoverMagnePullSens = g_hoverFpsMagnesis = g_hoverClearLog = g_hoverCopyLog = false;
     g_hoverFpsMagneEyeHeight = g_hoverFpsMagneOffsetForward = g_hoverFpsMagneOffsetSide = false;
     g_hoverDrop = g_hoverDropMenuRow = -1;
     if (g_tooltipActive) ShowTooltip(hWnd, nullptr, 0, 0);
@@ -689,6 +778,7 @@ LRESULT HandleSetCursor(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     else if (ui.rIndepSens.Contains(pt.x, pt.y)) overClickable = true;
     else if (!g_targetInjected && ui.rCemuExperimental.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rClearLog.Contains(pt.x, pt.y)) overClickable = true;
+    else if (ui.rCopyLog.Contains(pt.x, pt.y)) overClickable = true;
     else {
         for (int i = 0; i < 5; i++) {
             if (ui.rDrops[i].Contains(pt.x, pt.y)) { overClickable = true; break; }

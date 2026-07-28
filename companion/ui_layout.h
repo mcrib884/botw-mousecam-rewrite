@@ -50,6 +50,7 @@ struct UIRects {
     Rect rStatusDot; // I3: status indicator dot
 
     Rect rClearLog; // UX6: [Clear] button
+    Rect rCopyLog;  // AD-1: [Copy] log button
     Rect rLog;
 };
 

@@ -16,7 +16,7 @@ using namespace Gdiplus;
 extern float g_animInject, g_animReinject, g_animReset;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
-extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneSens, g_animMagnePullSens;
+extern float g_animSensH, g_animSensV, g_animClearLog, g_animCopyLog, g_animMagneSens, g_animMagnePullSens;
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;
 extern float g_animDrop[5];
 extern bool g_downInject, g_downReinject, g_downReset, g_downPath;
@@ -45,10 +45,23 @@ void PaintWindow(HWND hWnd) {
     SolidBrush bgBrush(g_theme.bg);
     g.FillRectangle(&bgBrush, 0, 0, logicalW, logicalH);
 
-    FontFamily ff(L"Segoe UI");
-    Font fontSec(&ff, 15, FontStyleBold, UnitPixel);
-    Font fontBody(&ff, 12, FontStyleRegular, UnitPixel);
-    Font smallFont(&ff, 11, FontStyleRegular, UnitPixel);
+    // P2-3: Cache the three primary fonts across paints. Creating Font objects
+    // per paint was 360-750 Font alloc/dealloc cycles per second (3 in
+    // PaintWindow plus extra in DrawToggle / DrawSlider / DrawDropdown). GDI+
+    // caches the underlying font handle internally, but the C++ Font wrapper
+    // still constructs/destructs the object and walks the family list each
+    // time. Move them to thread-local statics that live for the app lifetime.
+    // The FontFamily is also static (no DPI dependency); Font sizes are in
+    // UnitPixel so they don't auto-scale with DPI, but the produced glyphs
+    // still render at the correct physical size due to g.ScaleTransform.
+    static FontFamily s_ff(L"Segoe UI");
+    static Font s_fontSec(&s_ff, 15, FontStyleBold, UnitPixel);
+    static Font s_fontBody(&s_ff, 12, FontStyleRegular, UnitPixel);
+    static Font s_smallFont(&s_ff, 11, FontStyleRegular, UnitPixel);
+    FontFamily& ff = s_ff;
+    Font& fontSec = s_fontSec;
+    Font& fontBody = s_fontBody;
+    Font& smallFont = s_smallFont;
 
     SolidBrush textBrush(g_theme.text);
     SolidBrush mutedBrush(g_theme.textMuted);
@@ -95,10 +108,19 @@ void PaintWindow(HWND hWnd) {
 
     if (!g_config.cemu_path_override.empty()) {
         SolidBrush overrideBrush(g_theme.accent);
-        std::wstring exeName = Utf8ToWstr(g_config.cemu_path_override);
-        size_t lastSlash = exeName.find_last_of(L"\\/");
-        if (lastSlash != std::wstring::npos) exeName = exeName.substr(lastSlash + 1);
-        std::wstring txt = L"Target: " + exeName;
+        // P3-8: Cache the UTF-8 -> wide conversion + last-slash slice so we
+        // don't redo it on every paint (this fires 30-125 times/sec when idle
+        // and is a measurable chunk of per-frame CPU). The cache invalidates
+        // when the override string mutates.
+        static std::string s_cachedOverrideUtf8;
+        static std::wstring s_cachedOverrideExeName;
+        if (s_cachedOverrideUtf8 != g_config.cemu_path_override) {
+            s_cachedOverrideUtf8 = g_config.cemu_path_override;
+            std::wstring full = Utf8ToWstr(s_cachedOverrideUtf8);
+            size_t lastSlash = full.find_last_of(L"\\/");
+            s_cachedOverrideExeName = (lastSlash != std::wstring::npos) ? full.substr(lastSlash + 1) : full;
+        }
+        std::wstring txt = L"Target: " + s_cachedOverrideExeName;
         g.DrawString(txt.c_str(), -1, &fontBody, PointF((REAL)ui.rPath.X, (REAL)(ui.rPath.Y - 18)), &overrideBrush);
     } else {
         SolidBrush defaultBrush(g_theme.textMuted);
@@ -114,8 +136,9 @@ void PaintWindow(HWND hWnd) {
         SolidBrush resetBrush(resetBg);
         DrawRoundedRect(g, ui.rPathReset, 3, nullptr, &resetBrush);
         SolidBrush resetText(Color(255, 255, 255, 255));
-        Font resetFont(&ff, 12, FontStyleBold, UnitPixel);
-        g.DrawString(L"\u2715", -1, &resetFont, RectF((REAL)ui.rPathReset.X, (REAL)ui.rPathReset.Y, (REAL)ui.rPathReset.Width, (REAL)ui.rPathReset.Height), &sfCenter, &resetText);
+        // P2-3: cache the bold 12px font used for the ✕ glyph.
+        static Font s_resetFont(&ff, 12, FontStyleBold, UnitPixel);
+        g.DrawString(L"\u2715", -1, &s_resetFont, RectF((REAL)ui.rPathReset.X, (REAL)ui.rPathReset.Y, (REAL)ui.rPathReset.Width, (REAL)ui.rPathReset.Height), &sfCenter, &resetText);
     }
 
     bool isExpDisabled = g_targetInjected;
@@ -126,10 +149,16 @@ void PaintWindow(HWND hWnd) {
     const wchar_t* memTitle = g_collapsedMem ? L"\u25b6  MEMORY ADDRESSES" : L"\u25bc  MEMORY ADDRESSES";
     g.DrawString(memTitle, -1, &fontSec, PointF((REAL)(pad + 10), (REAL)(ui.rMemPanel.Y + 8)), &textBrush);
     if (!g_collapsedMem) {
+        // IM-6: Show the actual hex address of each found signature so the user
+        // can confirm the scanner's hit location, compare across runs, or paste
+        // into a debugger. Previously only "Found" / "Scanning..." was shown,
+        // obscuring whether the same address was reused across reinstalls.
         auto getAddrStr = [](uintptr_t addr, const wchar_t* foundStr) -> std::wstring {
             if (!g_targetInjected) return L"Not injected yet";
             if (addr == 0) return L"Scanning...";
-            return std::wstring(foundStr);
+            wchar_t buf[64];
+            swprintf_s(buf, L"%s (0x%016llX)", foundStr, (unsigned long long)addr);
+            return std::wstring(buf);
         };
         auto drawMemLine = [&](const wchar_t* label, const std::wstring& val, int yOffset) {
             g.DrawString(label, -1, &fontBody, PointF((REAL)(pad + 10), (REAL)(ui.rMemPanel.Y + yOffset)), &textBrush);
@@ -139,7 +168,7 @@ void PaintWindow(HWND hWnd) {
         if (g_targetInjected) {
             wchar_t wbuf[64];
             swprintf_s(wbuf, L"Writers found: %u", g_writersFound);
-            g.DrawString(wbuf, -1, &fontBody, PointF((REAL)(pad + 210), (REAL)(ui.rMemPanel.Y + 35)), &textBrush);
+            g.DrawString(wbuf, -1, &fontBody, PointF((REAL)(pad + 250), (REAL)(ui.rMemPanel.Y + 35)), &textBrush);
         }
         drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found"), 50);
         wchar_t valBuf1[64], valBuf2[64];
@@ -180,13 +209,36 @@ void PaintWindow(HWND hWnd) {
         swprintf_s(fovb, L"%.2f\x00B0", g_liveCamFOV);
         g.DrawString(fovb, -1, &fontBody, PointF((REAL)(pad + 115), (REAL)(ui.rTelePanel.Y + 65)), &textBrush);
 
+        // P3-9: Show "(released)" instead of snapping to 0,0,0 when magnesis
+        // detour deactivates. The DLL already exposes g_hasDeactSpeed but the
+        // target XYZ is lost on release — keep last known values for display
+        // until detour resumes, so the user doesn't see a glitch-snap to zero.
+        static float s_dispMagneX = 0.0f, s_dispMagneY = 0.0f, s_dispMagneZ = 0.0f;
+        static bool s_dispMagneValid = false;
         float mX = 0, mY = 0, mZ = 0;
+        bool showReleased = false;
         if (g_magneDetourActive) {
             mX = g_liveMagneTargetX;
             mY = g_liveMagneTargetY;
             mZ = g_liveMagneTargetZ;
+            s_dispMagneX = mX;
+            s_dispMagneY = mY;
+            s_dispMagneZ = mZ;
+            s_dispMagneValid = true;
+        } else if (s_dispMagneValid) {
+            // Detour released — keep the last known values visible so the user
+            // sees a stable "where the object was" rather than a flicker to zero.
+            mX = s_dispMagneX;
+            mY = s_dispMagneY;
+            mZ = s_dispMagneZ;
+            showReleased = true;
         }
-        drawVecLine(L"MTarget:", mX, mY, mZ, 80, 115);
+        if (showReleased) {
+            SolidBrush releasedBrush(g_theme.textMuted);
+            g.DrawString(L"MTarget (released):", -1, &fontBody, PointF((REAL)(pad + 10), (REAL)(ui.rTelePanel.Y + 80)), &releasedBrush);
+        } else {
+            drawVecLine(L"MTarget:", mX, mY, mZ, 80, 115);
+        }
     }
 
     // CAMERA SETTINGS
@@ -202,21 +254,37 @@ void PaintWindow(HWND hWnd) {
         if (g_config.use_independent_sens)
             DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Sensitivity (V)", ff);
 
-        // Magnesis speed mode cycle button
+        // IM-10: Segmented control for magnesis speed. Three button-like segments
+        // (Vanilla | Extended | Unlimited) with the active one highlighted. The
+        // previous single-pill click-cycle forced the user to experiment to
+        // discover modes and never showed the full set at once.
         {
             const wchar_t* modeLabels[] = { L"Vanilla", L"Extended", L"Unlimited" };
             int mode = g_config.magnesis_speed_mode;
             if (mode < 0 || mode > 2) mode = 0;
 
-            Color pillColors[] = { Color(255, 80, 180, 80), Color(255, 220, 160, 40), Color(255, 200, 60, 60) };
-            SolidBrush pillBrush(pillColors[mode]);
-            g.FillEllipse(&pillBrush, ui.rMagneSpeedMode.X, ui.rMagneSpeedMode.Y + 3, 14, 14);
-
-            wchar_t buf[64];
-            swprintf_s(buf, L"  Magnesis Speed: %s", modeLabels[mode]);
-            Font font(&ff, 12, FontStyleRegular, UnitPixel);
-            SolidBrush textBrush(g_theme.text);
-            g.DrawString(buf, -1, &font, PointF((REAL)(ui.rMagneSpeedMode.X + 14), (REAL)(ui.rMagneSpeedMode.Y + 2)), &textBrush);
+            Color segColors[] = { Color(255, 80, 180, 80), Color(255, 220, 160, 40), Color(255, 200, 60, 60) };
+            int segW = (ui.rMagneSpeedMode.Width - 4) / 3;  // 2 px gap between segments
+            static Font s_segFont(&ff, 12, FontStyleRegular, UnitPixel);
+            Font segFontBold(&ff, 12, FontStyleBold, UnitPixel);
+            for (int s = 0; s < 3; ++s) {
+                Rect seg(ui.rMagneSpeedMode.X + 2 + s * (segW + 2), ui.rMagneSpeedMode.Y + 3, segW, ui.rMagneSpeedMode.Height - 6);
+                const wchar_t* label = modeLabels[s];
+                Color fill = (s == mode) ? segColors[s] : g_theme.bg;
+                SolidBrush segBrush(fill);
+                Pen segPen(g_theme.border);
+                int r = (s == mode) ? 5 : 4;
+                DrawRoundedRect(g, seg, r, &segPen, &segBrush);
+                SolidBrush labelBrush(s == mode ? Color(255, 255, 255, 255) : g_theme.text);
+                StringFormat sfSeg;
+                sfSeg.SetAlignment(StringAlignmentCenter);
+                sfSeg.SetLineAlignment(StringAlignmentCenter);
+                if (s == mode) {
+                    g.DrawString(label, -1, &segFontBold, RectF((REAL)seg.X, (REAL)seg.Y, (REAL)seg.Width, (REAL)seg.Height), &sfSeg, &labelBrush);
+                } else {
+                    g.DrawString(label, -1, &s_segFont, RectF((REAL)seg.X, (REAL)seg.Y, (REAL)seg.Width, (REAL)seg.Height), &sfSeg, &labelBrush);
+                }
+            }
         }
 
         DrawSlider(g, ui.rMagneSens.X, ui.rMagneSens.Y, ui.rMagneSens.Width, g_config.magnesis_sensitivity, MAGNE_SENS_MIN, MAGNE_SENS_MAX, g_animMagneSens, g_config.use_independent_magne_sens ? L"Magnesis Sensitivity (H)" : L"Magnesis Sensitivity", ff);
@@ -273,8 +341,17 @@ void PaintWindow(HWND hWnd) {
             DrawRoundedRect(g, ui.rClearLog, 3, nullptr, &clearBg);
             g.DrawString(L"Clear", -1, &smallFont, RectF((REAL)ui.rClearLog.X, (REAL)ui.rClearLog.Y, (REAL)ui.rClearLog.Width, (REAL)ui.rClearLog.Height), &sfCenter, &textBrush);
         }
-        g.SetClip(Rect(rLog.X + 5, rLog.Y + 30, rLog.Width - 10, rLog.Height - 35));
-        g.ResetClip();
+        // AD-1: Copy log to clipboard button.
+        {
+            Color copyNormal = g_theme.accent;
+            Color copyHover = Color(255, 70, 100, 150);
+            SolidBrush copyBg(LerpColor(copyNormal, copyHover, g_animCopyLog));
+            DrawRoundedRect(g, ui.rCopyLog, 3, nullptr, &copyBg);
+            SolidBrush copyText(Color(255, 255, 255, 255));
+            g.DrawString(L"Copy", -1, &smallFont, RectF((REAL)ui.rCopyLog.X, (REAL)ui.rCopyLog.Y, (REAL)ui.rCopyLog.Width, (REAL)ui.rCopyLog.Height), &sfCenter, &copyText);
+        }
+        // P3-1: Removed dead SetClip/ResetClip pair — the rich-edit child window
+        // already clips its own painting, and these calls were back-to-back no-ops.
     }
 
     BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);

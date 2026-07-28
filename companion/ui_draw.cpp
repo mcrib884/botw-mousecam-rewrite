@@ -2,6 +2,7 @@
 #include "ui_draw.h"
 #include "theme.h"
 #include "cemu_key_injector.h"
+#include "string_utils.h"  // P3-5: Utf8ToWstr for proper narrow->wide conversion (was ASCII-only cast)
 
 ButtonItem GAMEPAD_BUTTONS[18] = {
     {"Disabled", 0}, {"A", 1}, {"B", 2}, {"X", 3}, {"Y", 4},
@@ -30,6 +31,9 @@ void DrawRoundedRect(Graphics& g, Rect r, int radius, Pen* pen, Brush* brush) {
 }
 
 void DrawToggle(Graphics& g, int x, int y, float stateAnim, const wchar_t* label, FontFamily& ff, bool disabled) {
+    // P2-3: Cache the toggle label font across paints (this gets called many
+    // times per frame — one for each toggle on the Settings panel).
+    static Font s_font(&ff, 12, FontStyleRegular, UnitPixel);
     Rect r(x, y, 36, 20);
     Color cOff = disabled ? Color(255, 45, 45, 45) : Color(255, 60, 60, 75);
     Color cOn = disabled ? Color(255, 80, 80, 80) : g_theme.accent;
@@ -43,23 +47,24 @@ void DrawToggle(Graphics& g, int x, int y, float stateAnim, const wchar_t* label
     float thumbX = 2 + 16 * stateAnim;
     g.FillEllipse(&thumbBrush, (int)(x + thumbX), y + 2, 16, 16);
 
-    Font font(&ff, 12, FontStyleRegular, UnitPixel);
     SolidBrush textBrush(g_theme.text);
     PointF pt((float)(x + 45), (float)(y + 2));
-    g.DrawString(label, -1, &font, pt, &textBrush);
+    g.DrawString(label, -1, &s_font, pt, &textBrush);
 }
 
 void DrawSlider(Graphics& g, int x, int y, int width, float value, float min, float max, float hoverAnim, const wchar_t* label, FontFamily& ff) {
+    // P2-3: Cache slider label/value font across paints.
+    static Font s_font(&ff, 12, FontStyleRegular, UnitPixel);
+    static_cast<void>(ff); // ff no longer directly used (font cached).
     SolidBrush textBrush(g_theme.text);
-    Font font(&ff, 12, FontStyleRegular, UnitPixel);
     PointF labelPt((float)x, (float)y);
-    g.DrawString(label, -1, &font, labelPt, &textBrush);
+    g.DrawString(label, -1, &s_font, labelPt, &textBrush);
 
     wchar_t valBuf[32];
     swprintf_s(valBuf, L"%.2f", value);
     SolidBrush valBrush(g_theme.textMuted);
     PointF valPt((float)(x + width - 30), (float)y);
-    g.DrawString(valBuf, -1, &font, valPt, &valBrush);
+    g.DrawString(valBuf, -1, &s_font, valPt, &valBrush);
 
     y += 20;
     SolidBrush trackBrush(Color(255, 60, 60, 75));
@@ -71,14 +76,23 @@ void DrawSlider(Graphics& g, int x, int y, int width, float value, float min, fl
     Color fillCol = LerpColor(g_theme.accent, Color(255, 60, 160, 255), hoverAnim);
     SolidBrush fillBrush(fillCol);
     g.FillRectangle(&fillBrush, x, y + 4, (int)(width * pct), 4);
-    g.FillEllipse(&fillBrush, x + (int)(width * pct) - 6, y - 2, 12, 12);
+    // P2-6: Clamp the thumb center inside the track so the circle never draws
+    // half-outside the track at pct=0 (left bleed) or pct=1 (right bleed).
+    // Thumb is 12px wide; track is `width`px starting at x. Center must be in
+    // [x + 6, x + width - 6].
+    int thumbCenter = x + (int)(width * pct);
+    if (thumbCenter < x + 6) thumbCenter = x + 6;
+    else if (thumbCenter > x + width - 6) thumbCenter = x + width - 6;
+    g.FillEllipse(&fillBrush, thumbCenter - 6, y - 2, 12, 12);
 }
 
 void DrawDropdown(Graphics& g, int x, int y, int width, const wchar_t* label, uint32_t selectedVal, int dropdownIdx, float hoverAnim, FontFamily& ff) {
+    // P2-3: Cache dropdown label font across paints.
+    static Font s_font(&ff, 12, FontStyleRegular, UnitPixel);
+    static_cast<void>(ff);
     SolidBrush textBrush(g_theme.text);
-    Font font(&ff, 12, FontStyleRegular, UnitPixel);
     PointF labelPt((float)x, (float)(y + 4));
-    g.DrawString(label, -1, &font, labelPt, &textBrush);
+    g.DrawString(label, -1, &s_font, labelPt, &textBrush);
 
     Rect r(x + 80, y, width - 80, 24);
     Color bg = LerpColor(g_theme.bg, Color(255, 35, 35, 45), hoverAnim);
@@ -95,13 +109,13 @@ void DrawDropdown(Graphics& g, int x, int y, int width, const wchar_t* label, ui
             break;
         }
     }
-    wchar_t wselName[32];
-    int n = 0;
-    for (const char* p = selName; *p && n < 31; ++p, ++n) wselName[n] = (wchar_t)(unsigned char)*p;
-    wselName[n] = 0;
+    // P3-5: Use proper UTF-8 -> wide conversion instead of the ASCII-only
+    // byte-widening cast. Button names are ASCII today but if a future profile
+    // exposes non-ASCII labels, the previous cast would silently mangle them.
+    std::wstring wselNameStr = Utf8ToWstr(std::string(selName));
     SolidBrush selBrush(g_theme.text);
     PointF selPt((float)(r.X + 5), (float)(r.Y + 4));
-    g.DrawString(wselName, -1, &font, selPt, &selBrush);
+    g.DrawString(wselNameStr.c_str(), -1, &s_font, selPt, &selBrush);
 
     Color arrowCol = LerpColor(g_theme.textMuted, Color(255, 200, 200, 200), hoverAnim);
     SolidBrush arrowBrush(arrowCol);

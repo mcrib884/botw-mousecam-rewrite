@@ -156,6 +156,12 @@ void WriteConfigToSharedMemory() {
 
 void UpdateUiState() {
     static int findTicks = 0, refreshTicks = 0;
+    // P2-2: Track previous injected state to invalidate ONLY on actual state
+    // flips, not every timer tick. The 125 Hz invalidate from here was the
+    // other half of the idle repaint churn — paired with the WM_TIMER
+    // `!g_targetInjected` invalidate, both pinned the CPU at 3-5% on desktop.
+    static bool s_prevInjected = false;
+    bool injectedChanged = false;
 
     if (g_hTargetProcess != nullptr) {
         DWORD exitCode = 0;
@@ -176,6 +182,15 @@ void UpdateUiState() {
             if (g_targetPid != 0) {
                 g_hTargetProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, g_targetPid);
                 if (g_hTargetProcess) g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
+                else {
+                    // IM-12: surface low-level OpenProcess failures so the user
+                    // can distinguish "no Cemu running" (pid=0) from "found pid
+                    // but can't open handle" (access denied, killed target, etc.)
+                    DWORD err = GetLastError();
+                    if (err != 0) {
+                        LogToConsole(L"[WARNING] OpenProcess(%lu) failed (err=%lu). May need administrator or the process may have exited.", g_targetPid, err);
+                    }
+                }
             }
         }
     } else { findTicks = 0; }
@@ -195,15 +210,29 @@ void UpdateUiState() {
     wasF5Pressed = isF5Pressed;
 #endif
 
-    if (g_hWnd) InvalidateRect(g_hWnd, nullptr, FALSE);
+    if (s_prevInjected != g_targetInjected) {
+        s_prevInjected = g_targetInjected;
+        injectedChanged = true;
+    }
+    // P2-2: only invalidate when the injected flag actually flipped. When
+    // we're idle (no target process, timer ticking at 125 Hz), the previous
+    // unconditional InvalidateRect was the major cause of constant CPU.
+    if (injectedChanged && g_hWnd) InvalidateRect(g_hWnd, nullptr, FALSE);
 }
 
 bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
     if (g_pSharedMemory) {
         g_pSharedMemory->m_statusShutdownDone = false;
         g_pSharedMemory->m_reqShutdown = true;
-        // Wait for DLL threads to exit cleanly (up to 250 ms)
-        int waitLimit = 25;
+        // P2-5: Push the wait from 250 ms to 5 s. The previous 250 ms ceiling
+        // was tight enough that even a normal scanner join (magnesis detour
+        // teardown, hook restore) could miss the window, leaving the FreeLibrary
+        // caller racing a trampoline write — which then crashes Cemu. 5 s is
+        // still bounded but accommodates worst-case teardown under load. We
+        // also surface the timeout to the log so the user sees when their
+        // Eject didn't actually wait for a clean DLL shutdown.
+        constexpr int kWaitIterations = 500;  // 500 * 10 ms = 5000 ms
+        int waitLimit = kWaitIterations;
         while (waitLimit-- > 0 && !g_pSharedMemory->m_statusShutdownDone) {
             MSG msg;
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -211,6 +240,9 @@ bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
                 DispatchMessageW(&msg);
             }
             Sleep(10);
+        }
+        if (waitLimit < 0 && !g_pSharedMemory->m_statusShutdownDone) {
+            LogToConsole(L"[WARNING] DLL shutdown did not complete in 5s — proceeding with eject (possible trampoline race).");
         }
     }
     return Injector::EjectDLL(pid, dllPath);

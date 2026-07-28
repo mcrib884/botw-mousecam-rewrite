@@ -85,29 +85,57 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         return 0;
     }
     case WM_TIMER: {
-        g_animInject += (g_hoverInject ? 0.05f : -0.05f);
-        g_animReinject += (g_hoverReinject ? 0.05f : -0.05f);
-        g_animReset += (g_hoverReset ? 0.05f : -0.05f);
-        g_animDarkBtn += (g_hoverDarkBtn ? 0.05f : -0.05f);
-        g_animLightBtn += (g_hoverLightBtn ? 0.05f : -0.05f);
-        g_animPath += (g_hoverPath ? 0.05f : -0.05f);
-        g_animPathReset += (g_hoverPathReset ? 0.05f : -0.05f);
-        g_animScrollHelper += (g_config.scroll_helper ? 0.075f : -0.075f);
-        g_animOrbitCam += (g_config.full_orbit_camera ? 0.075f : -0.075f);
-        g_animIndepSens += (g_config.use_independent_sens ? 0.075f : -0.075f);
-        g_animIndepMagneSens += (g_config.use_independent_magne_sens ? 0.075f : -0.075f);
-        g_animCemuExperimental += (g_config.cemu_experimental ? 0.075f : -0.075f);
-        g_animSensH += (g_hoverSensH ? 0.05f : -0.05f);
-        g_animSensV += (g_hoverSensV ? 0.05f : -0.05f);
-        g_animMagneSens += (g_hoverMagneSens ? 0.05f : -0.05f);
-        g_animMagneSensV += (g_hoverMagneSensV ? 0.05f : -0.05f);
-        g_animMagnePullSens += (g_hoverMagnePullSens ? 0.05f : -0.05f);
-        g_animFpsMagnesis += (g_config.fps_magnesis ? 0.075f : -0.075f);
-        g_animFpsMagneEyeHeight += (g_hoverFpsMagneEyeHeight ? 0.05f : -0.05f);
-        g_animFpsMagneOffsetForward += (g_hoverFpsMagneOffsetForward ? 0.05f : -0.05f);
-        g_animFpsMagneOffsetSide += (g_hoverFpsMagneOffsetSide ? 0.05f : -0.05f);
-        g_animClearLog += (g_hoverClearLog ? 0.05f : -0.05f);
-        for (int i = 0; i < 5; ++i) g_animDrop[i] += (g_hoverDrop == i ? 0.05f : -0.05f);
+        // P3-7: Drive animations by wall-clock delta (QPC) instead of fixed
+        // per-tick increments. The original code added 0.05f per 8 ms tick,
+        // which makes animations frame-rate-sensitive: under load (Cemu running
+        // + heavy paint) timer ticks can drop to 30 Hz or worse, stretching
+        // hover-in durations from ~160 ms to ~640 ms. With a QPC delta, a
+        // 1.0/sec ramp completes in 1 s regardless of frame pacing.
+        static LARGE_INTEGER s_qpcFreq = {0};
+        static LARGE_INTEGER s_lastTick = {0};
+        if (s_qpcFreq.QuadPart == 0) {
+            QueryPerformanceFrequency(&s_qpcFreq);
+            QueryPerformanceCounter(&s_lastTick);
+        }
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        double dt = (double)(now.QuadPart - s_lastTick.QuadPart) / (double)s_qpcFreq.QuadPart;
+        s_lastTick = now;
+        // Clamp dt to a sane range so a paused/hibernated session doesn't snap
+        // animations to the far state instantly.
+        if (dt < 0.0) dt = 0.0;
+        if (dt > 0.25) dt = 0.25;
+        // Normalize the previous 0.05f-per-8ms constants: that's 6.25/sec.
+        // Hover ramps (0.05f per 8 ms) become 6.25*dt; the toggle-state ramps
+        // (0.075f per 8 ms) become 9.375*dt.
+        const float hoverRate = 6.25f * (float)dt;
+        const float toggleRate = 9.375f * (float)dt;
+        const float themeRate = 6.25f * (float)dt;  // was 0.05f @ 8 ms
+
+        g_animInject += (g_hoverInject ? hoverRate : -hoverRate);
+        g_animReinject += (g_hoverReinject ? hoverRate : -hoverRate);
+        g_animReset += (g_hoverReset ? hoverRate : -hoverRate);
+        g_animDarkBtn += (g_hoverDarkBtn ? hoverRate : -hoverRate);
+        g_animLightBtn += (g_hoverLightBtn ? hoverRate : -hoverRate);
+        g_animPath += (g_hoverPath ? hoverRate : -hoverRate);
+        g_animPathReset += (g_hoverPathReset ? hoverRate : -hoverRate);
+        g_animScrollHelper += (g_config.scroll_helper ? toggleRate : -toggleRate);
+        g_animOrbitCam += (g_config.full_orbit_camera ? toggleRate : -toggleRate);
+        g_animIndepSens += (g_config.use_independent_sens ? toggleRate : -toggleRate);
+        g_animIndepMagneSens += (g_config.use_independent_magne_sens ? toggleRate : -toggleRate);
+        g_animCemuExperimental += (g_config.cemu_experimental ? toggleRate : -toggleRate);
+        g_animSensH += (g_hoverSensH ? hoverRate : -hoverRate);
+        g_animSensV += (g_hoverSensV ? hoverRate : -hoverRate);
+        g_animMagneSens += (g_hoverMagneSens ? hoverRate : -hoverRate);
+        g_animMagneSensV += (g_hoverMagneSensV ? hoverRate : -hoverRate);
+        g_animMagnePullSens += (g_hoverMagnePullSens ? hoverRate : -hoverRate);
+        g_animFpsMagnesis += (g_config.fps_magnesis ? toggleRate : -toggleRate);
+        g_animFpsMagneEyeHeight += (g_hoverFpsMagneEyeHeight ? hoverRate : -hoverRate);
+        g_animFpsMagneOffsetForward += (g_hoverFpsMagneOffsetForward ? hoverRate : -hoverRate);
+        g_animFpsMagneOffsetSide += (g_hoverFpsMagneOffsetSide ? hoverRate : -hoverRate);
+        g_animClearLog += (g_hoverClearLog ? hoverRate : -hoverRate);
+        g_animCopyLog += (g_hoverCopyLog ? hoverRate : -hoverRate);
+        for (int i = 0; i < 5; ++i) g_animDrop[i] += (g_hoverDrop == i ? hoverRate : -hoverRate);
 
         auto clampF = [](float& val) { if (val < 0) val = 0; if (val > 1) val = 1; };
         clampF(g_animInject); clampF(g_animReinject); clampF(g_animReset);
@@ -115,18 +143,19 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         clampF(g_animPath); clampF(g_animPathReset);
         clampF(g_animScrollHelper); clampF(g_animOrbitCam);
         clampF(g_animIndepSens); clampF(g_animIndepMagneSens); clampF(g_animCemuExperimental); clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneSens); clampF(g_animMagneSensV); clampF(g_animMagnePullSens);
-        clampF(g_animFpsMagnesis); clampF(g_animFpsMagneEyeHeight); clampF(g_animFpsMagneOffsetForward); clampF(g_animFpsMagneOffsetSide); clampF(g_animClearLog);
+        clampF(g_animFpsMagnesis); clampF(g_animFpsMagneEyeHeight); clampF(g_animFpsMagneOffsetForward); clampF(g_animFpsMagneOffsetSide); clampF(g_animClearLog); clampF(g_animCopyLog);
         for (int i = 0; i < 5; ++i) clampF(g_animDrop[i]);
 
         float targetTheme = g_config.use_light_theme ? 0.0f : 1.0f;
         if (g_animTheme == -1.0f) g_animTheme = targetTheme;
         if (g_animTheme != targetTheme) {
-            float step = 0.05f;
+            // P3-7: theme crossfade step also uses wall-clock delta so it stays
+            // ~160 ms even under load.
             if (targetTheme > g_animTheme) {
-                g_animTheme += step;
+                g_animTheme += themeRate;
                 if (g_animTheme > targetTheme) g_animTheme = targetTheme;
             } else {
-                g_animTheme -= step;
+                g_animTheme -= themeRate;
                 if (g_animTheme < targetTheme) g_animTheme = targetTheme;
             }
             ApplyTheme();
@@ -135,7 +164,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         UpdateUiState();
         WriteConfigToSharedMemory();
         UpdateTelemetryGui();
-        // Only invalidate if there's a reason (or hover animations if implemented later)
+        // Track live telemetry deltas so we only invalidate when something
+        // the user can actually SEE on screen has changed. Previously the
+        // companion invalidated at 125 Hz whenever it wasn't injected, which
+        // pinned the CPU at 3-5% on idle desktops.
         static float lastFocX = 0, lastPosX = 0, lastCamFOV = 0;
         static int32_t lastShortcut = -1; static uint8_t lastMenu = 1;
         bool changed = (lastFocX != g_liveCamFocX || lastPosX != g_liveCamPosX || lastCamFOV != g_liveCamFOV ||
@@ -143,8 +175,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         lastFocX = g_liveCamFocX; lastPosX = g_liveCamPosX; lastCamFOV = g_liveCamFOV;
         lastShortcut = g_liveShortcutMenu; lastMenu = g_liveMenuState;
 
-        // Always invalidate if we are polling (for the status dot) or dragging
-        bool animating = true; // Always invalidate with a 16ms timer for smooth UI since it's cheap enough, but only if an animation is actually happening.
         bool hasAnim = (g_animInject > 0 && g_animInject < 1) || (g_animReinject > 0 && g_animReinject < 1) || (g_animReset > 0 && g_animReset < 1) ||
                        (g_animDarkBtn > 0 && g_animDarkBtn < 1) || (g_animLightBtn > 0 && g_animLightBtn < 1) ||
                        (g_animPath > 0 && g_animPath < 1) || (g_animPathReset > 0 && g_animPathReset < 1) ||
@@ -156,17 +186,30 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                        (g_animMagneSens > 0 && g_animMagneSens < 1) || (g_animMagneSensV > 0 && g_animMagneSensV < 1) || (g_animMagnePullSens > 0 && g_animMagnePullSens < 1) ||
                        (g_animFpsMagnesis > 0 && g_animFpsMagnesis < 1) || (g_animFpsMagneEyeHeight > 0 && g_animFpsMagneEyeHeight < 1) ||
                        (g_animFpsMagneOffsetForward > 0 && g_animFpsMagneOffsetForward < 1) || (g_animFpsMagneOffsetSide > 0 && g_animFpsMagneOffsetSide < 1) ||
-                       (g_animClearLog > 0 && g_animClearLog < 1);
+                       (g_animClearLog > 0 && g_animClearLog < 1) ||
+                       (g_animCopyLog > 0 && g_animCopyLog < 1);
         for (int i = 0; i < 5; ++i) if (g_animDrop[i] > 0 && g_animDrop[i] < 1) hasAnim = true;
-        if (changed || g_dragSlider != -1 || !g_targetInjected || hasAnim) {
+        // P2-2: only invalidate if SOMETHING is actually changing on screen.
+        // Previously `!g_targetInjected` triggered 125 Hz repaints even when
+        // the status dot was static. We now skip invalidate when nothing's
+        // animating, telemetry is unchanged, and the user isn't dragging a
+        // slider. UpdateUiState already calls InvalidateRect when the
+        // injected state flips, so we don't need to keep repainting after
+        // the transition settles.
+        if (changed || g_dragSlider != -1 || hasAnim) {
             InvalidateRect(hWnd, nullptr, FALSE);
         }
         return 0;
     }
     case WM_SIZE: {
-        InvalidateUIRectsCache(); // UX7: force recalculation on resize
+        InvalidateUIRectsCache(); // IM-11: force recalculation on resize
         UpdateConsoleEditPosition(hWnd);
-        InvalidateRect(hWnd, nullptr, FALSE);
+        // IM-11: no InvalidateRect here — let WM_TIMER paint with the correct
+        // layout. During a drag-resize, Windows sends dozens of WM_SIZE events
+        // per second. Unconditional invalidation on each event triggered an
+        // equivalent number of Gd GDI+ paint passes, many of them wasted
+        // (the user's still dragging). The WM_TIMER fires ~16 ms after the
+        // last resize event, so there's no visible lag.
         return 0;
     }
     case WM_APP + 1:
@@ -194,6 +237,19 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
     case WM_GETMINMAXINFO:
         return HandleGetMinMaxInfo(hWnd, wParam, lParam);
     case WM_CLOSE:
+        // IM-7: save window rect to config before destroying, so the user's
+        // last position/size is restored on next launch.
+        {
+            WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
+            if (GetWindowPlacement(hWnd, &wp) && wp.showCmd == SW_SHOWNORMAL) {
+                RECT norm = wp.rcNormalPosition;
+                g_config.window_x = norm.left;
+                g_config.window_y = norm.top;
+                g_config.window_w = norm.right - norm.left;
+                g_config.window_h = norm.bottom - norm.top;
+                SaveConfig();
+            }
+        }
         DoEjectOnClose();
         DestroyWindow(hWnd);
         return 0;
@@ -215,7 +271,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
-    LoadLibraryW(L"msftedit.dll");
+    // P2-1: Detect msftedit.dll load failure and surface it to the user. The
+    // richedit log panel silently renders empty on systems missing msftedit
+    // (some IoT/LTSB Windows builds, hardened enterprise configs). The
+    // existing code called LoadLibraryW and ignored the return — the
+    // subsequent CreateWindowExW(MSFTEDIT_CLASS, ...) then silently fell back
+    // to Default (a 0-size static, no visible child). We at least log the
+    // failure to OutputDebugString so it shows up in DbgView / VS debugger
+    // output, and the console subclass now also detects a non-richedit
+    // fallback (see console.cpp).
+    HMODULE hMsftEdit = LoadLibraryW(L"msftedit.dll");
+    if (!hMsftEdit) {
+        wchar_t dbg[160];
+        swprintf_s(dbg, L"[Mousecam] msftedit.dll failed to load (err=%lu); rich log disabled.\n", GetLastError());
+        OutputDebugStringW(dbg);
+    }
 
     GdiplusStartupInput gdiplusStartupInput;
     GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, nullptr);
@@ -248,17 +318,50 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     // Load config BEFORE window creation so theme colors are known (I2)
     LoadConfig();
 
-    // Initial rect
-    RECT rc = { 0, 0, WND_W, WND_H };
+    // IM-7: use saved window position/size from config when available.
+    int initW = (g_config.window_w > 0) ? g_config.window_w : WND_W;
+    int initH = (g_config.window_h > 0) ? g_config.window_h : WND_H;
+    int initX = CW_USEDEFAULT;
+    int initY = CW_USEDEFAULT;
+    // Only use saved X/Y if both are valid (the window may have been moved to
+    // a monitor that no longer exists; Windows can fix that via
+    // CW_USEDEFAULT but we avoid passing a stale off-screen coords).
+    bool hasSavedPos = (g_config.window_x >= 0 && g_config.window_y >= 0);
+    if (hasSavedPos) {
+        initX = g_config.window_x;
+        initY = g_config.window_y;
+    }
+
+    RECT rc = { 0, 0, initW, initH };
     AdjustWindowRectEx(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0);
 
     g_hWnd = CreateWindowExW(0, L"MousecamClass", L"Mousecam Companion",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInstance, nullptr);
+        initX, initY, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInstance, nullptr);
 
     g_hConsoleEdit = CreateWindowExW(0, MSFTEDIT_CLASS, L"",
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
         0, 0, 0, 0, g_hWnd, nullptr, hInstance, nullptr);
+
+    // P2-1: Detect if MSFTEDIT_CLASS failed to register. CreateWindowExW then
+    // returns a "Default" static control (not a rich edit), and EM_REPLACESEL
+    // would silently do nothing. Fall back to a plain EDIT control so the user
+    // at least sees visible log text (without colored type tags, but readable).
+    extern bool g_consoleIsRichEdit;
+    if (g_hConsoleEdit) {
+        wchar_t clsName[64] = {};
+        GetClassNameW(g_hConsoleEdit, clsName, 64);
+        if (wcscmp(clsName, L"RICHEDIT50W") == 0 || wcscmp(clsName, L"RichEdit20W") == 0) {
+            g_consoleIsRichEdit = true;
+        } else {
+            // msftedit.dll missing — recreate as standard EDIT class.
+            DestroyWindow(g_hConsoleEdit);
+            g_hConsoleEdit = CreateWindowExW(0, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                0, 0, 0, 0, g_hWnd, nullptr, hInstance, nullptr);
+            g_consoleIsRichEdit = false;
+        }
+    }
 
     SendMessageW(g_hConsoleEdit, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), MAKELPARAM(TRUE, 0));
     // Theme BG is applied by ApplyTheme() below — no duplicate line needed (I2)

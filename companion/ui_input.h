@@ -16,6 +16,7 @@ extern bool g_hoverMagneSens, g_hoverMagneSensV;
 extern bool g_hoverMagnePullSens;
 extern bool g_hoverFpsMagnesis, g_hoverFpsMagneEyeHeight, g_hoverFpsMagneOffsetForward, g_hoverFpsMagneOffsetSide;
 extern bool g_hoverClearLog;
+extern bool g_hoverCopyLog;
 extern Rect g_clearLogRect;
 
 extern bool g_downInject, g_downReinject, g_downReset;
@@ -23,7 +24,7 @@ extern bool g_downInject, g_downReinject, g_downReset;
 extern float g_animInject, g_animReinject, g_animReset;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animIndepMagneSens, g_animCemuExperimental;
-extern float g_animSensH, g_animSensV, g_animClearLog;
+extern float g_animSensH, g_animSensV, g_animClearLog, g_animCopyLog;
 extern float g_animMagneSens, g_animMagneSensV;
 extern float g_animMagnePullSens;
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;

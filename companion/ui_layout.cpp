@@ -5,7 +5,7 @@
 extern int g_openDropdown;
 
 const int WND_W = 580;
-const int WND_H = 910;
+const int WND_H = 840;
 const float SENS_MIN = 0.1f;
 const float SENS_MAX = 10.0f;
 const float MAGNE_SENS_MIN = 0.01f;
@@ -28,6 +28,13 @@ static bool g_cachedCollapsedTele = false;
 static bool g_cachedCollapsedSet = false;
 static bool g_cachedCollapsedBind = false;
 static bool g_cachedCollapsedLog = false;
+// P3-4: Add cemu_path_override to the cache key so that changing the path
+// (which adds/removes the rPathReset rect) actually invalidates the cached
+// rects. Previously, all path-override mutation sites called
+// InvalidateUIRectsCache by convention — but a future mutation that forgot
+// the invalidate would render a stale rPathReset. The cache miss-key is the
+// root fix; the conventional invalidations remain as belt-and-suspenders.
+static std::string g_cachedCemuOverride;
 
 void InvalidateUIRectsCache() {
     g_cachedWidth = 0;
@@ -46,7 +53,9 @@ void CalculateUIRects(UIRects& r, int w, int h) {
         g_collapsedTele == g_cachedCollapsedTele &&
         g_collapsedSet == g_cachedCollapsedSet &&
         g_collapsedBind == g_cachedCollapsedBind &&
-        g_collapsedLog == g_cachedCollapsedLog) {
+        g_collapsedLog == g_cachedCollapsedLog &&
+        // P3-4: include cemu_path_override state — it controls rPathReset.
+        g_config.cemu_path_override == g_cachedCemuOverride) {
         r = g_cachedUIRects;
         return;
     }
@@ -95,32 +104,32 @@ void CalculateUIRects(UIRects& r, int w, int h) {
         r.rFpsMagneOffsetForward = Rect(0, 0, 0, 0);
         r.rFpsMagneOffsetSide = Rect(0, 0, 0, 0);
     } else {
-        r.rScrollHelper = Rect(pad + 10, nextSetY, (std::min)(250, panelW - 20), 20); nextSetY += 25;
-        r.rOrbitCam = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 25;
-        r.rIndepSens = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 25;
-        r.rIndepMagneSens = Rect(pad + 10, nextSetY, (std::min)(340, panelW - 20), 20); nextSetY += 30;
+        r.rScrollHelper = Rect(pad + 10, nextSetY, (std::min)(250, panelW - 20), 20); nextSetY += 22;
+        r.rOrbitCam = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 22;
+        r.rIndepSens = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 22;
+        r.rIndepMagneSens = Rect(pad + 10, nextSetY, (std::min)(340, panelW - 20), 20); nextSetY += 28;
 
-        r.rSensH = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        r.rSensH = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
         if (indepSens) {
-            r.rSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+            r.rSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
         } else {
             r.rSensV = Rect(0, 0, 0, 0);
         }
 
-        r.rMagneSpeedMode = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 30;
-        r.rMagneSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        r.rMagneSpeedMode = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 28;
+        r.rMagneSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
         if (indepMagneSens) {
-            r.rMagneSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+            r.rMagneSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
         } else {
             r.rMagneSensV = Rect(0, 0, 0, 0);
         }
-        r.rMagnePullSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+        r.rMagnePullSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
 
-        r.rFpsMagnesis = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 30;
+        r.rFpsMagnesis = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 28;
         if (fpsMagne) {
-            r.rFpsMagneEyeHeight = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
-            r.rFpsMagneOffsetForward = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
-            r.rFpsMagneOffsetSide = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
+            r.rFpsMagneEyeHeight = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
+            r.rFpsMagneOffsetForward = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
+            r.rFpsMagneOffsetSide = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 28;
         } else {
             r.rFpsMagneEyeHeight = Rect(0, 0, 0, 0);
             r.rFpsMagneOffsetForward = Rect(0, 0, 0, 0);
@@ -155,10 +164,14 @@ void CalculateUIRects(UIRects& r, int w, int h) {
 
     int logH = g_collapsedLog ? 30 : (std::max)(10, h - curY - 10);
     r.rLog = Rect(pad, curY, panelW, logH);
-    if (g_collapsedLog)
+    if (g_collapsedLog) {
         r.rClearLog = Rect(0, 0, 0, 0);
-    else
+        r.rCopyLog = Rect(0, 0, 0, 0);
+    } else {
+        // AD-1: "Copy" to clipboard (left) and "Clear" to empty (right)
+        r.rCopyLog = Rect(pad + panelW - 110, curY + 10, 45, 18);
         r.rClearLog = Rect(pad + panelW - 60, curY + 10, 45, 18);
+    }
 
     g_cachedWidth = w;
     g_cachedHeight = h;
@@ -170,5 +183,7 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     g_cachedCollapsedSet = g_collapsedSet;
     g_cachedCollapsedBind = g_collapsedBind;
     g_cachedCollapsedLog = g_collapsedLog;
+    // P3-4: persist the override value used to compute this cached layout.
+    g_cachedCemuOverride = g_config.cemu_path_override;
     g_cachedUIRects = r;
 }

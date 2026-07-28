@@ -8,6 +8,10 @@
 // Rich-edit child window. Created in main.cpp wWinMain, repositioned by UpdateConsoleEditPosition.
 extern HWND g_hConsoleEdit;
 
+// P2-1: TRUE when g_hConsoleEdit is an actual rich-edit class (msftedit loaded).
+// FALSE when we fell back to a plain EDIT control. Gates which messages we send.
+extern bool g_consoleIsRichEdit;
+
 // Status line shown in the CONNECTION panel. Set via SetStatus.
 extern std::wstring g_statusText;
 

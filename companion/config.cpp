@@ -106,7 +106,14 @@ void SaveConfig() {
     f << "  \"collapsed_tele\": " << (g_collapsedTele ? "true" : "false") << ",\n";
     f << "  \"collapsed_set\": " << (g_collapsedSet ? "true" : "false") << ",\n";
     f << "  \"collapsed_bind\": " << (g_collapsedBind ? "true" : "false") << ",\n";
-    f << "  \"collapsed_log\": " << (g_collapsedLog ? "true" : "false") << "\n";
+    f << "  \"collapsed_log\": " << (g_collapsedLog ? "true" : "false") << ",\n";
+    // IM-7: save per-run window position / size so the user doesn't have to
+    // reposition on every launch.
+    f << "  \"window_x\": " << g_config.window_x << ",\n";
+    f << "  \"window_y\": " << g_config.window_y << ",\n";
+    f << "  \"window_w\": " << g_config.window_w << ",\n";
+    f << "  \"window_h\": " << g_config.window_h << ",\n";
+    f << "  \"theme_preset\": " << g_config.theme_preset << "\n";
     f << "}\n";
     f.close();
 }
@@ -252,6 +259,14 @@ void LoadConfig() {
     g_collapsedSet = extract_json_bool("collapsed_set", false);
     g_collapsedBind = extract_json_bool("collapsed_bind", false);
     g_collapsedLog = extract_json_bool("collapsed_log", false);
+
+    // IM-7: load saved window position; -1 means "use system default."
+    g_config.window_x = (int)extract_json_double("window_x", -1.0);
+    g_config.window_y = (int)extract_json_double("window_y", -1.0);
+    g_config.window_w = (int)extract_json_double("window_w", -1.0);
+    g_config.window_h = (int)extract_json_double("window_h", -1.0);
+    g_config.theme_preset = (int)extract_json_double("theme_preset", 0.0);
+    if (g_config.theme_preset < 0 || g_config.theme_preset > 6) g_config.theme_preset = 0;
 
     if (!g_config.theme_initialized) {
         g_config.use_light_theme = IsWindowsLightTheme();

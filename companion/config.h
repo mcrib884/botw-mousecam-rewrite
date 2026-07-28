@@ -27,6 +27,15 @@ struct AppConfig {
     float magnesis_sensitivity = 1.0f; // Magnesis sensitivity multiplier (H)
     float magnesis_sensitivity_y = 1.0f; // Magnesis sensitivity multiplier (V)
     float magnesis_pull_sensitivity = 1.0f; // Magnesis pull sensitivity multiplier
+    // IM-7: window position/state persists across runs. -1 means "not yet set
+    // by the user" and the system defaults CW_USEDEFAULT positioning.
+    int  window_x = -1;
+    int  window_y = -1;
+    int  window_w = -1;
+    int  window_h = -1;
+    // Phase 5: theme preset selection. 0=classic dark, 1=classic light, 2=Nord,
+    // 3=Solarized Dark, 4=Catppuccin Mocha, 5=Gruvbox Dark, 6=Tokyo Night.
+    int  theme_preset = 0;
 };
 
 extern AppConfig g_config;

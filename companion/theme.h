@@ -33,3 +33,4 @@ extern float g_animTheme; // -1.0f until first ApplyTheme, then 0..1
 
 Color LerpColor(Color a, Color b, float t);
 void ApplyTheme();
+const wchar_t* GetThemePresetName(int preset);
