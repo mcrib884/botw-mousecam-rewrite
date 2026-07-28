@@ -34,3 +34,11 @@ extern float g_animTheme; // -1.0f until first ApplyTheme, then 0..1
 Color LerpColor(Color a, Color b, float t);
 void ApplyTheme();
 const wchar_t* GetThemePresetName(int preset);
+
+// Returns a contrasting text color (white or black) based on the W3C relative
+// luminance of the given background. Use when rendering text on top of a
+// colored swatch / button to ensure readability across all theme palettes.
+Color GetContrastTextColor(Color bg);
+
+// Computes the W3C relative luminance of an sRGB color (0..1 range).
+double ColorLuminance(BYTE r, BYTE g, BYTE b);

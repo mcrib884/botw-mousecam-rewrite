@@ -63,20 +63,20 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     int pad = 15;
     int panelW = w - pad * 2;
     int spacing = 10;
-    int curY = 10;
+    int curY = 24;  // leave space at top for the theme row
 
     r.rDarkBtn = Rect(0, 0, 0, 0);
     r.rLightBtn = Rect(0, 0, 0, 0);
-    // Phase 5: 7 theme preset buttons in a horizontal row.
-    // Place them BELOW the inject/eject row (which sits at curY+70, height 26,
-    // ending at curY+96) to avoid overlap. Theme row starts at curY+100 with
-    // a small visual gap from the inject row.
+    // Phase 5: 7 theme preset buttons in a horizontal row at the top of the
+    // window. Same y/height as the old dark/light circles (y=15, h=14) but
+    // spanning 7 buttons across. Each is 24px wide with 2px gaps (total 180),
+    // centered horizontally.
     {
-        int btnW = 55; int btnH = 20; int btnGap = 3;
+        int btnW = 24; int btnH = 14; int btnGap = 2;
         int rowW = btnW * 7 + btnGap * 6;
         int rowX = pad + (panelW - rowW) / 2; // center the row
         for (int i = 0; i < 7; ++i)
-            r.rThemeBtns[i] = Rect(rowX + i * (btnW + btnGap), curY + 100, btnW, btnH);
+            r.rThemeBtns[i] = Rect(rowX + i * (btnW + btnGap), 15, btnW, btnH);
     }
 
     int connH = 135;

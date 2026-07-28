@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include <dwmapi.h>
 #include <richedit.h>
+#include <cmath>
 #include "theme.h"
 
 #pragma comment(lib, "dwmapi.lib")
@@ -16,6 +17,24 @@ Color LerpColor(Color a, Color b, float t) {
     return Color(255, a.GetR() + (b.GetR() - a.GetR()) * t,
                         a.GetG() + (b.GetG() - a.GetG()) * t,
                         a.GetB() + (b.GetB() - a.GetB()) * t);
+}
+
+// W3C relative luminance: sRGB -> linear, then weighted sum.
+double ColorLuminance(BYTE r, BYTE g, BYTE b) {
+    auto linear = [](BYTE v) {
+        double s = v / 255.0;
+        return s <= 0.03928 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+
+Color GetContrastTextColor(Color bg) {
+    // Threshold 0.5 on relative luminance: > 0.5 -> dark text, else light text.
+    // This works for all the preset accents (Dark/Light/Nord/Solarized/Catppuccin/
+    // Gruvbox/Tokyo Night) and any custom color the user might add later.
+    double lum = ColorLuminance(bg.GetR(), bg.GetG(), bg.GetB());
+    if (lum > 0.5) return Color(255, 20, 20, 24);
+    return Color(255, 245, 245, 248);
 }
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE

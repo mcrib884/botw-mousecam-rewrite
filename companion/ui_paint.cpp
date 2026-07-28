@@ -79,11 +79,13 @@ void PaintWindow(HWND hWnd) {
     DrawRoundedRect(g, ui.rConnPanel, 8, &borderPen, &panelBrush);
     g.DrawString(L"CONNECTION", -1, &fontSec, PointF((REAL)(pad + 10), (REAL)(ui.rConnPanel.Y + 10)), &textBrush);
 
-    // Phase 5: 7 theme preset buttons in a horizontal row.
-    // Each shows the preset name with a small colored swatch. Active preset
-    // is highlighted with accent fill + white text; inactive is subtle.
+    // Phase 5: 7 theme preset buttons in a horizontal row at the top of the
+    // window. Each button: 24x14. Active preset is filled with the theme's
+    // accent color and uses a contrast-aware text color (black/white based on
+    // background luminance, see GetContrastTextColor in theme.cpp). Inactive
+    // buttons show the theme's swatch dot + 2-letter abbreviation.
     {
-        const wchar_t* names[] = {L"Dark", L"Light", L"Nord", L"Solarized", L"Catppuccin", L"Gruvbox", L"Tokyo"};
+        const wchar_t* abbrevs[] = {L"Dr", L"Li", L"No", L"So", L"Ca", L"Gr", L"To"};
         Color swatches[] = {
             Color(255, 47, 129, 247),   Color(255, 0, 102, 204),
             Color(255, 136, 192, 208),  Color(255, 38, 139, 210),
@@ -91,32 +93,30 @@ void PaintWindow(HWND hWnd) {
             Color(255, 122, 162, 247)
         };
         int active = g_config.theme_preset;
-        static Font s_themeFont(&ff, 10, FontStyleRegular, UnitPixel);
-        StringFormat sfTheme;
-        sfTheme.SetAlignment(StringAlignmentCenter);
-        sfTheme.SetLineAlignment(StringAlignmentCenter);
+        static Font s_themeFont(&ff, 9, FontStyleRegular, UnitPixel);
         for (int i = 0; i < 7; ++i) {
             Rect r = ui.rThemeBtns[i];
-            Color fill = (i == active) ? swatches[i] : g_theme.panel;
+            // Active: fill with accent + contrast text. Inactive: panel
+            // background with a thin border and a small swatch dot.
+            bool isActive = (i == active);
+            Color fill = isActive ? swatches[i] : g_theme.panel;
             SolidBrush btnBg(fill);
-            Pen btnBorder(g_theme.border);
-            DrawRoundedRect(g, r, 4, &btnBorder, &btnBg);
-            SolidBrush swatchDot(swatches[i]);
-            g.FillEllipse(&swatchDot, r.X + 3, r.Y + 5, 8, 8);
-            SolidBrush labelBrush(i == active ? Color(255, 255, 255, 255) : g_theme.text);
-            g.DrawString(names[i], -1, &s_themeFont, RectF((REAL)(r.X + 12), (REAL)r.Y, (REAL)(r.Width - 12), (REAL)r.Height), &sfTheme, &labelBrush);
+            Pen btnBorder(isActive ? Color(255, 0, 0, 0) : g_theme.border);
+            DrawRoundedRect(g, r, 3, &btnBorder, &btnBg);
+            // Label uses contrast-aware color so it stays readable on any
+            // active accent (white-on-Navy / black-on-Catppuccin etc).
+            Color labelCol = isActive ? GetContrastTextColor(swatches[i]) : g_theme.text;
+            SolidBrush labelBrush(labelCol);
+            StringFormat sfTheme;
+            sfTheme.SetAlignment(StringAlignmentCenter);
+            sfTheme.SetLineAlignment(StringAlignmentCenter);
+            g.DrawString(abbrevs[i], -1, &s_themeFont, RectF((REAL)r.X, (REAL)r.Y, (REAL)r.Width, (REAL)r.Height), &sfTheme, &labelBrush);
         }
     }
 
-    Color btnDark = LerpColor(Color(255, 20, 20, 25), Color(255, 50, 50, 55), g_animDarkBtn);
-    Color btnLight = LerpColor(Color(255, 235, 235, 240), Color(255, 255, 255, 255), g_animLightBtn);
+    // (Old dark/light circle code removed; rDarkBtn / rLightBtn are now zero-sized
+    //  and the 7 theme buttons above replace them.)
     Pen activePen(g_theme.accent, 2.0f);
-    SolidBrush darkBrush(btnDark);
-    g.FillEllipse(&darkBrush, ui.rDarkBtn);
-    g.DrawEllipse(g_config.use_light_theme ? &borderPen : &activePen, ui.rDarkBtn);
-    SolidBrush lightBrush(btnLight);
-    g.FillEllipse(&lightBrush, ui.rLightBtn);
-    g.DrawEllipse(g_config.use_light_theme ? &activePen : &borderPen, ui.rLightBtn);
 
     SolidBrush statusBrush(g_targetInjected ? g_theme.success : g_theme.error);
     g.FillEllipse(&statusBrush, ui.rStatusDot);
