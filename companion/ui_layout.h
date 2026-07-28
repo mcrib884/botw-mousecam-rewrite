@@ -46,6 +46,7 @@ struct UIRects {
 
     Rect rDarkBtn;
     Rect rLightBtn;
+    Rect rThemeBtns[7];  // Phase 5: 7 clickable theme-preset buttons, horizontal row
 
     Rect rStatusDot; // I3: status indicator dot
 

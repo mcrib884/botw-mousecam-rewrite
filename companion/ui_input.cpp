@@ -234,6 +234,24 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hWnd, nullptr, FALSE);
         return 0;
     }
+    // Phase 5: 7 individual theme preset buttons. Clicking any one directly
+    // selects that preset.
+    for (int i = 0; i < 7; ++i) {
+        if (ui.rThemeBtns[i].Contains(x, y)) {
+            g_config.theme_preset = i;
+            g_config.use_light_theme = (i == 1);
+            g_animTheme = -1.0f;
+            ApplyTheme();
+            SaveConfig();
+            InvalidateUIRectsCache();
+            InvalidateRect(hWnd, nullptr, FALSE);
+            wchar_t buf[64];
+            swprintf_s(buf, L"Theme: %s", GetThemePresetName(i));
+            SetStatus(buf);
+            return 0;
+        }
+    }
+
     if (ui.rDarkBtn.Contains(x, y)) {
         // Phase 5: Dark button cycles through dark presets (skip light=1).
         static const int darkPresets[] = {0, 2, 3, 4, 5, 6};
@@ -776,12 +794,17 @@ LRESULT HandleSetCursor(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     else if (ui.rScrollHelper.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rOrbitCam.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rIndepSens.Contains(pt.x, pt.y)) overClickable = true;
+    else if (ui.rIndepMagneSens.Contains(pt.x, pt.y)) overClickable = true;
+    else if (ui.rMagneSpeedMode.Contains(pt.x, pt.y)) overClickable = true;
     else if (!g_targetInjected && ui.rCemuExperimental.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rClearLog.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rCopyLog.Contains(pt.x, pt.y)) overClickable = true;
     else {
-        for (int i = 0; i < 5; i++) {
-            if (ui.rDrops[i].Contains(pt.x, pt.y)) { overClickable = true; break; }
+        for (int i = 0; i < 7; ++i) if (ui.rThemeBtns[i].Contains(pt.x, pt.y)) { overClickable = true; break; }
+        if (!overClickable) {
+            for (int i = 0; i < 5; i++) {
+                if (ui.rDrops[i].Contains(pt.x, pt.y)) { overClickable = true; break; }
+            }
         }
     }
     if (overClickable) {

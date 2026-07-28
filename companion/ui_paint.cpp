@@ -79,6 +79,35 @@ void PaintWindow(HWND hWnd) {
     DrawRoundedRect(g, ui.rConnPanel, 8, &borderPen, &panelBrush);
     g.DrawString(L"CONNECTION", -1, &fontSec, PointF((REAL)(pad + 10), (REAL)(ui.rConnPanel.Y + 10)), &textBrush);
 
+    // Phase 5: 7 theme preset buttons in a horizontal row.
+    // Each shows the preset name with a small colored swatch. Active preset
+    // is highlighted with accent fill + white text; inactive is subtle.
+    {
+        const wchar_t* names[] = {L"Dark", L"Light", L"Nord", L"Solarized", L"Catppuccin", L"Gruvbox", L"Tokyo"};
+        Color swatches[] = {
+            Color(255, 47, 129, 247),   Color(255, 0, 102, 204),
+            Color(255, 136, 192, 208),  Color(255, 38, 139, 210),
+            Color(255, 137, 180, 250),  Color(255, 131, 165, 152),
+            Color(255, 122, 162, 247)
+        };
+        int active = g_config.theme_preset;
+        static Font s_themeFont(&ff, 10, FontStyleRegular, UnitPixel);
+        StringFormat sfTheme;
+        sfTheme.SetAlignment(StringAlignmentCenter);
+        sfTheme.SetLineAlignment(StringAlignmentCenter);
+        for (int i = 0; i < 7; ++i) {
+            Rect r = ui.rThemeBtns[i];
+            Color fill = (i == active) ? swatches[i] : g_theme.panel;
+            SolidBrush btnBg(fill);
+            Pen btnBorder(g_theme.border);
+            DrawRoundedRect(g, r, 4, &btnBorder, &btnBg);
+            SolidBrush swatchDot(swatches[i]);
+            g.FillEllipse(&swatchDot, r.X + 3, r.Y + 5, 8, 8);
+            SolidBrush labelBrush(i == active ? Color(255, 255, 255, 255) : g_theme.text);
+            g.DrawString(names[i], -1, &s_themeFont, RectF((REAL)(r.X + 12), (REAL)r.Y, (REAL)(r.Width - 12), (REAL)r.Height), &sfTheme, &labelBrush);
+        }
+    }
+
     Color btnDark = LerpColor(Color(255, 20, 20, 25), Color(255, 50, 50, 55), g_animDarkBtn);
     Color btnLight = LerpColor(Color(255, 235, 235, 240), Color(255, 255, 255, 255), g_animLightBtn);
     Pen activePen(g_theme.accent, 2.0f);

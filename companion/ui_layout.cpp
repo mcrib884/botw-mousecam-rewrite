@@ -65,10 +65,18 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     int spacing = 10;
     int curY = 10;
 
-    r.rDarkBtn = Rect(w / 2 - 20, 15, 14, 14);
-    r.rLightBtn = Rect(w / 2 + 5, 15, 14, 14);
+    r.rDarkBtn = Rect(0, 0, 0, 0);
+    r.rLightBtn = Rect(0, 0, 0, 0);
+    // Phase 5: 7 theme preset buttons in a horizontal row.
+    {
+        int btnW = 55; int btnH = 20; int btnGap = 3;
+        int rowW = btnW * 7 + btnGap * 6;
+        int rowX = pad + (panelW - rowW) / 2; // center the row
+        for (int i = 0; i < 7; ++i)
+            r.rThemeBtns[i] = Rect(rowX + i * (btnW + btnGap), curY + 55, btnW, btnH);
+    }
 
-    int connH = 110;
+    int connH = 125;
     r.rConnPanel = Rect(pad, curY, panelW, connH);
     r.rInj = Rect(pad + panelW - 260, curY + 70, 80, 26);
     r.rReinj = Rect(pad + panelW - 175, curY + 70, 80, 26);
