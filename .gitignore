@@ -1,8 +1,38 @@
-.vs/
+# Build outputs and intermediate files
 bin/
 obj/
+dist/
+build-release.bat
+x64/
+Debug/
+Release/
 *.user
 *.suo
+*.userosscache
+*.sln.docstates
+*.pdb
+*.ilk
+*.obj
+*.res
+*.tlog
+*.log
+*.lastbuildstate
+*.idb
+*.iobj
+*.ipdb
+*.old_*
+
+# Visual Studio & IDE directories
+.vs/
+.vscode/
+
+# AI Agent & workspace artifacts
 .agents/
 agents.md
+AGENTS.md
+*.md
+!README.md
+.gemini/
 .opencode/
+.claude/
+.cursor/
