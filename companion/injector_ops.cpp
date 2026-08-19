@@ -180,8 +180,16 @@ void UpdateUiState() {
         }
     } else { findTicks = 0; }
 
-    if (g_targetInjected && g_targetPid != 0) MapSharedMemory();
-    else if (!g_targetInjected) UnmapSharedMemory();
+    HWND fg = GetForegroundWindow();
+    bool isCompanionFocused = (fg != nullptr && (fg == g_hWnd || IsChild(g_hWnd, fg)));
+    static bool wasF2Pressed = false;
+    bool isF2Pressed = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    if (isCompanionFocused && isF2Pressed && !wasF2Pressed) {
+        if (g_targetInjected && g_pSharedMemory) {
+            g_pSharedMemory->m_reqToggleMousecam = true;
+        }
+    }
+    wasF2Pressed = isF2Pressed;
 
 #ifdef _DEBUG
     static bool wasF5Pressed = false;
@@ -270,8 +278,10 @@ void UpdateTelemetryGui() {
         g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
         g_liveMagneTargetX = 0.0f; g_liveMagneTargetY = 0.0f; g_liveMagneTargetZ = 0.0f;
         g_magneSpeedH = 0.0f; g_magneSpeedV = 0.0f;
+        g_mousecamActive = false;
         g_logReadIdx = 0;
     } else {
+        g_mousecamActive = g_pSharedMemory->m_statusMousecamActive;
         if (g_pSharedMemory->m_statusAddrGameRomCamera != 0 && g_addrGameRomCamera == 0) {
             LogToConsole(L"[INFO] Found GameRomCamera");
         } else if (g_pSharedMemory->m_statusAddrGameRomCamera == 0 && g_addrGameRomCamera != 0) {

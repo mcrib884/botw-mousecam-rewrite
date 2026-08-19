@@ -13,13 +13,13 @@ using namespace Gdiplus;
 #include "ui_input.h"
 #include "string_utils.h"
 
-extern float g_animInject, g_animReinject, g_animReset;
+extern float g_animInject, g_animReinject, g_animReset, g_animToggleCam;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
 extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneSens, g_animMagnePullSens;
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;
 extern float g_animDrop[5];
-extern bool g_downInject, g_downReinject, g_downReset, g_downPath;
+extern bool g_downInject, g_downReinject, g_downReset, g_downToggleCam, g_downPath;
 
 void PaintWindow(HWND hWnd) {
     PAINTSTRUCT ps;
@@ -92,6 +92,19 @@ void PaintWindow(HWND hWnd) {
     g.DrawString(g_targetInjected ? L"Disconnect" : L"Connect", -1, &fontBody, RectF((REAL)ui.rInj.X, (REAL)ui.rInj.Y, (REAL)ui.rInj.Width, (REAL)ui.rInj.Height), &sfCenter, &textBrush);
     g.DrawString(L"Reinject", -1, &fontBody, RectF((REAL)ui.rReinj.X, (REAL)ui.rReinj.Y, (REAL)ui.rReinj.Width, (REAL)ui.rReinj.Height), &sfCenter, &textBrush);
     g.DrawString(L"Reset", -1, &fontBody, RectF((REAL)ui.rRst.X, (REAL)ui.rRst.Y, (REAL)ui.rRst.Width, (REAL)ui.rRst.Height), &sfCenter, &textBrush);
+
+    if (g_targetInjected) {
+        Color toggleBaseCol = g_mousecamActive ? g_theme.success : g_theme.error;
+        Color toggleHoverCol = g_mousecamActive ? Color(255, 75, 210, 95) : Color(255, 250, 110, 100);
+        Color toggleDownCol = g_mousecamActive ? Color(255, 35, 120, 50) : Color(255, 140, 40, 40);
+        Color btnToggle = g_downToggleCam ? toggleDownCol : LerpColor(toggleBaseCol, toggleHoverCol, g_animToggleCam);
+        SolidBrush toggleBrush(btnToggle);
+        DrawRoundedRect(g, ui.rToggleCam, 4, nullptr, &toggleBrush);
+
+        SolidBrush toggleTextBrush(Color(255, 255, 255, 255));
+        const wchar_t* toggleLabel = g_mousecamActive ? L"Enabled" : L"Disabled";
+        g.DrawString(toggleLabel, -1, &fontBody, RectF((REAL)ui.rToggleCam.X, (REAL)ui.rToggleCam.Y, (REAL)ui.rToggleCam.Width, (REAL)ui.rToggleCam.Height), &sfCenter, &toggleTextBrush);
+    }
 
     if (!g_config.cemu_path_override.empty()) {
         SolidBrush overrideBrush(g_theme.accent);
