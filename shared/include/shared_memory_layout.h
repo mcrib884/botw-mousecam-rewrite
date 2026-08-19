@@ -71,6 +71,7 @@ struct SharedMemoryLayout {
     bool    m_statusScanning;
     uint32_t m_statusWritersFound;
     bool    m_patchMagneDetourActive;
+    bool    m_statusMousecamActive;
 
     // --- Log queue (written by DLL, read by companion) ---
     char     m_logQueue[8][128];
@@ -81,5 +82,6 @@ struct SharedMemoryLayout {
     bool m_reqDumpAob;
     bool m_reqResetScan;
     bool m_reqShutdown;
+    bool m_reqToggleMousecam;
 };
 

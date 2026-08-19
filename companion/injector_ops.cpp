@@ -198,6 +198,17 @@ void UpdateUiState() {
     if (g_targetInjected && g_targetPid != 0) MapSharedMemory();
     else if (!g_targetInjected) UnmapSharedMemory();
 
+    HWND fg = GetForegroundWindow();
+    bool isCompanionFocused = (fg != nullptr && (fg == g_hWnd || IsChild(g_hWnd, fg)));
+    static bool wasF2Pressed = false;
+    bool isF2Pressed = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    if (isCompanionFocused && isF2Pressed && !wasF2Pressed) {
+        if (g_targetInjected && g_pSharedMemory) {
+            g_pSharedMemory->m_reqToggleMousecam = true;
+        }
+    }
+    wasF2Pressed = isF2Pressed;
+
 #ifdef _DEBUG
     static bool wasF5Pressed = false;
     bool isF5Pressed = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
@@ -300,6 +311,7 @@ void UpdateTelemetryGui() {
         g_addrGameRomCamera = 0; g_addrMagneTarget = 0; g_addrShortcutMenu = 0; g_addrMenuState = 0; g_writersFound = 0;
         g_liveCamPosX = 0; g_liveCamPosY = 0; g_liveCamPosZ = 0; g_liveCamFocX = 0; g_liveCamFocY = 0; g_liveCamFocZ = 0; g_liveCamFOV = 0;
         g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
+        g_mousecamActive = false;
         g_liveMagneTargetX = 0.0f; g_liveMagneTargetY = 0.0f; g_liveMagneTargetZ = 0.0f;
         g_magneSpeedH = 0.0f; g_magneSpeedV = 0.0f;
         g_logReadIdx = 0;
@@ -318,6 +330,7 @@ void UpdateTelemetryGui() {
         g_addrShortcutMenu = g_pSharedMemory->m_statusAddrShortcutMenu;
         g_addrMenuState = g_pSharedMemory->m_statusAddrMenuState;
         g_writersFound = g_pSharedMemory->m_statusWritersFound;
+        g_mousecamActive = g_pSharedMemory->m_statusMousecamActive;
 
         g_liveCamPosX = g_pSharedMemory->m_teleLiveCamPosX; g_liveCamPosY = g_pSharedMemory->m_teleLiveCamPosY; g_liveCamPosZ = g_pSharedMemory->m_teleLiveCamPosZ;
         g_liveCamFocX = g_pSharedMemory->m_teleLiveCamFocX; g_liveCamFocY = g_pSharedMemory->m_teleLiveCamFocY; g_liveCamFocZ = g_pSharedMemory->m_teleLiveCamFocZ;

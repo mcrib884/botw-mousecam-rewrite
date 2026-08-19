@@ -115,6 +115,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_animInject += (g_hoverInject ? hoverRate : -hoverRate);
         g_animReinject += (g_hoverReinject ? hoverRate : -hoverRate);
         g_animReset += (g_hoverReset ? hoverRate : -hoverRate);
+        g_animToggleCam += (g_hoverToggleCam ? hoverRate : -hoverRate);
         g_animDarkBtn += (g_hoverDarkBtn ? hoverRate : -hoverRate);
         g_animLightBtn += (g_hoverLightBtn ? hoverRate : -hoverRate);
         g_animPath += (g_hoverPath ? hoverRate : -hoverRate);
@@ -138,7 +139,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         for (int i = 0; i < 5; ++i) g_animDrop[i] += (g_hoverDrop == i ? hoverRate : -hoverRate);
 
         auto clampF = [](float& val) { if (val < 0) val = 0; if (val > 1) val = 1; };
-        clampF(g_animInject); clampF(g_animReinject); clampF(g_animReset);
+        clampF(g_animInject); clampF(g_animReinject); clampF(g_animReset); clampF(g_animToggleCam);
         clampF(g_animDarkBtn); clampF(g_animLightBtn);
         clampF(g_animPath); clampF(g_animPathReset);
         clampF(g_animScrollHelper); clampF(g_animOrbitCam);
@@ -170,12 +171,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         // pinned the CPU at 3-5% on idle desktops.
         static float lastFocX = 0, lastPosX = 0, lastCamFOV = 0;
         static int32_t lastShortcut = -1; static uint8_t lastMenu = 1;
+        static bool lastMousecamActive = false;
         bool changed = (lastFocX != g_liveCamFocX || lastPosX != g_liveCamPosX || lastCamFOV != g_liveCamFOV ||
-                        lastShortcut != g_liveShortcutMenu || lastMenu != g_liveMenuState);
+                        lastShortcut != g_liveShortcutMenu || lastMenu != g_liveMenuState ||
+                        lastMousecamActive != g_mousecamActive);
         lastFocX = g_liveCamFocX; lastPosX = g_liveCamPosX; lastCamFOV = g_liveCamFOV;
         lastShortcut = g_liveShortcutMenu; lastMenu = g_liveMenuState;
+        lastMousecamActive = g_mousecamActive;
 
-        bool hasAnim = (g_animInject > 0 && g_animInject < 1) || (g_animReinject > 0 && g_animReinject < 1) || (g_animReset > 0 && g_animReset < 1) ||
+        bool hasAnim = (g_animInject > 0 && g_animInject < 1) || (g_animReinject > 0 && g_animReinject < 1) || (g_animReset > 0 && g_animReset < 1) || (g_animToggleCam > 0 && g_animToggleCam < 1) ||
                        (g_animDarkBtn > 0 && g_animDarkBtn < 1) || (g_animLightBtn > 0 && g_animLightBtn < 1) ||
                        (g_animPath > 0 && g_animPath < 1) || (g_animPathReset > 0 && g_animPathReset < 1) ||
                        (g_animTheme != (g_config.use_light_theme ? 0.0f : 1.0f)) ||

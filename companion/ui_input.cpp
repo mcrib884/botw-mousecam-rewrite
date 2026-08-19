@@ -16,7 +16,7 @@ int g_hoverDropdown = -1;
 int g_openDropdown = -1;
 float g_dragSlider = -1;
 
-bool g_hoverInject = false, g_hoverReinject = false, g_hoverReset = false;
+bool g_hoverInject = false, g_hoverReinject = false, g_hoverReset = false, g_hoverToggleCam = false;
 bool g_hoverPath = false, g_hoverPathReset = false, g_hoverDarkBtn = false, g_hoverLightBtn = false;
 bool g_downPath = false;
 bool g_hoverScrollHelper = false, g_hoverOrbitCam = false, g_hoverIndepSens = false, g_hoverIndepMagneSens = false, g_hoverCemuExperimental = false;
@@ -28,9 +28,9 @@ bool g_hoverClearLog = false;
 bool g_hoverCopyLog = false;
 Rect g_clearLogRect;
 
-bool g_downInject = false, g_downReinject = false, g_downReset = false;
+bool g_downInject = false, g_downReinject = false, g_downReset = false, g_downToggleCam = false;
 
-float g_animInject = 0, g_animReinject = 0, g_animReset = 0;
+float g_animInject = 0, g_animReinject = 0, g_animReset = 0, g_animToggleCam = 0;
 float g_animDarkBtn = 0, g_animLightBtn = 0, g_animPath = 0, g_animPathReset = 0;
 float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0, g_animIndepMagneSens = 0, g_animCemuExperimental = 0;
 float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0, g_animCopyLog = 0;
@@ -300,6 +300,12 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         SetCapture(hWnd);
         return 0;
     }
+    if (g_targetInjected && ui.rToggleCam.Contains(x, y)) {
+        g_downToggleCam = true;
+        InvalidateRect(hWnd, nullptr, FALSE);
+        SetCapture(hWnd);
+        return 0;
+    }
     if (ui.rPath.Contains(x, y)) {
         g_downPath = true;
         InvalidateRect(hWnd, nullptr, FALSE);
@@ -544,6 +550,14 @@ LRESULT HandleLButtonUp(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         if (g_pSharedMemory) g_pSharedMemory->m_reqResetScan = true;
         InvalidateRect(hWnd, nullptr, FALSE);
     }
+    if (g_downToggleCam) {
+        g_downToggleCam = false;
+        ReleaseCapture();
+        if (ui.rToggleCam.Contains(x, y)) {
+            if (g_pSharedMemory) g_pSharedMemory->m_reqToggleMousecam = true;
+        }
+        InvalidateRect(hWnd, nullptr, FALSE);
+    }
     return 0;
 }
 
@@ -573,6 +587,7 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     checkHov(g_hoverInject, ui.rInj.Contains(x, y));
     checkHov(g_hoverReinject, ui.rReinj.Contains(x, y) && g_targetInjected);
     checkHov(g_hoverReset, ui.rRst.Contains(x, y) && g_targetInjected);
+    checkHov(g_hoverToggleCam, ui.rToggleCam.Contains(x, y) && g_targetInjected);
     checkHov(g_hoverDarkBtn, ui.rDarkBtn.Contains(x, y));
     checkHov(g_hoverLightBtn, ui.rLightBtn.Contains(x, y));
     checkHov(g_hoverPath, ui.rPath.Contains(x, y));
@@ -696,6 +711,8 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             tip = L"Re-eject and re-inject to reload settings";
         else if (ui.rRst.Contains(x, y) && g_targetInjected)
             tip = L"Reset AOB scanner to re-scan memory signatures";
+        else if (ui.rToggleCam.Contains(x, y) && g_targetInjected)
+            tip = L"Toggle mouse camera control on or off (F2)";
         else if (ui.rDarkBtn.Contains(x, y))
             tip = L"Cycle theme (Dark/Nord/Solarized/Catppuccin/Gruvbox/Tokyo Night)";
         else if (ui.rLightBtn.Contains(x, y))
@@ -744,7 +761,7 @@ LRESULT HandleMouseWheel(HWND hWnd, WPARAM wParam, LPARAM lParam) {
 
 LRESULT HandleMouseLeave(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     g_trackingMouse = false;
-    g_hoverInject = g_hoverReinject = g_hoverReset = false;
+    g_hoverInject = g_hoverReinject = g_hoverReset = g_hoverToggleCam = false;
     g_hoverDarkBtn = g_hoverLightBtn = false;
     g_hoverPath = g_hoverPathReset = false;
     g_hoverScrollHelper = g_hoverOrbitCam = g_hoverIndepSens = g_hoverCemuExperimental = false;
@@ -758,7 +775,7 @@ LRESULT HandleMouseLeave(HWND hWnd, WPARAM wParam, LPARAM lParam) {
 
 LRESULT HandleKillFocus(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     g_dragSlider = -1;
-    g_downInject = g_downReinject = g_downReset = g_downPath = false;
+    g_downInject = g_downReinject = g_downReset = g_downToggleCam = g_downPath = false;
     ReleaseCapture();
     InvalidateRect(hWnd, nullptr, FALSE);
     return 0;
@@ -787,6 +804,7 @@ LRESULT HandleSetCursor(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     else if (ui.rInj.Contains(pt.x, pt.y)) overClickable = true;
     else if (g_targetInjected && ui.rReinj.Contains(pt.x, pt.y)) overClickable = true;
     else if (g_targetInjected && ui.rRst.Contains(pt.x, pt.y)) overClickable = true;
+    else if (g_targetInjected && ui.rToggleCam.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rDarkBtn.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rLightBtn.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rPath.Contains(pt.x, pt.y)) overClickable = true;

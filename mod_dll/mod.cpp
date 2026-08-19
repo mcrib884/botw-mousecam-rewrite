@@ -2272,19 +2272,43 @@ namespace Mod {
             bool foreground_transition = is_foreground && !prev_foreground;
             prev_foreground = is_foreground;
 
+            bool req_toggle = false;
+            if (g_pSharedMemory && g_pSharedMemory->m_reqToggleMousecam) {
+                g_pSharedMemory->m_reqToggleMousecam = false;
+                req_toggle = true;
+            }
+
             bool f2_pressed = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
-            if (f2_pressed && !last_f2_state) {
+            bool f2_triggered = f2_pressed && !last_f2_state;
+            last_f2_state = f2_pressed;
+
+            static auto last_toggle_time = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
+            auto now_toggle = std::chrono::steady_clock::now();
+            auto elapsed_toggle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now_toggle - last_toggle_time).count();
+
+            if ((f2_triggered || req_toggle) && elapsed_toggle_ms >= 200) {
+                last_toggle_time = now_toggle;
                 if (gc_addr != 0) {
                     g_mousecamActive = !g_mousecamActive;
                     virt_cam_initialized = false;
                     
-                    if (g_mousecamActive && is_foreground) {
-                        POINT center = GetCemuWindowCenter(hwndFg);
-                        SetCursorPos(center.x, center.y);
+                    if (g_mousecamActive) {
+                        DllLog("[INFO] Mouse camera ENABLED (F2)");
+                        if (is_foreground) {
+                            POINT center = GetCemuWindowCenter(hwndFg);
+                            SetCursorPos(center.x, center.y);
+                        }
+                    } else {
+                        DllLog("[INFO] Mouse camera DISABLED (F2)");
                     }
+                } else {
+                    DllLog("[WARNING] Cannot toggle camera: GameRomCamera not found yet.");
                 }
             }
-            last_f2_state = f2_pressed;
+
+            if (g_pSharedMemory) {
+                g_pSharedMemory->m_statusMousecamActive = g_mousecamActive.load();
+            }
 
             if (g_mousecamActive && foreground_transition) {
                 POINT center = GetCemuWindowCenter(hwndFg);
@@ -3133,9 +3157,11 @@ namespace Mod {
                 g_pSharedMemory->m_statusScanning = false;
                 g_pSharedMemory->m_statusWritersFound = 0;
                 g_pSharedMemory->m_patchMagneDetourActive = false;
+                g_pSharedMemory->m_statusMousecamActive = false;
                 g_pSharedMemory->m_logWriteIdx = 0;
                 memset(g_pSharedMemory->m_logQueue, 0, sizeof(g_pSharedMemory->m_logQueue));
                 g_pSharedMemory->m_statusShutdownDone = false;
+                g_pSharedMemory->m_reqToggleMousecam = false;
             }
         }
 

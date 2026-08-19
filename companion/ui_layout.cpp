@@ -84,6 +84,7 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     r.rInj = Rect(pad + panelW - 260, curY + 70, 80, 26);
     r.rReinj = Rect(pad + panelW - 175, curY + 70, 80, 26);
     r.rRst = Rect(pad + panelW - 90, curY + 70, 80, 26);
+    r.rToggleCam = Rect(pad + panelW - 90, curY + 33, 80, 26);
     r.rPath = Rect(pad + 10, curY + 75, 115, 20);
     r.rPathReset = g_config.cemu_path_override.empty() ? Rect(0, 0, 0, 0) : Rect(pad + 130, curY + 75, 18, 20);
     r.rCemuExperimental = Rect(pad + 155, curY + 75, 125, 20);

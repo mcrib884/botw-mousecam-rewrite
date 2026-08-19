@@ -21,6 +21,7 @@ struct UIRects {
     Rect rInj;
     Rect rReinj;
     Rect rRst;
+    Rect rToggleCam;
 
     Rect rScrollHelper;
     Rect rOrbitCam;
