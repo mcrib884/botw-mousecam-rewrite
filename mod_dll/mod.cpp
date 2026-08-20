@@ -83,7 +83,7 @@ namespace Mod {
         CemuVersionConfig cfg;
         if (experimental) {
             cfg.name = L"Cemu Experimental";
-            cfg.gameRomCameraAob = "00 00 00 00 00 00 00 00 70 ?? ?? ?? 70 ?? ?? ?? 0C 23 00 00 00 00 10 34 10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "45 0F 38 F1 74 2D 68 F3 0F 5A C0 F2 0F 10 AC 24 68 02 00 00 31 F6 66 0F 2E E5 41 0F 9B C6 40 0F 92 C6 44 20 F6 31 FF 66 0F 2E E5 40 0F 97 C7 45 31 C0 66 0F 2E E5 41 0F 9B C6 41 0F 94 C0 45 20 F0 45 31 C9 66 0F 2E E5 41 0F 9A C1 F2 0F 11 A4 24 88 00 00 00 41 89 5C 0D 70 0F CA 89 54 24 2C 45 0F 38 F0 74 0D 70 66 41 0F 6E E6 F2 0F 10 FC F3 0F 5A FF F2 0F 11 BC 24 60 01 00 00 66 41 0F 7E F6 45 0F 38 F1 74 2D 6C F3 0F 5A F6 F2 0F 11 B4 24 48 01 00 00 66 41 0F 7E E6 45 0F 38 F1 74 2D 70";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.menuStateAob1    = "41 0F 38 F1 44 0D 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
@@ -95,7 +95,7 @@ namespace Mod {
             cfg.magnesisDetourSize = 21;
         } else {
             cfg.name = L"Cemu 2.6";
-            cfg.gameRomCameraAob = "00 00 00 00 00 00 00 00 70 ?? ?? ?? 70 ?? ?? ?? 0C 23 00 00 00 00 10 34 10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.menuStateAob1    = "41 0F 38 F1 44 15 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
@@ -665,6 +665,7 @@ namespace Mod {
     }
 
     static bool SafeReadMarker(uintptr_t addr, uint16_t& out);
+    static float ReadFloatBE(uintptr_t address);
     static void PollHooksAndSyncSharedMemory();
 
     static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress) {
@@ -706,7 +707,7 @@ namespace Mod {
                                (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
 
             bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
-                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE) &&
+                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED) &&
                                 (mbi.Protect != 0) &&
                                 !(mbi.Protect & PAGE_NOACCESS) &&
                                 !(mbi.Protect & PAGE_GUARD);
@@ -736,6 +737,137 @@ namespace Mod {
             current += mbi.RegionSize;
         }
         return false;
+    }
+
+    static bool ScanProcessAOBAll(const Pattern& pattern, std::vector<uintptr_t>& foundAddresses) {
+        foundAddresses.clear();
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        uintptr_t start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
+        uintptr_t end = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+
+        MEMORY_BASIC_INFORMATION mbi;
+        uintptr_t current = start;
+        size_t chunkSize = 2 * 1024 * 1024;
+        size_t overlap = pattern.bytes.size();
+
+        uintptr_t ourAllocBase = 0;
+        MEMORY_BASIC_INFORMATION ourMbi;
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(g_hModule), &ourMbi, sizeof(ourMbi))) {
+            ourAllocBase = reinterpret_cast<uintptr_t>(ourMbi.AllocationBase);
+        }
+
+        uintptr_t stackAllocBase = 0;
+        MEMORY_BASIC_INFORMATION stackMbi;
+        int stackVar = 0;
+        if (VirtualQuery(&stackVar, &stackMbi, sizeof(stackMbi))) {
+            stackAllocBase = reinterpret_cast<uintptr_t>(stackMbi.AllocationBase);
+        }
+
+        while (current < end) {
+            if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
+                return false;
+            }
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) {
+                break;
+            }
+
+            uintptr_t pageAllocBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
+            bool isOurMemory = (ourAllocBase != 0 && pageAllocBase == ourAllocBase) ||
+                               (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
+
+            bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
+                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED) &&
+                                (mbi.Protect != 0) &&
+                                !(mbi.Protect & PAGE_NOACCESS) &&
+                                !(mbi.Protect & PAGE_GUARD);
+
+            if (scanThisPage) {
+                uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+                size_t regionSize = mbi.RegionSize;
+
+                for (size_t offset = 0; offset < regionSize; offset += (chunkSize > overlap ? chunkSize - overlap : chunkSize)) {
+                    if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
+                        return false;
+                    }
+                    PollHooksAndSyncSharedMemory();
+                    size_t toRead = (std::min)(chunkSize, regionSize - offset);
+                    __try {
+                        size_t searchPos = 0;
+                        while (searchPos + pattern.bytes.size() <= toRead) {
+                            size_t matchOffset = 0;
+                            if (SearchPattern(reinterpret_cast<const unsigned char*>(regionAddress + offset + searchPos), toRead - searchPos, pattern, matchOffset)) {
+                                uintptr_t matchAddr = regionAddress + offset + searchPos + matchOffset;
+                                foundAddresses.push_back(matchAddr);
+                                searchPos += matchOffset + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    __except (EXCEPTION_EXECUTE_HANDLER) {
+                    }
+                    if (toRead < chunkSize) break;
+                }
+            }
+            current += mbi.RegionSize;
+        }
+        return !foundAddresses.empty();
+    }
+
+    static bool VerifyGameRomCamera(uintptr_t base, int& score) {
+        score = 0;
+        if (base == 0) return false;
+
+        uint16_t marker = 0;
+        if (!SafeReadMarker(base, marker)) return false;
+
+        // FOV at gc_addr + 0x24 = base + 0x630 + 0x24 = base + 0x654
+        float fov = ReadFloatBE(base + 0x654);
+        if (std::isnan(fov) || std::isinf(fov) || fov <= 0.05f || fov > 3.5f) {
+            return false;
+        }
+
+        // Camera position at base + 0x550, + 0x554, + 0x558
+        float posX = ReadFloatBE(base + 0x550);
+        float posY = ReadFloatBE(base + 0x554);
+        float posZ = ReadFloatBE(base + 0x558);
+        if (std::isnan(posX) || std::isinf(posX) || std::isnan(posY) || std::isinf(posY) || std::isnan(posZ) || std::isinf(posZ)) {
+            return false;
+        }
+        if (fabs(posX) > 30000.0f || fabs(posZ) > 30000.0f || posY < -3000.0f || posY > 15000.0f) {
+            return false;
+        }
+
+        // Camera focus at gc_addr + 0x0C, + 0x10, + 0x14 = base + 0x63C, 0x640, 0x644
+        float focX = ReadFloatBE(base + 0x63C);
+        float focY = ReadFloatBE(base + 0x640);
+        float focZ = ReadFloatBE(base + 0x644);
+        if (std::isnan(focX) || std::isinf(focX) || std::isnan(focY) || std::isinf(focY) || std::isnan(focZ) || std::isinf(focZ)) {
+            return false;
+        }
+        if (fabs(focX) > 30000.0f || fabs(focZ) > 30000.0f) {
+            return false;
+        }
+
+        // Pivot coordinates at base + 0x674, + 0x678, + 0x67C
+        float pivX = ReadFloatBE(base + 0x674);
+        float pivY = ReadFloatBE(base + 0x678);
+        float pivZ = ReadFloatBE(base + 0x67C);
+        if (std::isnan(pivX) || std::isinf(pivX) || std::isnan(pivY) || std::isinf(pivY) || std::isnan(pivZ) || std::isinf(pivZ)) {
+            return false;
+        }
+
+        score = 10;
+        if (fov >= 0.4f && fov <= 1.8f) score += 20;
+        if (posX != 0.0f || posY != 0.0f || posZ != 0.0f) score += 25;
+        if (focX != 0.0f || focY != 0.0f || focZ != 0.0f) score += 20;
+        if (pivX != 0.0f || pivY != 0.0f || pivZ != 0.0f) score += 10;
+
+        float dist = sqrtf((posX - focX) * (posX - focX) + (posY - focY) * (posY - focY) + (posZ - focZ) * (posZ - focZ));
+        if (dist >= 0.5f && dist <= 150.0f) score += 25;
+
+        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -1391,7 +1523,7 @@ namespace Mod {
                 t_isSingleStepping = false;
                 // Instruction finished executing, re-arm the guard page
                 if (g_writerHuntActive) {
-                    ArmPageGuard(g_addrGameRomCamera + 0x570);
+                    ArmPageGuard(g_addrGameRomCamera + 0x550);
                 }
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
@@ -1419,7 +1551,7 @@ namespace Mod {
 
         if (isWrite && g_writerHuntActive) {
             uintptr_t base = g_addrGameRomCamera;
-            if (faultAddr == base + 0x570 || faultAddr == base + 0x574 || faultAddr == base + 0x578) {
+            if (faultAddr == base + 0x550 || faultAddr == base + 0x554 || faultAddr == base + 0x558) {
                 MEMORY_BASIC_INFORMATION mbi = {};
                 VirtualQuery((LPCVOID)rip, &mbi, sizeof(mbi));
                 bool isJit = (mbi.Type == MEM_PRIVATE) &&
@@ -1559,7 +1691,7 @@ namespace Mod {
         g_writerHuntActive = true;
 
         // Always arm — even with cached writers, JIT recompile may have created new ones.
-        ArmPageGuard(g_addrGameRomCamera + 0x570);
+        ArmPageGuard(g_addrGameRomCamera + 0x550);
     }
 
     // Disable writer hunting: remove guard, restore NOPs, keep list for next time.
@@ -1813,18 +1945,59 @@ namespace Mod {
             if (!tasks[0].found) {
                 DllLog("[INFO] Scanning for GameRomCamera...");
                 Pattern pat = ParseAOB(tasks[0].patternStr);
-                uintptr_t foundAddress = 0;
+                std::vector<uintptr_t> candidates;
 
-                if (ScanProcessAOB(pat, foundAddress)) {
-                    tasks[0].found = true;
-                    tasks[0].address = foundAddress;
-                    g_addrGameRomCamera = foundAddress;
-                    if (g_pSharedMemory) {
-                        g_pSharedMemory->m_statusAddrGameRomCamera = foundAddress;
+                if (ScanProcessAOBAll(pat, candidates)) {
+                    DllLog("[INFO] Found %zu GameRomCamera match candidate(s). Verifying offsets and telemetry...", candidates.size());
+                    uintptr_t bestCandidate = 0;
+                    int bestScore = -1;
+
+                    for (size_t i = 0; i < candidates.size(); ++i) {
+                        uintptr_t cand = candidates[i];
+                        int score = 0;
+                        bool valid = VerifyGameRomCamera(cand, score);
+                        float fov = ReadFloatBE(cand + 0x654);
+                        float posX = ReadFloatBE(cand + 0x550);
+                        float posY = ReadFloatBE(cand + 0x554);
+                        float posZ = ReadFloatBE(cand + 0x558);
+                        float focX = ReadFloatBE(cand + 0x63C);
+                        float focY = ReadFloatBE(cand + 0x640);
+                        float focZ = ReadFloatBE(cand + 0x644);
+
+                        DllLog("[INFO] Match [%zu/%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
+                               i + 1, candidates.size(), cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
+
+                        if (valid && score > bestScore) {
+                            bestScore = score;
+                            bestCandidate = cand;
+                        }
                     }
-                    DllLog("[SUCCESS] Found GameRomCamera at 0x%llX", foundAddress);
+
+                    if (bestCandidate != 0) {
+                        tasks[0].found = true;
+                        tasks[0].address = bestCandidate;
+                        g_addrGameRomCamera = bestCandidate;
+                        if (g_pSharedMemory) {
+                            g_pSharedMemory->m_statusAddrGameRomCamera = bestCandidate;
+                        }
+                        DllLog("[SUCCESS] Verified active GameRomCamera at 0x%llX (Score: %d)", bestCandidate, bestScore);
+                    } else {
+                        // Fallback: If in a loading screen where coords are uninitialized, take first candidate if available
+                        if (!candidates.empty()) {
+                            uintptr_t fallback = candidates[0];
+                            tasks[0].found = true;
+                            tasks[0].address = fallback;
+                            g_addrGameRomCamera = fallback;
+                            if (g_pSharedMemory) {
+                                g_pSharedMemory->m_statusAddrGameRomCamera = fallback;
+                            }
+                            DllLog("[INFO] Selected initial GameRomCamera at 0x%llX (will re-verify on gameplay)", fallback);
+                        } else {
+                            DllLog("[WARNING] GameRomCamera candidates rejected. Retrying in 500ms...");
+                        }
+                    }
                 } else {
-                    DllLog("[WARNING] GameRomCamera not found. Retrying in 500ms...");
+                    DllLog("[WARNING] GameRomCamera pattern not found in memory. Retrying in 500ms...");
                 }
                 
                 // Sleep 500ms before checking again if GameRomCamera not found
@@ -2287,11 +2460,11 @@ namespace Mod {
             if (dt > 0.1f) dt = 0.1f;
             last_frame_time = loop_now;
 
-            uintptr_t gc_addr = g_addrGameRomCamera ? (g_addrGameRomCamera + 0x650) : 0;
+            uintptr_t gc_addr = g_addrGameRomCamera ? (g_addrGameRomCamera + 0x630) : 0;
             if (g_pSharedMemory && g_addrGameRomCamera != 0) {
-                g_pSharedMemory->m_telePivotX = ReadFloatBE(g_addrGameRomCamera + 0x694);
-                g_pSharedMemory->m_telePivotY = ReadFloatBE(g_addrGameRomCamera + 0x698);
-                g_pSharedMemory->m_telePivotZ = ReadFloatBE(g_addrGameRomCamera + 0x69C);
+                g_pSharedMemory->m_telePivotX = ReadFloatBE(g_addrGameRomCamera + 0x674);
+                g_pSharedMemory->m_telePivotY = ReadFloatBE(g_addrGameRomCamera + 0x678);
+                g_pSharedMemory->m_telePivotZ = ReadFloatBE(g_addrGameRomCamera + 0x67C);
             }
             static uintptr_t last_gc_addr = 0;
             if (gc_addr != last_gc_addr) {
@@ -2660,9 +2833,9 @@ namespace Mod {
 
                     if (magnesis_mode && magne_ideal_base != 0) {
                         scroll_accumulator = 0;
-                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7F4);
-                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7F8);
-                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7FC);
+                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7D4);
+                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7D8);
+                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7DC);
 
                         if (!magne_initialized) {
                             float cur_x = ReadFloatBE(magne_ideal_base);
@@ -2932,9 +3105,9 @@ namespace Mod {
                         vcam_pos_y = ReadFloatBE(gc_addr + 4);
                         vcam_pos_z = ReadFloatBE(gc_addr + 8);
 
-                        float ideal_x = ReadFloatBE(g_addrGameRomCamera + 0x5B4);
-                        float ideal_y = ReadFloatBE(g_addrGameRomCamera + 0x5B8);
-                        float ideal_z = ReadFloatBE(g_addrGameRomCamera + 0x5B0);
+                        float ideal_x = ReadFloatBE(g_addrGameRomCamera + 0x594);
+                        float ideal_y = ReadFloatBE(g_addrGameRomCamera + 0x598);
+                        float ideal_z = ReadFloatBE(g_addrGameRomCamera + 0x590);
 
                         float gc_focus_x = ReadFloatBE(gc_addr + 0xC);
                         float gc_focus_y = ReadFloatBE(gc_addr + 0x10);
@@ -2963,18 +3136,18 @@ namespace Mod {
                     }
 
                     float pivot_x = 0.0f, pivot_y = 0.0f, pivot_z = 0.0f;
-                    float raw_pivot_x = ReadFloatBE(g_addrGameRomCamera + 0x694);
-                    float raw_pivot_y = ReadFloatBE(g_addrGameRomCamera + 0x698);
-                    float raw_pivot_z = ReadFloatBE(g_addrGameRomCamera + 0x69C);
+                    float raw_pivot_x = ReadFloatBE(g_addrGameRomCamera + 0x674);
+                    float raw_pivot_y = ReadFloatBE(g_addrGameRomCamera + 0x678);
+                    float raw_pivot_z = ReadFloatBE(g_addrGameRomCamera + 0x67C);
 
                     if (magnesis_mode && magne_ideal_base != 0) {
                         float mag_x = ReadFloatBE(magne_ideal_base);
                         float mag_y = ReadFloatBE(magne_ideal_base + 4);
                         float mag_z = ReadFloatBE(magne_ideal_base + 8);
                         if (mag_x != 0.0f || mag_y != 0.0f || mag_z != 0.0f) {
-                            float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7F4);
-                            float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7F8);
-                            float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7FC);
+                            float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7D4);
+                            float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7D8);
+                            float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7DC);
                             float dist = sqrtf((mag_x - link_x) * (mag_x - link_x) + 
                                                (mag_y - link_y) * (mag_y - link_y) + 
                                                (mag_z - link_z) * (mag_z - link_z));
@@ -3019,9 +3192,9 @@ namespace Mod {
                         float fwd_offset = g_pSharedMemory ? g_pSharedMemory->m_cfgFpsMagneOffsetForward : 0.0f;
                         float side_offset = g_pSharedMemory ? g_pSharedMemory->m_cfgFpsMagneOffsetSide : 0.0f;
 
-                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7F4);
-                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7F8);
-                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7FC);
+                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7D4);
+                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7D8);
+                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7DC);
                         if (link_x == 0.0f && link_y == 0.0f && link_z == 0.0f) {
                             link_x = raw_pivot_x; link_y = raw_pivot_y; link_z = raw_pivot_z;
                         }
@@ -3034,9 +3207,9 @@ namespace Mod {
                         float focus_y = ReadFloatBE(magne_ideal_base + 4);
                         float focus_z = ReadFloatBE(magne_ideal_base + 8);
 
-                        WriteFloatBE(g_addrGameRomCamera + 0x57C, focus_x);
-                        WriteFloatBE(g_addrGameRomCamera + 0x580, focus_y);
-                        WriteFloatBE(g_addrGameRomCamera + 0x584, focus_z);
+                        WriteFloatBE(g_addrGameRomCamera + 0x55C, focus_x);
+                        WriteFloatBE(g_addrGameRomCamera + 0x560, focus_y);
+                        WriteFloatBE(g_addrGameRomCamera + 0x564, focus_z);
                     }
 
                     if (g_pSharedMemory) {
@@ -3073,9 +3246,9 @@ namespace Mod {
                         // If the game stomped our values, a new writer appeared (JIT recompile,
                         // new code path, etc.). Arm the guard so the VEH identifies it.
                         if (has_written_once && g_writerHuntActive) {
-                            float cur_x = ReadFloatBE(g_addrGameRomCamera + 0x570);
-                            float cur_y = ReadFloatBE(g_addrGameRomCamera + 0x574);
-                            float cur_z = ReadFloatBE(g_addrGameRomCamera + 0x578);
+                            float cur_x = ReadFloatBE(g_addrGameRomCamera + 0x550);
+                            float cur_y = ReadFloatBE(g_addrGameRomCamera + 0x554);
+                            float cur_z = ReadFloatBE(g_addrGameRomCamera + 0x558);
                             if (cur_x != last_written_x || cur_y != last_written_y || cur_z != last_written_z) {
                                 // Overwrite detected — hunt for the next ~40ms
                                 g_huntFramesLeft = 10;
@@ -3087,9 +3260,9 @@ namespace Mod {
                             // A blacklisted writer is currently in control. Pause mousecam.
                             virt_cam_initialized = false;
                         } else {
-                            WriteFloatBE(g_addrGameRomCamera + 0x570, vcam_pos_x);
-                            WriteFloatBE(g_addrGameRomCamera + 0x574, vcam_pos_y);
-                            WriteFloatBE(g_addrGameRomCamera + 0x578, vcam_pos_z);
+                            WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
+                            WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
+                            WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
 
                             last_written_x = vcam_pos_x;
                             last_written_y = vcam_pos_y;
@@ -3099,14 +3272,14 @@ namespace Mod {
 
                         // Arm guard if we are currently hunting
                         if (g_writerHuntActive && g_huntFramesLeft > 0) {
-                            ArmPageGuard(g_addrGameRomCamera + 0x570);
+                            ArmPageGuard(g_addrGameRomCamera + 0x550);
                             g_huntFramesLeft--;
                         }
                     } else {
                         // Not writing. If we were hunting, maintain the guard page.
                         static int g_huntFramesLeft = 0; // shadowing, but menu state shouldn't leak hunt
                         if (wasArmed) {
-                            ArmPageGuard(g_addrGameRomCamera + 0x570);
+                            ArmPageGuard(g_addrGameRomCamera + 0x550);
                         }
                     }
                 }
