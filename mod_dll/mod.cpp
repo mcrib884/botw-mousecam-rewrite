@@ -83,7 +83,7 @@ namespace Mod {
         CemuVersionConfig cfg;
         if (experimental) {
             cfg.name = L"Cemu Experimental";
-            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            cfg.gameRomCameraAob = "00 00 00 00 00 00 00 00 70 B4 3C 84 70 B4 4C E4 0C 23 00 00 00 00 10 34 10 1B F9 FC 70 B4 3C C0 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00";
             cfg.magnesisAob      = "45 0F 38 F1 74 2D 68 F3 0F 5A C0 F2 0F 10 AC 24 68 02 00 00 31 F6 66 0F 2E E5 41 0F 9B C6 40 0F 92 C6 44 20 F6 31 FF 66 0F 2E E5 40 0F 97 C7 45 31 C0 66 0F 2E E5 41 0F 9B C6 41 0F 94 C0 45 20 F0 45 31 C9 66 0F 2E E5 41 0F 9A C1 F2 0F 11 A4 24 88 00 00 00 41 89 5C 0D 70 0F CA 89 54 24 2C 45 0F 38 F0 74 0D 70 66 41 0F 6E E6 F2 0F 10 FC F3 0F 5A FF F2 0F 11 BC 24 60 01 00 00 66 41 0F 7E F6 45 0F 38 F1 74 2D 6C F3 0F 5A F6 F2 0F 11 B4 24 48 01 00 00 66 41 0F 7E E6 45 0F 38 F1 74 2D 70";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.menuStateAob1    = "41 0F 38 F1 44 0D 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
@@ -95,7 +95,7 @@ namespace Mod {
             cfg.magnesisDetourSize = 21;
         } else {
             cfg.name = L"Cemu 2.6";
-            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            cfg.gameRomCameraAob = "00 00 00 00 00 00 00 00 70 B4 3C 84 70 B4 4C E4 0C 23 00 00 00 00 10 34 10 1B F9 FC 70 B4 3C C0 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00";
             cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.menuStateAob1    = "41 0F 38 F1 44 15 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
@@ -192,6 +192,7 @@ namespace Mod {
     static std::atomic<bool> g_cameraControlRunning = false;
 
     static std::atomic<uintptr_t> g_addrGameRomCamera{0};
+    static std::atomic<uintptr_t> g_addrArcheryWriter{0};
     static std::atomic<uintptr_t> g_addrMagneTarget{0};
     static std::atomic<uintptr_t> g_addrShortcutMenu{0};
     static std::atomic<uintptr_t> g_addrMenuState{0};
@@ -1453,7 +1454,14 @@ namespace Mod {
                         }
                         if (isBlacklisted) {
                             shouldNop = false;
-                            g_lastBlacklistedWriteTime.store(GetTickCount64());
+                            bool scanArchery = g_pSharedMemory ? g_pSharedMemory->m_cfgScanArcheryWriter : true;
+                            if (scanArchery) {
+                                g_addrArcheryWriter = rip;
+                                if (g_pSharedMemory) {
+                                    g_pSharedMemory->m_statusAddrArcheryWriter = rip;
+                                }
+                                g_lastBlacklistedWriteTime.store(GetTickCount64());
+                            }
                         }
                     }
                 }
@@ -1717,6 +1725,7 @@ namespace Mod {
                         tasks[i].address = 0;
                     }
                     g_addrGameRomCamera = 0;
+                    g_addrArcheryWriter = 0;
                     g_addrShortcutMenu = 0;
                     g_addrMenuState = 0;
                     g_addrMagneTarget = 0;
@@ -1728,6 +1737,11 @@ namespace Mod {
                     g_menuStateCandidates2.clear();
                     LeaveCriticalSection(&g_menuCandidateCS);
 
+                    RestoreAllPatches();
+                    EnterCriticalSection(&g_patchCS);
+                    g_magnePatchesInitialized = false;
+                    LeaveCriticalSection(&g_patchCS);
+
                     g_writerHuntActive = false;
                     DisarmPageGuard();
                     EnterCriticalSection(&g_writerCS);
@@ -1737,6 +1751,7 @@ namespace Mod {
                     
                     g_pSharedMemory->m_statusWritersFound = 0;
                     g_pSharedMemory->m_statusAddrGameRomCamera = 0;
+                    g_pSharedMemory->m_statusAddrArcheryWriter = 0;
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
                     g_pSharedMemory->m_statusAddrMenuState = 0;
                     g_pSharedMemory->m_statusAddrMagneTarget = 0;
@@ -1760,6 +1775,7 @@ namespace Mod {
                     tasks[0].found = false;
                     tasks[0].address = 0;
                     g_addrGameRomCamera = 0;
+                    g_addrArcheryWriter = 0;
 
                     // Address voided — stop any active hunt and discard all cached writers
                     // (their RIPs are tied to the old JIT layout and are now stale).
@@ -1800,13 +1816,14 @@ namespace Mod {
                 uintptr_t foundAddress = 0;
 
                 if (ScanProcessAOB(pat, foundAddress)) {
+                    uintptr_t cameraBase = foundAddress + 0x18;
                     tasks[0].found = true;
-                    tasks[0].address = foundAddress;
-                    g_addrGameRomCamera = foundAddress;
+                    tasks[0].address = cameraBase;
+                    g_addrGameRomCamera = cameraBase;
                     if (g_pSharedMemory) {
-                        g_pSharedMemory->m_statusAddrGameRomCamera = foundAddress;
+                        g_pSharedMemory->m_statusAddrGameRomCamera = cameraBase;
                     }
-                    DllLog("[SUCCESS] Found GameRomCamera at 0x%llX", foundAddress);
+                    DllLog("[SUCCESS] Found GameRomCamera at 0x%llX", cameraBase);
                 } else {
                     DllLog("[WARNING] GameRomCamera not found. Retrying in 500ms...");
                 }
@@ -1820,11 +1837,73 @@ namespace Mod {
                 }
             }
 
+            bool scanArchery = g_pSharedMemory ? g_pSharedMemory->m_cfgScanArcheryWriter : true;
+            bool scanShortcutMenu = g_pSharedMemory ? g_pSharedMemory->m_cfgScanShortcutMenu : true;
+            bool scanMenuState = g_pSharedMemory ? g_pSharedMemory->m_cfgScanMenuState : true;
+            bool scanMagneTarget = g_pSharedMemory ? g_pSharedMemory->m_cfgScanMagneTarget : true;
+
+            if (!scanArchery) {
+                g_addrArcheryWriter = 0;
+                if (g_pSharedMemory) g_pSharedMemory->m_statusAddrArcheryWriter = 0;
+            }
+
+            if (!scanShortcutMenu) {
+                if (g_shortcutHookActive) RemoveShortcutHook();
+                tasks[1].found = false;
+                tasks[1].address = 0;
+                g_addrShortcutMenu = 0;
+                if (g_pSharedMemory) {
+                    g_pSharedMemory->m_statusAddrShortcutMenu = 0;
+                    g_pSharedMemory->m_teleLiveShortcutMenu = -1;
+                }
+            }
+
+            if (!scanMenuState) {
+                if (g_menuStateHook1Active || g_menuStateHook2Active) RemoveMenuStateHooks();
+                EnterCriticalSection(&g_menuCandidateCS);
+                g_menuStateCandidates1.clear();
+                g_menuStateCandidates2.clear();
+                LeaveCriticalSection(&g_menuCandidateCS);
+                tasks[2].found = false;
+                tasks[2].address = 0;
+                tasks[3].found = false;
+                tasks[3].address = 0;
+                g_addrMenuState = 0;
+                if (g_pSharedMemory) {
+                    g_pSharedMemory->m_statusAddrMenuState = 0;
+                    g_pSharedMemory->m_teleLiveMenuState = 3;
+                }
+            }
+
+            if (!scanMagneTarget) {
+                EnterCriticalSection(&g_patchCS);
+                if (g_magnePatchesInitialized) {
+                    g_magneDetourPatch.Restore();
+                    g_magneXPatch.Restore();
+                    g_magneYPatch.Restore();
+                    g_magneZPatch.Restore();
+                    g_magnePatchesInitialized = false;
+                }
+                LeaveCriticalSection(&g_patchCS);
+                tasks[4].found = false;
+                tasks[4].address = 0;
+                g_addrMagneTarget = 0;
+                if (g_pSharedMemory) {
+                    g_pSharedMemory->m_statusAddrMagneTarget = 0;
+                    g_pSharedMemory->m_patchMagneDetourActive = false;
+                }
+            }
+
             // Find the next unfound task and scan it
             size_t targetIdx = 0;
             for (size_t i = 0; i < tasks.size() - 1; ++i) {
                 size_t idx = 1 + ((nextIdx - 1 + i) % (tasks.size() - 1));
-                if (!tasks[idx].found) {
+                bool enabled = true;
+                if (idx == 1) enabled = scanShortcutMenu;
+                else if (idx == 2 || idx == 3) enabled = scanMenuState;
+                else if (idx == 4) enabled = scanMagneTarget;
+
+                if (enabled && !tasks[idx].found) {
                     targetIdx = idx;
                     break;
                 }
@@ -1835,10 +1914,10 @@ namespace Mod {
             // 1. Asynchronously poll active detour hooks on every loop pass
             PollHooksAndSyncSharedMemory();
 
-            if (g_addrShortcutMenu != 0) {
+            if (scanShortcutMenu && g_addrShortcutMenu != 0) {
                 tasks[1].found = true;
             }
-            if (g_addrMenuState != 0) {
+            if (scanMenuState && g_addrMenuState != 0) {
                 tasks[2].found = true;
                 tasks[3].found = true;
             }
@@ -1847,7 +1926,7 @@ namespace Mod {
             if (targetIdx != 0) {
                 nextIdx = (targetIdx % (tasks.size() - 1)) + 1;
 
-                if (targetIdx == 1 && !tasks[1].found && !g_shortcutHookActive) {
+                if (targetIdx == 1 && scanShortcutMenu && !tasks[1].found && !g_shortcutHookActive) {
                     DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
                     Pattern pat = ParseAOB(tasks[1].patternStr);
                     uintptr_t foundAddress = 0;
@@ -1862,7 +1941,7 @@ namespace Mod {
                     } else {
                         DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
                     }
-                } else if (targetIdx == 2 && !tasks[2].found && !g_menuStateHook1Active && g_addrMenuState == 0) {
+                } else if (targetIdx == 2 && scanMenuState && !tasks[2].found && !g_menuStateHook1Active && g_addrMenuState == 0) {
                     DllLog("[INFO] Scanning for MenuState AOB 1 instruction pattern...");
                     Pattern pat = ParseAOB(tasks[2].patternStr);
                     uintptr_t foundAddress = 0;
@@ -1877,7 +1956,7 @@ namespace Mod {
                     } else {
                         DllLog("[WARNING] MenuState AOB 1 instruction pattern not found. Retrying in 1s...");
                     }
-                } else if (targetIdx == 3 && !tasks[3].found && !g_menuStateHook2Active && g_addrMenuState == 0) {
+                } else if (targetIdx == 3 && scanMenuState && !tasks[3].found && !g_menuStateHook2Active && g_addrMenuState == 0) {
                     DllLog("[INFO] Scanning for MenuState AOB 2 instruction pattern...");
                     Pattern pat = ParseAOB(tasks[3].patternStr);
                     uintptr_t foundAddress = 0;
@@ -1892,7 +1971,7 @@ namespace Mod {
                     } else {
                         DllLog("[WARNING] MenuState AOB 2 instruction pattern not found. Retrying in 1s...");
                     }
-                } else if (targetIdx == 4 && !tasks[4].found) {
+                } else if (targetIdx == 4 && scanMagneTarget && !tasks[4].found) {
                     DllLog("[INFO] Scanning for Magne Target Sig...");
                     Pattern pat = ParseAOB(tasks[4].patternStr);
                     uintptr_t foundAddress = 0;
@@ -1947,7 +2026,12 @@ namespace Mod {
 
             allOtherFound = true;
             for (size_t i = 1; i < tasks.size(); ++i) {
-                if (!tasks[i].found) {
+                bool enabled = true;
+                if (i == 1) enabled = scanShortcutMenu;
+                else if (i == 2 || i == 3) enabled = scanMenuState;
+                else if (i == 4) enabled = scanMagneTarget;
+
+                if (enabled && !tasks[i].found) {
                     allOtherFound = false;
                     break;
                 }
@@ -1955,12 +2039,13 @@ namespace Mod {
 
             if (g_pSharedMemory) {
                 g_pSharedMemory->m_statusAddrGameRomCamera = g_addrGameRomCamera.load();
-                g_pSharedMemory->m_statusAddrShortcutMenu  = g_addrShortcutMenu.load();
-                g_pSharedMemory->m_statusAddrMenuState     = g_addrMenuState.load();
-                g_pSharedMemory->m_statusAddrMagneTarget   = g_addrMagneTarget.load();
+                g_pSharedMemory->m_statusAddrArcheryWriter  = scanArchery ? g_addrArcheryWriter.load() : 0;
+                g_pSharedMemory->m_statusAddrShortcutMenu  = scanShortcutMenu ? g_addrShortcutMenu.load() : 0;
+                g_pSharedMemory->m_statusAddrMenuState     = scanMenuState ? g_addrMenuState.load() : 0;
+                g_pSharedMemory->m_statusAddrMagneTarget   = scanMagneTarget ? g_addrMagneTarget.load() : 0;
 
                 EnterCriticalSection(&g_patchCS);
-                g_pSharedMemory->m_patchMagneDetourActive = g_magnePatchesInitialized && g_magneDetourPatch.active;
+                g_pSharedMemory->m_patchMagneDetourActive = scanMagneTarget && g_magnePatchesInitialized && g_magneDetourPatch.active;
                 LeaveCriticalSection(&g_patchCS);
             }
 
@@ -2287,9 +2372,13 @@ namespace Mod {
                 SetGlobalCursorVisibility(true);
             }
 
+            bool scanMenuState = g_pSharedMemory ? g_pSharedMemory->m_cfgScanMenuState : true;
+            bool scanShortcutMenu = g_pSharedMemory ? g_pSharedMemory->m_cfgScanShortcutMenu : true;
+            bool scanArchery = g_pSharedMemory ? g_pSharedMemory->m_cfgScanArcheryWriter : true;
+
             bool menu_active = false;
             static bool resetTriggeredOnState2 = false;
-            if (g_addrMenuState != 0) {
+            if (scanMenuState && g_addrMenuState != 0) {
                 int32_t val = ReadInt32BE(g_addrMenuState);
                 g_liveMenuState = val;
                 if (g_pSharedMemory) {
@@ -2308,10 +2397,17 @@ namespace Mod {
                 } else {
                     resetTriggeredOnState2 = false;
                 }
+            } else {
+                menu_active = false;
+                g_liveMenuState = 3;
+                if (g_pSharedMemory) {
+                    g_pSharedMemory->m_teleLiveMenuState = 3;
+                }
+                resetTriggeredOnState2 = false;
             }
 
             bool is_shortcut_open = false;
-            if (g_addrShortcutMenu != 0) {
+            if (scanShortcutMenu && g_addrShortcutMenu != 0) {
                 is_shortcut_open = (ReadInt32BE(g_addrShortcutMenu + 128) != -1);
             }
 
@@ -2480,7 +2576,7 @@ namespace Mod {
                     g_pSharedMemory->m_teleLiveCamFOV = g_liveCamFOV;
                 }
 
-                if (g_addrShortcutMenu != 0) {
+                if (scanShortcutMenu && g_addrShortcutMenu != 0) {
                     g_liveShortcutMenu = ReadInt32BE(g_addrShortcutMenu + 128);
                 } else {
                     g_liveShortcutMenu = -1;
@@ -2751,7 +2847,7 @@ namespace Mod {
                                 uint16_t rstick_left_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickLeftKey : 0;
                                 uint16_t rstick_right_key = g_pSharedMemory ? g_pSharedMemory->m_cfgRstickRightKey : 0;
 
-                                bool is_shortcut_in_game = (g_addrShortcutMenu != 0 && ReadInt32BE(g_addrShortcutMenu + 128) != -1);
+                                bool is_shortcut_in_game = (scanShortcutMenu && g_addrShortcutMenu != 0 && ReadInt32BE(g_addrShortcutMenu + 128) != -1);
                                 bool is_any_menu_active = is_main_menu_open || is_shortcut_in_game || (active_menu != ScrollMenuType::None);
 
                                 if (is_any_menu_active) {
@@ -2988,7 +3084,7 @@ namespace Mod {
                         }
 
                         uint64_t now = GetTickCount64();
-                        if (now - g_lastBlacklistedWriteTime.load() <= 50) {
+                        if (scanArchery && (now - g_lastBlacklistedWriteTime.load() <= 50)) {
                             // A blacklisted writer is currently in control. Pause mousecam.
                             virt_cam_initialized = false;
                         } else {

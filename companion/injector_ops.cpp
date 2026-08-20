@@ -26,6 +26,7 @@ bool g_targetInjected = false;
 
 // Telemetry mirrors.
 uintptr_t g_addrGameRomCamera = 0;
+uintptr_t g_addrArcheryWriter = 0;
 uintptr_t g_addrMagneTarget = 0;
 uintptr_t g_addrShortcutMenu = 0;
 uintptr_t g_addrMenuState = 0;
@@ -135,6 +136,10 @@ void WriteConfigToSharedMemory() {
         g_pSharedMemory->m_cfgMagneSensY = g_config.magnesis_sensitivity_y;
         g_pSharedMemory->m_cfgUseIndependentMagneSens = g_config.use_independent_magne_sens;
         g_pSharedMemory->m_cfgMagnePullSens = g_config.magnesis_pull_sensitivity;
+        g_pSharedMemory->m_cfgScanArcheryWriter = g_config.scan_archery_writer;
+        g_pSharedMemory->m_cfgScanMagneTarget = g_config.scan_magne_target;
+        g_pSharedMemory->m_cfgScanShortcutMenu = g_config.scan_shortcut_menu;
+        g_pSharedMemory->m_cfgScanMenuState = g_config.scan_menu_state;
         g_pSharedMemory->m_cfgSensitivityX = g_config.sensitivity_x;
         g_pSharedMemory->m_cfgSensitivityY = g_config.sensitivity_y;
         g_pSharedMemory->m_cfgUseIndependentSens = g_config.use_independent_sens ? 1 : 0;
@@ -273,7 +278,7 @@ static uint32_t g_logReadIdx = 0;
 
 void UpdateTelemetryGui() {
     if (!g_pSharedMemory) {
-        g_addrGameRomCamera = 0; g_addrMagneTarget = 0; g_addrShortcutMenu = 0; g_addrMenuState = 0; g_writersFound = 0;
+        g_addrGameRomCamera = 0; g_addrArcheryWriter = 0; g_addrMagneTarget = 0; g_addrShortcutMenu = 0; g_addrMenuState = 0; g_writersFound = 0;
         g_liveCamPosX = 0; g_liveCamPosY = 0; g_liveCamPosZ = 0; g_liveCamFocX = 0; g_liveCamFocY = 0; g_liveCamFocZ = 0; g_liveCamFOV = 0;
         g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
         g_liveMagneTargetX = 0.0f; g_liveMagneTargetY = 0.0f; g_liveMagneTargetZ = 0.0f;
@@ -287,11 +292,13 @@ void UpdateTelemetryGui() {
         } else if (g_pSharedMemory->m_statusAddrGameRomCamera == 0 && g_addrGameRomCamera != 0) {
             LogToConsole(L"[WARNING] GameRomCamera lost! Re-scanning memory...");
         }
+        if (g_pSharedMemory->m_statusAddrArcheryWriter != 0 && g_addrArcheryWriter == 0) LogToConsole(L"[INFO] Found Archery Writer");
         if (g_pSharedMemory->m_statusAddrMagneTarget != 0 && g_addrMagneTarget == 0) LogToConsole(L"[INFO] Found Magne Target Sig");
         if (g_pSharedMemory->m_statusAddrShortcutMenu != 0 && g_addrShortcutMenu == 0) LogToConsole(L"[INFO] Found ShortcutMenu");
         if (g_pSharedMemory->m_statusAddrMenuState != 0 && g_addrMenuState == 0) LogToConsole(L"[INFO] Found MenuState");
 
         g_addrGameRomCamera = g_pSharedMemory->m_statusAddrGameRomCamera;
+        g_addrArcheryWriter = g_pSharedMemory->m_statusAddrArcheryWriter;
         g_addrMagneTarget = g_pSharedMemory->m_statusAddrMagneTarget;
         g_addrShortcutMenu = g_pSharedMemory->m_statusAddrShortcutMenu;
         g_addrMenuState = g_pSharedMemory->m_statusAddrMenuState;

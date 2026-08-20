@@ -23,6 +23,11 @@ struct UIRects {
     Rect rRst;
     Rect rToggleCam;
 
+    Rect rToggleArcheryWriter;
+    Rect rToggleMagneTarget;
+    Rect rToggleShortcutMenu;
+    Rect rToggleMenuState;
+
     Rect rScrollHelper;
     Rect rOrbitCam;
     Rect rIndepSens;

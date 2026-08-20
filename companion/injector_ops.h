@@ -27,6 +27,7 @@ extern bool g_targetInjected;
 // the DLL in a different process — that's safe across process boundaries. No
 // cross-thread access within the companion.
 extern uintptr_t g_addrGameRomCamera;
+extern uintptr_t g_addrArcheryWriter;
 extern uintptr_t g_addrMagneTarget;
 extern uintptr_t g_addrShortcutMenu;
 extern uintptr_t g_addrMenuState;

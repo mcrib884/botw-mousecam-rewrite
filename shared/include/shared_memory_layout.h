@@ -44,10 +44,15 @@ struct SharedMemoryLayout {
     float    m_cfgMagneSensY;        // Magnesis sensitivity multiplier (V)
     bool     m_cfgUseIndependentMagneSens; // Separate vertical Magnesis sensitivity
     float    m_cfgMagnePullSens;     // Magnesis pull sensitivity multiplier
+    bool     m_cfgScanArcheryWriter; // Toggle tracking/handling for Archery/Aiming Writer
+    bool     m_cfgScanMagneTarget;   // Toggle scanning/patching for Magne Target
+    bool     m_cfgScanShortcutMenu;  // Toggle scanning/hooking for ShortcutMenu
+    bool     m_cfgScanMenuState;     // Toggle scanning/hooking for MenuState
 
 
     // --- Status / scan results (written by DLL, read by companion) ---
     uint64_t m_statusAddrGameRomCamera;
+    uint64_t m_statusAddrArcheryWriter;
     uint64_t m_statusAddrShortcutMenu;
     uint64_t m_statusAddrMenuState;
     uint64_t m_statusAddrMagneTarget;

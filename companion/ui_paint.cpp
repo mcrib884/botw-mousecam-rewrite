@@ -16,6 +16,7 @@ using namespace Gdiplus;
 extern float g_animInject, g_animReinject, g_animReset, g_animToggleCam;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
+extern float g_animToggleArcheryWriter, g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
 extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneSens, g_animMagnePullSens;
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;
 extern float g_animDrop[5];
@@ -139,7 +140,8 @@ void PaintWindow(HWND hWnd) {
     const wchar_t* memTitle = g_collapsedMem ? L"\u25b6  MEMORY ADDRESSES" : L"\u25bc  MEMORY ADDRESSES";
     g.DrawString(memTitle, -1, &fontSec, PointF((REAL)(pad + 10), (REAL)(ui.rMemPanel.Y + 8)), &textBrush);
     if (!g_collapsedMem) {
-        auto getAddrStr = [](uintptr_t addr, const wchar_t* foundStr) -> std::wstring {
+        auto getAddrStr = [](uintptr_t addr, const wchar_t* foundStr, bool enabled) -> std::wstring {
+            if (!enabled) return L"Disabled";
             if (!g_targetInjected) return L"Not injected yet";
             if (addr == 0) return L"Scanning...";
             return std::wstring(foundStr);
@@ -148,13 +150,19 @@ void PaintWindow(HWND hWnd) {
             g.DrawString(label, -1, &fontBody, PointF((REAL)(pad + 10), (REAL)(ui.rMemPanel.Y + yOffset)), &textBrush);
             g.DrawString(val.c_str(), -1, &fontBody, PointF((REAL)(pad + 140), (REAL)(ui.rMemPanel.Y + yOffset)), &textBrush);
         };
-        drawMemLine(L"GameRomCamera:", getAddrStr(g_addrGameRomCamera, L"Found"), 35);
+        drawMemLine(L"GameRomCamera:", getAddrStr(g_addrGameRomCamera, L"Found", true), 35);
         if (g_targetInjected) {
             wchar_t wbuf[64];
             swprintf_s(wbuf, L"Writers found: %u", g_writersFound);
             g.DrawString(wbuf, -1, &fontBody, PointF((REAL)(pad + 210), (REAL)(ui.rMemPanel.Y + 35)), &textBrush);
         }
-        drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found"), 50);
+
+        drawMemLine(L"Archery Writer:", getAddrStr(g_addrArcheryWriter, L"Found", g_config.scan_archery_writer), 58);
+        DrawToggle(g, ui.rToggleArcheryWriter.X, ui.rToggleArcheryWriter.Y, g_animToggleArcheryWriter, L"", ff, false);
+
+        drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found", g_config.scan_magne_target), 81);
+        DrawToggle(g, ui.rToggleMagneTarget.X, ui.rToggleMagneTarget.Y, g_animToggleMagneTarget, L"", ff, false);
+
         wchar_t valBuf1[64], valBuf2[64];
         swprintf_s(valBuf1, L"Value: %d", g_liveShortcutMenu);
         if (g_liveMenuState == 3 || g_liveMenuState == 5) {
@@ -164,8 +172,11 @@ void PaintWindow(HWND hWnd) {
         } else {
             swprintf_s(valBuf2, L"Value: %d", g_liveMenuState);
         }
-        drawMemLine(L"Shortcut Menu:", getAddrStr(g_addrShortcutMenu, valBuf1), 65);
-        drawMemLine(L"Menu State:", getAddrStr(g_addrMenuState, valBuf2), 80);
+        drawMemLine(L"Shortcut Menu:", getAddrStr(g_addrShortcutMenu, valBuf1, g_config.scan_shortcut_menu), 104);
+        DrawToggle(g, ui.rToggleShortcutMenu.X, ui.rToggleShortcutMenu.Y, g_animToggleShortcutMenu, L"", ff, false);
+
+        drawMemLine(L"Menu State:", getAddrStr(g_addrMenuState, valBuf2, g_config.scan_menu_state), 127);
+        DrawToggle(g, ui.rToggleMenuState.X, ui.rToggleMenuState.Y, g_animToggleMenuState, L"", ff, false);
     }
 
     // VECTORS

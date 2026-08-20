@@ -43,10 +43,12 @@ void DrawToggle(Graphics& g, int x, int y, float stateAnim, const wchar_t* label
     float thumbX = 2 + 16 * stateAnim;
     g.FillEllipse(&thumbBrush, (int)(x + thumbX), y + 2, 16, 16);
 
-    Font font(&ff, 12, FontStyleRegular, UnitPixel);
-    SolidBrush textBrush(g_theme.text);
-    PointF pt((float)(x + 45), (float)(y + 2));
-    g.DrawString(label, -1, &font, pt, &textBrush);
+    if (label && label[0] != L'\0') {
+        Font font(&ff, 12, FontStyleRegular, UnitPixel);
+        SolidBrush textBrush(g_theme.text);
+        PointF pt((float)(x + 45), (float)(y + 2));
+        g.DrawString(label, -1, &font, pt, &textBrush);
+    }
 }
 
 void DrawSlider(Graphics& g, int x, int y, int width, float value, float min, float max, float hoverAnim, const wchar_t* label, FontFamily& ff) {
