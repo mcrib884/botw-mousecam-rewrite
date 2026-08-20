@@ -151,11 +151,7 @@ void PaintWindow(HWND hWnd) {
             g.DrawString(val.c_str(), -1, &fontBody, PointF((REAL)(pad + 140), (REAL)(ui.rMemPanel.Y + yOffset)), &textBrush);
         };
         drawMemLine(L"GameRomCamera:", getAddrStr(g_addrGameRomCamera, L"Found", true), 35);
-        if (g_targetInjected) {
-            wchar_t wbuf[64];
-            swprintf_s(wbuf, L"Writers found: %u", g_writersFound);
-            g.DrawString(wbuf, -1, &fontBody, PointF((REAL)(pad + 210), (REAL)(ui.rMemPanel.Y + 35)), &textBrush);
-        }
+        DrawToggle(g, ui.rToggleCameraStringScan.X, ui.rToggleCameraStringScan.Y, g_animToggleCameraStringScan, L"New scan method", ff, false);
 
         drawMemLine(L"Archery Writer:", getAddrStr(g_addrArcheryWriter, L"Found", g_config.scan_archery_writer), 58);
         DrawToggle(g, ui.rToggleArcheryWriter.X, ui.rToggleArcheryWriter.Y, g_animToggleArcheryWriter, L"", ff, false);

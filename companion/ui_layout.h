@@ -23,6 +23,7 @@ struct UIRects {
     Rect rRst;
     Rect rToggleCam;
 
+    Rect rToggleCameraStringScan;
     Rect rToggleArcheryWriter;
     Rect rToggleMagneTarget;
     Rect rToggleShortcutMenu;

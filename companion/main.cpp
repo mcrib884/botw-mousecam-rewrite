@@ -98,6 +98,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_animIndepSens += (g_config.use_independent_sens ? 0.075f : -0.075f);
         g_animIndepMagneSens += (g_config.use_independent_magne_sens ? 0.075f : -0.075f);
         g_animCemuExperimental += (g_config.cemu_experimental ? 0.075f : -0.075f);
+        g_animToggleCameraStringScan += (g_config.scan_camera_string_method ? 0.075f : -0.075f);
         g_animToggleArcheryWriter += (g_config.scan_archery_writer ? 0.075f : -0.075f);
         g_animToggleMagneTarget += (g_config.scan_magne_target ? 0.075f : -0.075f);
         g_animToggleShortcutMenu += (g_config.scan_shortcut_menu ? 0.075f : -0.075f);
@@ -120,7 +121,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         clampF(g_animPath); clampF(g_animPathReset);
         clampF(g_animScrollHelper); clampF(g_animOrbitCam);
         clampF(g_animIndepSens); clampF(g_animIndepMagneSens); clampF(g_animCemuExperimental);
-        clampF(g_animToggleArcheryWriter); clampF(g_animToggleMagneTarget); clampF(g_animToggleShortcutMenu); clampF(g_animToggleMenuState);
+        clampF(g_animToggleCameraStringScan); clampF(g_animToggleArcheryWriter); clampF(g_animToggleMagneTarget); clampF(g_animToggleShortcutMenu); clampF(g_animToggleMenuState);
         clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneSens); clampF(g_animMagneSensV); clampF(g_animMagnePullSens);
         clampF(g_animFpsMagnesis); clampF(g_animFpsMagneEyeHeight); clampF(g_animFpsMagneOffsetForward); clampF(g_animFpsMagneOffsetSide); clampF(g_animClearLog);
         for (int i = 0; i < 5; ++i) clampF(g_animDrop[i]);

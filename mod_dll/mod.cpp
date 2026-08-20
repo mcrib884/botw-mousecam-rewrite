@@ -1942,18 +1942,29 @@ namespace Mod {
                 }
             }
 
-            if (!tasks[0].found) {
-                DllLog("[INFO] Scanning for GameRomCamera...");
-                Pattern pat = ParseAOB(tasks[0].patternStr);
-                std::vector<uintptr_t> candidates;
+            bool useStringMethod = g_pSharedMemory ? g_pSharedMemory->m_cfgScanCameraStringMethod : true;
+            static bool s_lastStringMethod = useStringMethod;
+            if (useStringMethod != s_lastStringMethod) {
+                s_lastStringMethod = useStringMethod;
+                tasks[0].found = false;
+                tasks[0].address = 0;
+                g_addrGameRomCamera = 0;
+                if (g_pSharedMemory) g_pSharedMemory->m_statusAddrGameRomCamera = 0;
+            }
 
-                if (ScanProcessAOBAll(pat, candidates)) {
-                    DllLog("[INFO] Found %zu GameRomCamera match candidate(s). Verifying offsets and telemetry...", candidates.size());
+            if (!tasks[0].found) {
+                std::string patStr = useStringMethod ? "47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00" : tasks[0].patternStr;
+                DllLog("[INFO] Scanning for GameRomCamera using %s...", useStringMethod ? "string scan (\"GameRomCamera\")" : "classic AOB");
+                Pattern pat = ParseAOB(patStr);
+                std::vector<uintptr_t> rawCandidates;
+
+                if (ScanProcessAOBAll(pat, rawCandidates)) {
+                    DllLog("[INFO] Found %zu GameRomCamera match candidate(s). Verifying offsets and telemetry...", rawCandidates.size());
                     uintptr_t bestCandidate = 0;
                     int bestScore = -1;
 
-                    for (size_t i = 0; i < candidates.size(); ++i) {
-                        uintptr_t cand = candidates[i];
+                    for (size_t i = 0; i < rawCandidates.size(); ++i) {
+                        uintptr_t cand = useStringMethod ? (rawCandidates[i] - 0x10) : rawCandidates[i];
                         int score = 0;
                         bool valid = VerifyGameRomCamera(cand, score);
                         float fov = ReadFloatBE(cand + 0x654);
@@ -1965,7 +1976,7 @@ namespace Mod {
                         float focZ = ReadFloatBE(cand + 0x644);
 
                         DllLog("[INFO] Match [%zu/%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
-                               i + 1, candidates.size(), cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
+                               i + 1, rawCandidates.size(), cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
 
                         if (valid && score > bestScore) {
                             bestScore = score;
@@ -1983,8 +1994,8 @@ namespace Mod {
                         DllLog("[SUCCESS] Verified active GameRomCamera at 0x%llX (Score: %d)", bestCandidate, bestScore);
                     } else {
                         // Fallback: If in a loading screen where coords are uninitialized, take first candidate if available
-                        if (!candidates.empty()) {
-                            uintptr_t fallback = candidates[0];
+                        if (!rawCandidates.empty()) {
+                            uintptr_t fallback = useStringMethod ? (rawCandidates[0] - 0x10) : rawCandidates[0];
                             tasks[0].found = true;
                             tasks[0].address = fallback;
                             g_addrGameRomCamera = fallback;
