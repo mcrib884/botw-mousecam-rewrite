@@ -1391,7 +1391,7 @@ namespace Mod {
                 t_isSingleStepping = false;
                 // Instruction finished executing, re-arm the guard page
                 if (g_writerHuntActive) {
-                    ArmPageGuard(g_addrGameRomCamera + 0x550);
+                    ArmPageGuard(g_addrGameRomCamera + 0x570);
                 }
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
@@ -1419,7 +1419,7 @@ namespace Mod {
 
         if (isWrite && g_writerHuntActive) {
             uintptr_t base = g_addrGameRomCamera;
-            if (faultAddr == base + 0x550 || faultAddr == base + 0x554 || faultAddr == base + 0x558) {
+            if (faultAddr == base + 0x570 || faultAddr == base + 0x574 || faultAddr == base + 0x578) {
                 MEMORY_BASIC_INFORMATION mbi = {};
                 VirtualQuery((LPCVOID)rip, &mbi, sizeof(mbi));
                 bool isJit = (mbi.Type == MEM_PRIVATE) &&
@@ -1559,7 +1559,7 @@ namespace Mod {
         g_writerHuntActive = true;
 
         // Always arm — even with cached writers, JIT recompile may have created new ones.
-        ArmPageGuard(g_addrGameRomCamera + 0x550);
+        ArmPageGuard(g_addrGameRomCamera + 0x570);
     }
 
     // Disable writer hunting: remove guard, restore NOPs, keep list for next time.
@@ -1816,14 +1816,13 @@ namespace Mod {
                 uintptr_t foundAddress = 0;
 
                 if (ScanProcessAOB(pat, foundAddress)) {
-                    uintptr_t cameraBase = foundAddress + 0x18;
                     tasks[0].found = true;
-                    tasks[0].address = cameraBase;
-                    g_addrGameRomCamera = cameraBase;
+                    tasks[0].address = foundAddress;
+                    g_addrGameRomCamera = foundAddress;
                     if (g_pSharedMemory) {
-                        g_pSharedMemory->m_statusAddrGameRomCamera = cameraBase;
+                        g_pSharedMemory->m_statusAddrGameRomCamera = foundAddress;
                     }
-                    DllLog("[SUCCESS] Found GameRomCamera at 0x%llX", cameraBase);
+                    DllLog("[SUCCESS] Found GameRomCamera at 0x%llX", foundAddress);
                 } else {
                     DllLog("[WARNING] GameRomCamera not found. Retrying in 500ms...");
                 }
@@ -2288,11 +2287,11 @@ namespace Mod {
             if (dt > 0.1f) dt = 0.1f;
             last_frame_time = loop_now;
 
-            uintptr_t gc_addr = g_addrGameRomCamera ? (g_addrGameRomCamera + 0x630) : 0;
+            uintptr_t gc_addr = g_addrGameRomCamera ? (g_addrGameRomCamera + 0x650) : 0;
             if (g_pSharedMemory && g_addrGameRomCamera != 0) {
-                g_pSharedMemory->m_telePivotX = ReadFloatBE(g_addrGameRomCamera + 0x674);
-                g_pSharedMemory->m_telePivotY = ReadFloatBE(g_addrGameRomCamera + 0x678);
-                g_pSharedMemory->m_telePivotZ = ReadFloatBE(g_addrGameRomCamera + 0x67C);
+                g_pSharedMemory->m_telePivotX = ReadFloatBE(g_addrGameRomCamera + 0x694);
+                g_pSharedMemory->m_telePivotY = ReadFloatBE(g_addrGameRomCamera + 0x698);
+                g_pSharedMemory->m_telePivotZ = ReadFloatBE(g_addrGameRomCamera + 0x69C);
             }
             static uintptr_t last_gc_addr = 0;
             if (gc_addr != last_gc_addr) {
@@ -2661,9 +2660,9 @@ namespace Mod {
 
                     if (magnesis_mode && magne_ideal_base != 0) {
                         scroll_accumulator = 0;
-                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7D4);
-                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7D8);
-                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7DC);
+                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7F4);
+                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7F8);
+                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7FC);
 
                         if (!magne_initialized) {
                             float cur_x = ReadFloatBE(magne_ideal_base);
@@ -2933,9 +2932,9 @@ namespace Mod {
                         vcam_pos_y = ReadFloatBE(gc_addr + 4);
                         vcam_pos_z = ReadFloatBE(gc_addr + 8);
 
-                        float ideal_x = ReadFloatBE(g_addrGameRomCamera + 0x594);
-                        float ideal_y = ReadFloatBE(g_addrGameRomCamera + 0x598);
-                        float ideal_z = ReadFloatBE(g_addrGameRomCamera + 0x590);
+                        float ideal_x = ReadFloatBE(g_addrGameRomCamera + 0x5B4);
+                        float ideal_y = ReadFloatBE(g_addrGameRomCamera + 0x5B8);
+                        float ideal_z = ReadFloatBE(g_addrGameRomCamera + 0x5B0);
 
                         float gc_focus_x = ReadFloatBE(gc_addr + 0xC);
                         float gc_focus_y = ReadFloatBE(gc_addr + 0x10);
@@ -2964,18 +2963,18 @@ namespace Mod {
                     }
 
                     float pivot_x = 0.0f, pivot_y = 0.0f, pivot_z = 0.0f;
-                    float raw_pivot_x = ReadFloatBE(g_addrGameRomCamera + 0x674);
-                    float raw_pivot_y = ReadFloatBE(g_addrGameRomCamera + 0x678);
-                    float raw_pivot_z = ReadFloatBE(g_addrGameRomCamera + 0x67C);
+                    float raw_pivot_x = ReadFloatBE(g_addrGameRomCamera + 0x694);
+                    float raw_pivot_y = ReadFloatBE(g_addrGameRomCamera + 0x698);
+                    float raw_pivot_z = ReadFloatBE(g_addrGameRomCamera + 0x69C);
 
                     if (magnesis_mode && magne_ideal_base != 0) {
                         float mag_x = ReadFloatBE(magne_ideal_base);
                         float mag_y = ReadFloatBE(magne_ideal_base + 4);
                         float mag_z = ReadFloatBE(magne_ideal_base + 8);
                         if (mag_x != 0.0f || mag_y != 0.0f || mag_z != 0.0f) {
-                            float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7D4);
-                            float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7D8);
-                            float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7DC);
+                            float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7F4);
+                            float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7F8);
+                            float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7FC);
                             float dist = sqrtf((mag_x - link_x) * (mag_x - link_x) + 
                                                (mag_y - link_y) * (mag_y - link_y) + 
                                                (mag_z - link_z) * (mag_z - link_z));
@@ -3020,9 +3019,9 @@ namespace Mod {
                         float fwd_offset = g_pSharedMemory ? g_pSharedMemory->m_cfgFpsMagneOffsetForward : 0.0f;
                         float side_offset = g_pSharedMemory ? g_pSharedMemory->m_cfgFpsMagneOffsetSide : 0.0f;
 
-                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7D4);
-                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7D8);
-                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7DC);
+                        float link_x = ReadFloatBE(g_addrGameRomCamera + 0x7F4);
+                        float link_y = ReadFloatBE(g_addrGameRomCamera + 0x7F8);
+                        float link_z = ReadFloatBE(g_addrGameRomCamera + 0x7FC);
                         if (link_x == 0.0f && link_y == 0.0f && link_z == 0.0f) {
                             link_x = raw_pivot_x; link_y = raw_pivot_y; link_z = raw_pivot_z;
                         }
@@ -3035,9 +3034,9 @@ namespace Mod {
                         float focus_y = ReadFloatBE(magne_ideal_base + 4);
                         float focus_z = ReadFloatBE(magne_ideal_base + 8);
 
-                        WriteFloatBE(g_addrGameRomCamera + 0x55C, focus_x);
-                        WriteFloatBE(g_addrGameRomCamera + 0x560, focus_y);
-                        WriteFloatBE(g_addrGameRomCamera + 0x564, focus_z);
+                        WriteFloatBE(g_addrGameRomCamera + 0x57C, focus_x);
+                        WriteFloatBE(g_addrGameRomCamera + 0x580, focus_y);
+                        WriteFloatBE(g_addrGameRomCamera + 0x584, focus_z);
                     }
 
                     if (g_pSharedMemory) {
@@ -3074,9 +3073,9 @@ namespace Mod {
                         // If the game stomped our values, a new writer appeared (JIT recompile,
                         // new code path, etc.). Arm the guard so the VEH identifies it.
                         if (has_written_once && g_writerHuntActive) {
-                            float cur_x = ReadFloatBE(g_addrGameRomCamera + 0x550);
-                            float cur_y = ReadFloatBE(g_addrGameRomCamera + 0x554);
-                            float cur_z = ReadFloatBE(g_addrGameRomCamera + 0x558);
+                            float cur_x = ReadFloatBE(g_addrGameRomCamera + 0x570);
+                            float cur_y = ReadFloatBE(g_addrGameRomCamera + 0x574);
+                            float cur_z = ReadFloatBE(g_addrGameRomCamera + 0x578);
                             if (cur_x != last_written_x || cur_y != last_written_y || cur_z != last_written_z) {
                                 // Overwrite detected — hunt for the next ~40ms
                                 g_huntFramesLeft = 10;
@@ -3088,9 +3087,9 @@ namespace Mod {
                             // A blacklisted writer is currently in control. Pause mousecam.
                             virt_cam_initialized = false;
                         } else {
-                            WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
-                            WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
-                            WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
+                            WriteFloatBE(g_addrGameRomCamera + 0x570, vcam_pos_x);
+                            WriteFloatBE(g_addrGameRomCamera + 0x574, vcam_pos_y);
+                            WriteFloatBE(g_addrGameRomCamera + 0x578, vcam_pos_z);
 
                             last_written_x = vcam_pos_x;
                             last_written_y = vcam_pos_y;
@@ -3100,14 +3099,14 @@ namespace Mod {
 
                         // Arm guard if we are currently hunting
                         if (g_writerHuntActive && g_huntFramesLeft > 0) {
-                            ArmPageGuard(g_addrGameRomCamera + 0x550);
+                            ArmPageGuard(g_addrGameRomCamera + 0x570);
                             g_huntFramesLeft--;
                         }
                     } else {
                         // Not writing. If we were hunting, maintain the guard page.
                         static int g_huntFramesLeft = 0; // shadowing, but menu state shouldn't leak hunt
                         if (wasArmed) {
-                            ArmPageGuard(g_addrGameRomCamera + 0x550);
+                            ArmPageGuard(g_addrGameRomCamera + 0x570);
                         }
                     }
                 }
