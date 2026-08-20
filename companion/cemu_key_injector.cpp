@@ -137,7 +137,7 @@ void CemuKeyInjector::LoadCemuProfile(const std::string& custom_path) {
         entry_pos = end_pos + 8;
     }
 
-    LogToConsole(L"[INFO] Loaded %d keyboard mappings from Cemu profile.", found);
+    LogToConsole(L"[INFO] Loaded %d keyboard mappings from profile: %s", found, profile_path.c_str());
 }
 
 int CemuKeyInjector::MouseVk(int idx) {

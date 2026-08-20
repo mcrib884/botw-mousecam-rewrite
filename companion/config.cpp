@@ -309,36 +309,83 @@ std::wstring ExpandEnv(const std::wstring& s) {
     return r;
 }
 
-std::wstring ResolveProfilePath(const std::string& custom_path) {
-    if (!g_config.cemu_path_override.empty()) {
-        std::wstring override_path = Utf8ToWstr(g_config.cemu_path_override); // TD3
-        override_path += L"\\controllerProfiles\\controller0.xml";
-        if (GetFileAttributesW(override_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            return override_path;
-        }
+static std::wstring FindProfileInDir(const std::wstring& dir) {
+    if (dir.empty()) return L"";
+    std::wstring baseDir = dir;
+    // Strip trailing slash
+    while (!baseDir.empty() && (baseDir.back() == L'\\' || baseDir.back() == L'/')) {
+        baseDir.pop_back();
     }
-    std::wstring profile_path = L"";
-    if (!custom_path.empty()) {
-        std::wstring wcustom = Utf8ToWstr(custom_path); // TD3
-        profile_path = ExpandEnv(wcustom);
-    }
-
-    if (profile_path.empty() || GetFileAttributesW(profile_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        wchar_t exe_path[MAX_PATH];
-        GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-        std::wstring wpath(exe_path);
-        size_t last_slash = wpath.find_last_of(L"\\/");
+    // If baseDir points to an .exe or file, strip the filename to get parent dir
+    DWORD attr = GetFileAttributesW(baseDir.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        size_t last_slash = baseDir.find_last_of(L"\\/");
         if (last_slash != std::wstring::npos) {
-            std::wstring local_path = wpath.substr(0, last_slash + 1) + L"controllerProfiles\\controller0.xml";
-            if (GetFileAttributesW(local_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                profile_path = local_path;
-            } else {
-                std::wstring appdata_path = ExpandEnv(L"%APPDATA%\\Cemu\\controllerProfiles\\controller0.xml");
-                if (GetFileAttributesW(appdata_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                    profile_path = appdata_path;
-                }
+            baseDir = baseDir.substr(0, last_slash);
+        }
+    } else {
+        size_t last_slash = baseDir.find_last_of(L"\\/");
+        if (last_slash != std::wstring::npos) {
+            std::wstring filename = baseDir.substr(last_slash + 1);
+            if (filename.size() >= 4 && _wcsicmp(filename.c_str() + filename.size() - 4, L".exe") == 0) {
+                baseDir = baseDir.substr(0, last_slash);
             }
         }
     }
-    return profile_path;
+
+    // 1. Try controller0.xml
+    std::wstring p0 = baseDir + L"\\controllerProfiles\\controller0.xml";
+    if (GetFileAttributesW(p0.c_str()) != INVALID_FILE_ATTRIBUTES) return p0;
+
+    // 2. Try Default.xml
+    std::wstring pDef = baseDir + L"\\controllerProfiles\\Default.xml";
+    if (GetFileAttributesW(pDef.c_str()) != INVALID_FILE_ATTRIBUTES) return pDef;
+
+    // 3. Try any .xml in controllerProfiles folder
+    std::wstring searchPattern = baseDir + L"\\controllerProfiles\\*.xml";
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        std::wstring foundPath = baseDir + L"\\controllerProfiles\\" + fd.cFileName;
+        FindClose(hFind);
+        return foundPath;
+    }
+
+    return L"";
+}
+
+std::wstring ResolveProfilePath(const std::string& custom_path) {
+    // 1. Check custom cemu path override
+    if (!g_config.cemu_path_override.empty()) {
+        std::wstring woverride = Utf8ToWstr(g_config.cemu_path_override);
+        std::wstring found = FindProfileInDir(woverride);
+        if (!found.empty()) return found;
+    }
+
+    // 2. Check explicit custom_path (direct XML file or folder)
+    if (!custom_path.empty()) {
+        std::wstring wcustom = ExpandEnv(Utf8ToWstr(custom_path));
+        DWORD attr = GetFileAttributesW(wcustom.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES) {
+            if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+                return wcustom; // Direct XML file
+            }
+            std::wstring found = FindProfileInDir(wcustom);
+            if (!found.empty()) return found;
+        }
+    }
+
+    // 3. Check directory of current executable (companion exe)
+    wchar_t exe_path[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH)) {
+        std::wstring found = FindProfileInDir(exe_path);
+        if (!found.empty()) return found;
+    }
+
+    // 4. Check %APPDATA%\Cemu
+    std::wstring appdata_cemu = ExpandEnv(L"%APPDATA%\\Cemu");
+    std::wstring found = FindProfileInDir(appdata_cemu);
+    if (!found.empty()) return found;
+
+    return L"";
 }
