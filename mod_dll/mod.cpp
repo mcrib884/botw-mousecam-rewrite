@@ -3366,7 +3366,7 @@ namespace Mod {
             }
 #endif
 
-            Sleep(4);
+            Sleep(250);
         }
 
         SetGlobalCursorVisibility(true);
