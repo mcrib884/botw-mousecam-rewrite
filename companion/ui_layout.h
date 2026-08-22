@@ -24,7 +24,6 @@ struct UIRects {
     Rect rToggleCam;
 
     Rect rToggleCameraStringScan;
-    Rect rToggleArcheryWriter;
     Rect rToggleMagneTarget;
     Rect rToggleShortcutMenu;
     Rect rToggleMenuState;

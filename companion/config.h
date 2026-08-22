@@ -27,7 +27,6 @@ struct AppConfig {
     float magnesis_sensitivity = 1.0f; // Magnesis sensitivity multiplier (H)
     float magnesis_sensitivity_y = 1.0f; // Magnesis sensitivity multiplier (V)
     float magnesis_pull_sensitivity = 1.0f; // Magnesis pull sensitivity multiplier
-    bool  scan_archery_writer = true;
     bool  scan_magne_target = true;
     bool  scan_shortcut_menu = true;
     bool  scan_menu_state = true;

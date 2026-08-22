@@ -192,7 +192,6 @@ namespace Mod {
     static std::atomic<bool> g_cameraControlRunning = false;
 
     static std::atomic<uintptr_t> g_addrGameRomCamera{0};
-    static std::atomic<uintptr_t> g_addrArcheryWriter{0};
     static std::atomic<uintptr_t> g_addrMagneTarget{0};
     static std::atomic<uintptr_t> g_addrShortcutMenu{0};
     static std::atomic<uintptr_t> g_addrMenuState{0};
@@ -1586,14 +1585,7 @@ namespace Mod {
                         }
                         if (isBlacklisted) {
                             shouldNop = false;
-                            bool scanArchery = g_pSharedMemory ? g_pSharedMemory->m_cfgScanArcheryWriter : true;
-                            if (scanArchery) {
-                                g_addrArcheryWriter = rip;
-                                if (g_pSharedMemory) {
-                                    g_pSharedMemory->m_statusAddrArcheryWriter = rip;
-                                }
-                                g_lastBlacklistedWriteTime.store(GetTickCount64());
-                            }
+                            g_lastBlacklistedWriteTime.store(GetTickCount64());
                         }
                     }
                 }
@@ -1857,7 +1849,6 @@ namespace Mod {
                         tasks[i].address = 0;
                     }
                     g_addrGameRomCamera = 0;
-                    g_addrArcheryWriter = 0;
                     g_addrShortcutMenu = 0;
                     g_addrMenuState = 0;
                     g_addrMagneTarget = 0;
@@ -1883,7 +1874,6 @@ namespace Mod {
                     
                     g_pSharedMemory->m_statusWritersFound = 0;
                     g_pSharedMemory->m_statusAddrGameRomCamera = 0;
-                    g_pSharedMemory->m_statusAddrArcheryWriter = 0;
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
                     g_pSharedMemory->m_statusAddrMenuState = 0;
                     g_pSharedMemory->m_statusAddrMagneTarget = 0;
@@ -1907,7 +1897,6 @@ namespace Mod {
                     tasks[0].found = false;
                     tasks[0].address = 0;
                     g_addrGameRomCamera = 0;
-                    g_addrArcheryWriter = 0;
 
                     // Address voided — stop any active hunt and discard all cached writers
                     // (their RIPs are tied to the old JIT layout and are now stale).
@@ -2020,15 +2009,9 @@ namespace Mod {
                 }
             }
 
-            bool scanArchery = g_pSharedMemory ? g_pSharedMemory->m_cfgScanArcheryWriter : true;
             bool scanShortcutMenu = g_pSharedMemory ? g_pSharedMemory->m_cfgScanShortcutMenu : true;
             bool scanMenuState = g_pSharedMemory ? g_pSharedMemory->m_cfgScanMenuState : true;
             bool scanMagneTarget = g_pSharedMemory ? g_pSharedMemory->m_cfgScanMagneTarget : true;
-
-            if (!scanArchery) {
-                g_addrArcheryWriter = 0;
-                if (g_pSharedMemory) g_pSharedMemory->m_statusAddrArcheryWriter = 0;
-            }
 
             if (!scanShortcutMenu) {
                 if (g_shortcutHookActive) RemoveShortcutHook();
@@ -2222,7 +2205,6 @@ namespace Mod {
 
             if (g_pSharedMemory) {
                 g_pSharedMemory->m_statusAddrGameRomCamera = g_addrGameRomCamera.load();
-                g_pSharedMemory->m_statusAddrArcheryWriter  = scanArchery ? g_addrArcheryWriter.load() : 0;
                 g_pSharedMemory->m_statusAddrShortcutMenu  = scanShortcutMenu ? g_addrShortcutMenu.load() : 0;
                 g_pSharedMemory->m_statusAddrMenuState     = scanMenuState ? g_addrMenuState.load() : 0;
                 g_pSharedMemory->m_statusAddrMagneTarget   = scanMagneTarget ? g_addrMagneTarget.load() : 0;
@@ -2557,7 +2539,6 @@ namespace Mod {
 
             bool scanMenuState = g_pSharedMemory ? g_pSharedMemory->m_cfgScanMenuState : true;
             bool scanShortcutMenu = g_pSharedMemory ? g_pSharedMemory->m_cfgScanShortcutMenu : true;
-            bool scanArchery = g_pSharedMemory ? g_pSharedMemory->m_cfgScanArcheryWriter : true;
 
             bool menu_active = false;
             static bool resetTriggeredOnState2 = false;
@@ -3269,7 +3250,7 @@ namespace Mod {
                         }
 
                         uint64_t now = GetTickCount64();
-                        if (scanArchery && (now - g_lastBlacklistedWriteTime.load() <= 50)) {
+                        if (now - g_lastBlacklistedWriteTime.load() <= 50) {
                             // A blacklisted writer is currently in control. Pause mousecam.
                             virt_cam_initialized = false;
                         } else {

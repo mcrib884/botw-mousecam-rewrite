@@ -32,7 +32,7 @@ bool g_downInject = false, g_downReinject = false, g_downReset = false, g_downTo
 float g_animInject = 0, g_animReinject = 0, g_animReset = 0, g_animToggleCam = 0;
 float g_animDarkBtn = 0, g_animLightBtn = 0, g_animPath = 0, g_animPathReset = 0;
 float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0, g_animIndepMagneSens = 0, g_animCemuExperimental = 0;
-float g_animToggleCameraStringScan = 0, g_animToggleArcheryWriter = 0, g_animToggleMagneTarget = 0, g_animToggleShortcutMenu = 0, g_animToggleMenuState = 0;
+float g_animToggleCameraStringScan = 0, g_animToggleMagneTarget = 0, g_animToggleShortcutMenu = 0, g_animToggleMenuState = 0;
 float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0;
 float g_animMagneSens = 0, g_animMagneSensV = 0;
 float g_animMagnePullSens = 0;
@@ -259,13 +259,6 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     }
     if (ui.rToggleCameraStringScan.Contains(x, y)) {
         g_config.scan_camera_string_method = !g_config.scan_camera_string_method;
-        SaveConfig();
-        WriteConfigToSharedMemory();
-        InvalidateRect(hWnd, nullptr, FALSE);
-        return 0;
-    }
-    if (ui.rToggleArcheryWriter.Contains(x, y)) {
-        g_config.scan_archery_writer = !g_config.scan_archery_writer;
         SaveConfig();
         WriteConfigToSharedMemory();
         InvalidateRect(hWnd, nullptr, FALSE);

@@ -102,7 +102,6 @@ void SaveConfig() {
     f << "  \"magnesis_sensitivity\": " << g_config.magnesis_sensitivity << ",\n";
     f << "  \"magnesis_sensitivity_y\": " << g_config.magnesis_sensitivity_y << ",\n";
     f << "  \"magnesis_pull_sensitivity\": " << g_config.magnesis_pull_sensitivity << ",\n";
-    f << "  \"scan_archery_writer\": " << (g_config.scan_archery_writer ? "true" : "false") << ",\n";
     f << "  \"scan_magne_target\": " << (g_config.scan_magne_target ? "true" : "false") << ",\n";
     f << "  \"scan_shortcut_menu\": " << (g_config.scan_shortcut_menu ? "true" : "false") << ",\n";
     f << "  \"scan_menu_state\": " << (g_config.scan_menu_state ? "true" : "false") << ",\n";
@@ -251,7 +250,6 @@ void LoadConfig() {
     g_config.magnesis_pull_sensitivity = (float)extract_json_double("magnesis_pull_sensitivity", 1.0);
     if (g_config.magnesis_pull_sensitivity < 1.0f) g_config.magnesis_pull_sensitivity = 1.0f;
     if (g_config.magnesis_pull_sensitivity > 10.0f) g_config.magnesis_pull_sensitivity = 10.0f;
-    g_config.scan_archery_writer = extract_json_bool("scan_archery_writer", true);
     g_config.scan_magne_target = extract_json_bool("scan_magne_target", true);
     g_config.scan_shortcut_menu = extract_json_bool("scan_shortcut_menu", true);
     g_config.scan_menu_state = extract_json_bool("scan_menu_state", true);

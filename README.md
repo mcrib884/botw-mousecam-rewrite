@@ -20,9 +20,6 @@ Two files: a small companion app and a mod it loads into Cemu at runtime. Nothin
 - Separate horizontal and vertical sensitivity for magnesis control.
 - **First-person mode**: the camera moves to eye level and aims at the object you're holding, with sliders for eye height, forward/back, and left/right positioning.
 
-### Archery
-- A separate, lower sensitivity engages while you're drawing the bow, so precise aiming doesn't require a rock-steady wrist. Fully adjustable.
-
 ### Menus & UI
 - When a menu is open, the mouse drives the dpad — navigate everything with the mouse.
 - Scroll the wheel to flip through weapons and shields.

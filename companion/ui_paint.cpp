@@ -16,7 +16,7 @@ using namespace Gdiplus;
 extern float g_animInject, g_animReinject, g_animReset, g_animToggleCam;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
-extern float g_animToggleArcheryWriter, g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
+extern float g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
 extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneSens, g_animMagnePullSens;
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;
 extern float g_animDrop[5];
@@ -153,10 +153,7 @@ void PaintWindow(HWND hWnd) {
         drawMemLine(L"GameRomCamera:", getAddrStr(g_addrGameRomCamera, L"Found", true), 35);
         DrawToggle(g, ui.rToggleCameraStringScan.X, ui.rToggleCameraStringScan.Y, g_animToggleCameraStringScan, L"New scan method", ff, false);
 
-        drawMemLine(L"Archery Writer:", getAddrStr(g_addrArcheryWriter, L"Found", g_config.scan_archery_writer), 58);
-        DrawToggle(g, ui.rToggleArcheryWriter.X, ui.rToggleArcheryWriter.Y, g_animToggleArcheryWriter, L"", ff, false);
-
-        drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found", g_config.scan_magne_target), 81);
+        drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found", g_config.scan_magne_target), 58);
         DrawToggle(g, ui.rToggleMagneTarget.X, ui.rToggleMagneTarget.Y, g_animToggleMagneTarget, L"", ff, false);
 
         wchar_t valBuf1[64], valBuf2[64];
@@ -168,10 +165,10 @@ void PaintWindow(HWND hWnd) {
         } else {
             swprintf_s(valBuf2, L"Value: %d", g_liveMenuState);
         }
-        drawMemLine(L"Shortcut Menu:", getAddrStr(g_addrShortcutMenu, valBuf1, g_config.scan_shortcut_menu), 104);
+        drawMemLine(L"Shortcut Menu:", getAddrStr(g_addrShortcutMenu, valBuf1, g_config.scan_shortcut_menu), 81);
         DrawToggle(g, ui.rToggleShortcutMenu.X, ui.rToggleShortcutMenu.Y, g_animToggleShortcutMenu, L"", ff, false);
 
-        drawMemLine(L"Menu State:", getAddrStr(g_addrMenuState, valBuf2, g_config.scan_menu_state), 127);
+        drawMemLine(L"Menu State:", getAddrStr(g_addrMenuState, valBuf2, g_config.scan_menu_state), 104);
         DrawToggle(g, ui.rToggleMenuState.X, ui.rToggleMenuState.Y, g_animToggleMenuState, L"", ff, false);
     }
 
