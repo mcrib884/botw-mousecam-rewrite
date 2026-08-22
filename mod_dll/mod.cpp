@@ -83,7 +83,7 @@ namespace Mod {
         CemuVersionConfig cfg;
         if (experimental) {
             cfg.name = L"Cemu Experimental";
-            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            cfg.gameRomCameraAob = "47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "45 0F 38 F1 74 2D 68 F3 0F 5A C0 F2 0F 10 AC 24 68 02 00 00 31 F6 66 0F 2E E5 41 0F 9B C6 40 0F 92 C6 44 20 F6 31 FF 66 0F 2E E5 40 0F 97 C7 45 31 C0 66 0F 2E E5 41 0F 9B C6 41 0F 94 C0 45 20 F0 45 31 C9 66 0F 2E E5 41 0F 9A C1 F2 0F 11 A4 24 88 00 00 00 41 89 5C 0D 70 0F CA 89 54 24 2C 45 0F 38 F0 74 0D 70 66 41 0F 6E E6 F2 0F 10 FC F3 0F 5A FF F2 0F 11 BC 24 60 01 00 00 66 41 0F 7E F6 45 0F 38 F1 74 2D 6C F3 0F 5A F6 F2 0F 11 B4 24 48 01 00 00 66 41 0F 7E E6 45 0F 38 F1 74 2D 70";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.menuStateAob1    = "41 0F 38 F1 44 0D 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
@@ -95,7 +95,7 @@ namespace Mod {
             cfg.magnesisDetourSize = 21;
         } else {
             cfg.name = L"Cemu 2.6";
-            cfg.gameRomCameraAob = "10 1B F9 FC 70 ?? ?? ?? 10 31 97 58 00 00 00 40 47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
+            cfg.gameRomCameraAob = "47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00";
             cfg.magnesisAob      = "38 F0 74 1D 6C 66 41 0F 6E FE F2 44 0F 5A FD 66 45 0F 7E FE 45 0F 38 F1 74 1D 64 41 8B 54 1D 64 8B AC 24 80 00 00 00 45 0F 38 F0 74 2D 74 66 41 0F 6E D6 F3 0F 5A D2 F2 0F 12 D2 66 41 0F 7E F6 45 0F 38 F1 74 2D 68 F3 0F 5A F6 F2 0F 12 F6 66 44 0F 10 84 E4 68 02 00 00 66 41 0F 2E D0 0F 9A 84 24 8F 02 00 00 7A 1A 0F 92 84 24 8C 02 00 00 0F 97 84 24 8D 02 00 00 0F 94 84 24 8E 02 00 00 EB 18 C6 84 24 8C 02 00 00 00 C6 84 24 8D 02 00 00 00 C6 84 24 8E 02 00 00 00 41 89 54 1D 70 66 44 0F 10 8C E4 58 01 00 00 45 0F 38 F0 74 1D 70 66 45 0F 6E CE 66 41 0F 7E FE 45 0F 38 F1 74 2D 6C F3 0F 5A FF F2 0F 12 FF 66 45 0F 7E CE 45 0F 38 F1 74 2D 70 F3 45 0F 5A C9 F2 45 0F 12 C9 0F C8 89 44 24 2C 0F CA 89 54 24 04 66 0F 11 84 E4 08 01 00 00 66 0F 11 8C E4 F8 00 00 00 66 0F 11 94 E4 88 00 00 00 66 0F 11 9C E4 28 01 00 00 66 0F 11 A4 E4 78 02 00 00 66 0F 11 AC E4 18 01 00";
             cfg.shortcutMenuAob  = "41 0F 38 F1 9C 15 04 1C 00 00";
             cfg.menuStateAob1    = "41 0F 38 F1 44 15 3C 89 44 24 34 C7 84 24 B8 02 00 00 58 3A 7E 03 BA 9C";
@@ -1931,20 +1931,9 @@ namespace Mod {
                 }
             }
 
-            bool useStringMethod = g_pSharedMemory ? g_pSharedMemory->m_cfgScanCameraStringMethod : true;
-            static bool s_lastStringMethod = useStringMethod;
-            if (useStringMethod != s_lastStringMethod) {
-                s_lastStringMethod = useStringMethod;
-                tasks[0].found = false;
-                tasks[0].address = 0;
-                g_addrGameRomCamera = 0;
-                if (g_pSharedMemory) g_pSharedMemory->m_statusAddrGameRomCamera = 0;
-            }
-
             if (!tasks[0].found) {
-                std::string patStr = useStringMethod ? "47 61 6D 65 52 6F 6D 43 61 6D 65 72 61 00" : tasks[0].patternStr;
-                DllLog("[INFO] Scanning for GameRomCamera using %s...", useStringMethod ? "string scan (\"GameRomCamera\")" : "classic AOB");
-                Pattern pat = ParseAOB(patStr);
+                DllLog("[INFO] Scanning for GameRomCamera...");
+                Pattern pat = ParseAOB(tasks[0].patternStr);
                 std::vector<uintptr_t> rawCandidates;
 
                 if (ScanProcessAOBAll(pat, rawCandidates)) {
@@ -1953,7 +1942,7 @@ namespace Mod {
                     int bestScore = -1;
 
                     for (size_t i = 0; i < rawCandidates.size(); ++i) {
-                        uintptr_t cand = useStringMethod ? (rawCandidates[i] - 0x10) : rawCandidates[i];
+                        uintptr_t cand = rawCandidates[i] - 0x10;
                         int score = 0;
                         bool valid = VerifyGameRomCamera(cand, score);
                         float fov = ReadFloatBE(cand + 0x654);
@@ -1984,7 +1973,7 @@ namespace Mod {
                     } else {
                         // Fallback: If in a loading screen where coords are uninitialized, take first candidate if available
                         if (!rawCandidates.empty()) {
-                            uintptr_t fallback = useStringMethod ? (rawCandidates[0] - 0x10) : rawCandidates[0];
+                            uintptr_t fallback = rawCandidates[0] - 0x10;
                             tasks[0].found = true;
                             tasks[0].address = fallback;
                             g_addrGameRomCamera = fallback;

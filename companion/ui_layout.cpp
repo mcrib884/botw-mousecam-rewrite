@@ -74,12 +74,10 @@ void CalculateUIRects(UIRects& r, int w, int h) {
     int memH = g_collapsedMem ? 30 : 132;
     r.rMemPanel = Rect(pad, curY, panelW, memH);
     if (g_collapsedMem) {
-        r.rToggleCameraStringScan = Rect(0, 0, 0, 0);
         r.rToggleMagneTarget = Rect(0, 0, 0, 0);
         r.rToggleShortcutMenu = Rect(0, 0, 0, 0);
         r.rToggleMenuState = Rect(0, 0, 0, 0);
     } else {
-        r.rToggleCameraStringScan = Rect(pad + panelW - 165, curY + 33, 160, 20);
         r.rToggleMagneTarget = Rect(pad + panelW - 50, curY + 56, 36, 20);
         r.rToggleShortcutMenu = Rect(pad + panelW - 50, curY + 79, 36, 20);
         r.rToggleMenuState = Rect(pad + panelW - 50, curY + 102, 36, 20);

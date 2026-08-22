@@ -105,7 +105,6 @@ void SaveConfig() {
     f << "  \"scan_magne_target\": " << (g_config.scan_magne_target ? "true" : "false") << ",\n";
     f << "  \"scan_shortcut_menu\": " << (g_config.scan_shortcut_menu ? "true" : "false") << ",\n";
     f << "  \"scan_menu_state\": " << (g_config.scan_menu_state ? "true" : "false") << ",\n";
-    f << "  \"scan_camera_string_method\": " << (g_config.scan_camera_string_method ? "true" : "false") << ",\n";
     f << "  \"collapsed_mem\": " << (g_collapsedMem ? "true" : "false") << ",\n";
     f << "  \"collapsed_tele\": " << (g_collapsedTele ? "true" : "false") << ",\n";
     f << "  \"collapsed_set\": " << (g_collapsedSet ? "true" : "false") << ",\n";
@@ -253,7 +252,6 @@ void LoadConfig() {
     g_config.scan_magne_target = extract_json_bool("scan_magne_target", true);
     g_config.scan_shortcut_menu = extract_json_bool("scan_shortcut_menu", true);
     g_config.scan_menu_state = extract_json_bool("scan_menu_state", true);
-    g_config.scan_camera_string_method = extract_json_bool("scan_camera_string_method", true);
 
     g_collapsedMem = extract_json_bool("collapsed_mem", false);
     g_collapsedTele = extract_json_bool("collapsed_tele", false);

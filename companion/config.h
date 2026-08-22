@@ -30,7 +30,6 @@ struct AppConfig {
     bool  scan_magne_target = true;
     bool  scan_shortcut_menu = true;
     bool  scan_menu_state = true;
-    bool  scan_camera_string_method = true;
 };
 
 extern AppConfig g_config;

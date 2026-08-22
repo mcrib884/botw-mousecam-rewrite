@@ -138,7 +138,6 @@ void WriteConfigToSharedMemory() {
         g_pSharedMemory->m_cfgScanMagneTarget = g_config.scan_magne_target;
         g_pSharedMemory->m_cfgScanShortcutMenu = g_config.scan_shortcut_menu;
         g_pSharedMemory->m_cfgScanMenuState = g_config.scan_menu_state;
-        g_pSharedMemory->m_cfgScanCameraStringMethod = g_config.scan_camera_string_method;
         g_pSharedMemory->m_cfgSensitivityX = g_config.sensitivity_x;
         g_pSharedMemory->m_cfgSensitivityY = g_config.sensitivity_y;
         g_pSharedMemory->m_cfgUseIndependentSens = g_config.use_independent_sens ? 1 : 0;

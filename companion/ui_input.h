@@ -23,7 +23,7 @@ extern bool g_downInject, g_downReinject, g_downReset, g_downToggleCam;
 extern float g_animInject, g_animReinject, g_animReset, g_animToggleCam;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animIndepMagneSens, g_animCemuExperimental;
-extern float g_animToggleCameraStringScan, g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
+extern float g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
 extern float g_animSensH, g_animSensV, g_animClearLog;
 extern float g_animMagneSens, g_animMagneSensV;
 extern float g_animMagnePullSens;

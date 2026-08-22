@@ -47,7 +47,6 @@ struct SharedMemoryLayout {
     bool     m_cfgScanMagneTarget;   // Toggle scanning/patching for Magne Target
     bool     m_cfgScanShortcutMenu;  // Toggle scanning/hooking for ShortcutMenu
     bool     m_cfgScanMenuState;     // Toggle scanning/hooking for MenuState
-    bool     m_cfgScanCameraStringMethod; // Toggle string-based scan ("GameRomCamera") for GameRomCamera
 
 
     // --- Status / scan results (written by DLL, read by companion) ---
