@@ -869,6 +869,38 @@ namespace Mod {
         return true;
     }
 
+    static bool VerifyMagneTargetSig(uintptr_t cand, const CemuVersionConfig& vCfg, bool experimental, int& score) {
+        score = 0;
+        if (cand == 0) return false;
+
+        // 1. Verify memory page is committed and executable
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery(reinterpret_cast<LPCVOID>(cand), &mbi, sizeof(mbi))) {
+            return false;
+        }
+        if (mbi.State != MEM_COMMIT || !(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+            return false;
+        }
+        score += 40;
+
+        // 2. Verify instruction opcodes at Y and Z write offsets
+        uint8_t yBytes[7] = {0}, zBytes[7] = {0};
+        SIZE_T readBytes = 0;
+
+        if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(cand + vCfg.magnesisYOffset), yBytes, sizeof(yBytes), &readBytes) && readBytes == sizeof(yBytes)) {
+            if (yBytes[0] == 0x45 && yBytes[1] == 0x0F && yBytes[2] == 0x38 && yBytes[3] == 0xF1 && yBytes[6] == 0x6C) {
+                score += 30;
+            }
+        }
+        if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(cand + vCfg.magnesisZOffset), zBytes, sizeof(zBytes), &readBytes) && readBytes == sizeof(zBytes)) {
+            if (zBytes[0] == 0x45 && zBytes[1] == 0x0F && zBytes[2] == 0x38 && zBytes[3] == 0xF1 && zBytes[6] == 0x70) {
+                score += 30;
+            }
+        }
+
+        return (score >= 40);
+    }
+
     // -------------------------------------------------------------------------
     // CodePatch: used for magnesis detour only. Camera writers are now handled
     // dynamically via the VEH page-guard system below.
@@ -983,6 +1015,7 @@ namespace Mod {
     static std::set<uintptr_t> g_menuStateCandidates1;
     static std::set<uintptr_t> g_menuStateCandidates2;
     static CRITICAL_SECTION g_menuCandidateCS;
+    static std::atomic<bool> g_preserveMenuStateOnReset{false};
 
     static LPVOID AllocateWithin2GB(uintptr_t targetAddr, size_t size) {
         SYSTEM_INFO si;
@@ -1320,7 +1353,9 @@ namespace Mod {
                     g_pSharedMemory->m_statusAddrShortcutMenu = g_addrShortcutMenu;
                     RemoveShortcutHook();
                 } else {
+#ifdef _DEBUG
                     DllLog("[WARNING] Hook fired on incorrect value %d at address 0x%llX. Ignoring and waiting.", tempVal, tempAddr);
+#endif
                     g_tempShortcutAddress = 0;
                     g_tempShortcutValue = 0;
                 }
@@ -1336,7 +1371,14 @@ namespace Mod {
                 uint32_t writerId = g_menuStateQueue[idx].writerId;
                 g_menuStateQueueReadIdx++;
 
-                if (tempVal == 3 || tempVal == 5 || tempVal == 6 || tempVal == 10) {
+                bool valValid = false;
+                if (writerId == 1 && (tempVal == 6 || tempVal == 10)) {
+                    valValid = true;
+                } else if (writerId == 2 && (tempVal == 3 || tempVal == 5)) {
+                    valValid = true;
+                }
+
+                if (valValid) {
                     bool patternValid = false;
                     uint16_t marker = 0;
                     if (SafeReadMarker(tempAddr - 4, marker) && (marker & 0xFF) == 0x6E) {
@@ -1352,8 +1394,10 @@ namespace Mod {
 
                             bool inBoth = (g_menuStateCandidates1.count(baseAddr) > 0) && (g_menuStateCandidates2.count(baseAddr) > 0);
 
+#ifdef _DEBUG
                             DllLog("[INFO] MenuState hook %u fired at 0x%llX (val: %d, Pattern 6E valid). Candidate sets: Writer1=%zu, Writer2=%zu",
                                    writerId, baseAddr, tempVal, g_menuStateCandidates1.size(), g_menuStateCandidates2.size());
+#endif
 
                             if (inBoth) {
                                 g_addrMenuState = baseAddr;
@@ -1365,15 +1409,19 @@ namespace Mod {
                                 g_menuStateQueueReadIdx = 0;
                                 memset(g_menuStateQueue, 0, sizeof(g_menuStateQueue));
                                 g_pSharedMemory->m_statusAddrMenuState = baseAddr;
-                                DllLog("[SUCCESS] MenuState candidate WINNER selected at 0x%llX (FIRED BY BOTH PAIRED AOB WRITERS WITH VALUE %d & 6E VALID!). Trampoline hooks removed.", baseAddr, tempVal);
+                                DllLog("[SUCCESS] MenuState candidate WINNER selected at 0x%llX (FIRED BY BOTH PAIRED AOB WRITERS WITH MATCHING VALUES & 6E VALID!). Trampoline hooks removed.", baseAddr);
                             }
                         }
                         LeaveCriticalSection(&g_menuCandidateCS);
                     } else {
+#ifdef _DEBUG
                         DllLog("[WARNING] MenuState hook %u fired at address 0x%llX (val: %d), but pattern 6E** ** ** not found at -4.", writerId, tempAddr, tempVal);
+#endif
                     }
                 } else {
-                    DllLog("[INFO] MenuState hook %u fired at address 0x%llX. Actual memory value is %d (non-target). Ignoring for selection.", writerId, tempAddr, tempVal);
+#ifdef _DEBUG
+                    DllLog("[INFO] MenuState hook %u fired at address 0x%llX with val: %d (unexpected for writer %u). Ignoring for selection.", writerId, tempAddr, tempVal, writerId);
+#endif
                 }
             }
         }
@@ -1832,7 +1880,10 @@ namespace Mod {
                 
                 if (g_pSharedMemory->m_reqResetScan) {
                     g_pSharedMemory->m_reqResetScan = false;
-                    DllLog("[INFO] Scanner reset requested. Clearing addresses and reloading blacklist.");
+                    bool preserveMenu = g_preserveMenuStateOnReset.exchange(false) && (g_addrMenuState.load() != 0);
+
+                    DllLog("[INFO] Scanner reset requested (%s). Clearing addresses and reloading blacklist.",
+                           preserveMenu ? "excluding MenuState" : "full reset");
                     LoadWriterBlacklist();
 
                     currentExperimental = g_pSharedMemory->m_cfgCemuExperimental;
@@ -1845,20 +1896,27 @@ namespace Mod {
                     tasks[4].patternStr = vCfg.magnesisAob;
 
                     for (size_t i = 0; i < tasks.size(); ++i) {
+                        if (preserveMenu && (i == 2 || i == 3)) {
+                            continue;
+                        }
                         tasks[i].found = false;
                         tasks[i].address = 0;
                     }
                     g_addrGameRomCamera = 0;
                     g_addrShortcutMenu = 0;
-                    g_addrMenuState = 0;
+                    if (!preserveMenu) {
+                        g_addrMenuState = 0;
+                        RemoveMenuStateHooks();
+                        EnterCriticalSection(&g_menuCandidateCS);
+                        g_menuStateCandidates1.clear();
+                        g_menuStateCandidates2.clear();
+                        LeaveCriticalSection(&g_menuCandidateCS);
+                        g_pSharedMemory->m_statusAddrMenuState = 0;
+                        g_pSharedMemory->m_statusMenuTrampolinesReady = false;
+                    }
                     g_addrMagneTarget = 0;
                     
                     RemoveShortcutHook();
-                    RemoveMenuStateHooks();
-                    EnterCriticalSection(&g_menuCandidateCS);
-                    g_menuStateCandidates1.clear();
-                    g_menuStateCandidates2.clear();
-                    LeaveCriticalSection(&g_menuCandidateCS);
 
                     RestoreAllPatches();
                     EnterCriticalSection(&g_patchCS);
@@ -1875,7 +1933,9 @@ namespace Mod {
                     g_pSharedMemory->m_statusWritersFound = 0;
                     g_pSharedMemory->m_statusAddrGameRomCamera = 0;
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
-                    g_pSharedMemory->m_statusAddrMenuState = 0;
+                    if (!preserveMenu) {
+                        g_pSharedMemory->m_statusAddrMenuState = 0;
+                    }
                     g_pSharedMemory->m_statusAddrMagneTarget = 0;
                     
                     allOtherFound = false;
@@ -1893,7 +1953,9 @@ namespace Mod {
                 }
 
                 if (!verifySuccess) {
-                    DllLog("[WARNING] GameRomCamera memory inaccessible. Address voided! Resetting scanner.");
+                    bool preserveMenu = (g_addrMenuState.load() != 0);
+                    DllLog("[WARNING] GameRomCamera memory inaccessible. Address voided! Resetting scanner (%s).",
+                           preserveMenu ? "preserving MenuState" : "full reset");
                     tasks[0].found = false;
                     tasks[0].address = 0;
                     g_addrGameRomCamera = 0;
@@ -1908,18 +1970,20 @@ namespace Mod {
                     LeaveCriticalSection(&g_writerCS);
 
                     for (size_t i = 1; i < tasks.size(); ++i) {
+                        if (preserveMenu && (i == 2 || i == 3)) continue;
                         tasks[i].found = false;
                         tasks[i].address = 0;
                     }
 
                     g_addrShortcutMenu = 0;
-                    g_addrMenuState = 0;
+                    if (!preserveMenu) {
+                        g_addrMenuState = 0;
+                        EnterCriticalSection(&g_menuCandidateCS);
+                        g_menuStateCandidates1.clear();
+                        g_menuStateCandidates2.clear();
+                        LeaveCriticalSection(&g_menuCandidateCS);
+                    }
                     g_addrMagneTarget = 0;
-
-                    EnterCriticalSection(&g_menuCandidateCS);
-                    g_menuStateCandidates1.clear();
-                    g_menuStateCandidates2.clear();
-                    LeaveCriticalSection(&g_menuCandidateCS);
 
                     RestoreAllPatches();
 
@@ -1937,7 +2001,9 @@ namespace Mod {
                 std::vector<uintptr_t> rawCandidates;
 
                 if (ScanProcessAOBAll(pat, rawCandidates)) {
+#ifdef _DEBUG
                     DllLog("[INFO] Found %zu GameRomCamera match candidate(s). Verifying offsets and telemetry...", rawCandidates.size());
+#endif
                     uintptr_t bestCandidate = 0;
                     int bestScore = -1;
 
@@ -1945,6 +2011,7 @@ namespace Mod {
                         uintptr_t cand = rawCandidates[i] - 0x10;
                         int score = 0;
                         bool valid = VerifyGameRomCamera(cand, score);
+#ifdef _DEBUG
                         float fov = ReadFloatBE(cand + 0x654);
                         float posX = ReadFloatBE(cand + 0x550);
                         float posY = ReadFloatBE(cand + 0x554);
@@ -1955,6 +2022,7 @@ namespace Mod {
 
                         DllLog("[INFO] Match [%zu/%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
                                i + 1, rawCandidates.size(), cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
+#endif
 
                         if (valid && score > bestScore) {
                             bestScore = score;
@@ -2129,50 +2197,72 @@ namespace Mod {
                 } else if (targetIdx == 4 && scanMagneTarget && !tasks[4].found) {
                     DllLog("[INFO] Scanning for Magne Target Sig...");
                     Pattern pat = ParseAOB(tasks[4].patternStr);
-                    uintptr_t foundAddress = 0;
-                    if (ScanProcessAOB(pat, foundAddress)) {
-                        tasks[4].address = foundAddress;
-                        tasks[4].found = true;
-                        foundAny = true;
-                        DllLog("[SUCCESS] Found Magne Target Sig at 0x%llX. Detour hooks injected.", foundAddress);
+                    std::vector<uintptr_t> rawCandidates;
+                    if (ScanProcessAOBAll(pat, rawCandidates)) {
+                        DllLog("[INFO] Found %zu Magne Target Sig candidate(s). Verifying offsets and values...", rawCandidates.size());
+                        uintptr_t bestCandidate = 0;
+                        int bestScore = -1;
 
-                        if (g_pSharedMemory) {
-                            g_pSharedMemory->m_statusAddrMagneTarget = foundAddress;
-                        }
-                        g_addrMagneTarget = foundAddress;
+                        for (size_t i = 0; i < rawCandidates.size(); ++i) {
+                            uintptr_t cand = rawCandidates[i];
+                            int score = 0;
+                            bool valid = VerifyMagneTargetSig(cand, vCfg, currentExperimental, score);
 
-                        EnterCriticalSection(&g_patchCS);
-                        if (!g_magnePatchesInitialized) {
-                            g_magneXPatch = { foundAddress + vCfg.magnesisXOffset, 7, {}, false };
-                            g_magneYPatch = { foundAddress + vCfg.magnesisYOffset, 7, {}, false };
-                            g_magneZPatch = { foundAddress + vCfg.magnesisZOffset, 7, {}, false };
+                            DllLog("[INFO] Magne candidate [%zu/%zu] at 0x%llX: Score=%d -> %s",
+                                   i + 1, rawCandidates.size(), cand, score, valid ? "VALID" : "REJECTED");
 
-                            g_magneXPatch.Backup();
-                            g_magneYPatch.Backup();
-                            g_magneZPatch.Backup();
-
-                            if (vCfg.detourTargetAxis == 'Z') {
-                                g_magneDetourPatch = { foundAddress + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
-                                g_magneDetourPatch.Backup();
-                                g_magnesisZWriterReturn = foundAddress + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
-                                if (currentExperimental) {
-                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriterExp);
-                                } else {
-                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
-                                }
-                            } else if (vCfg.detourTargetAxis == 'Y') {
-                                g_magneDetourPatch = { foundAddress + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, false };
-                                g_magneDetourPatch.Backup();
-                                g_magnesisYWriterReturn = foundAddress + vCfg.magnesisYOffset + vCfg.magnesisDetourSize;
-                                g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
+                            if (valid && score > bestScore) {
+                                bestScore = score;
+                                bestCandidate = cand;
                             }
+                        }
 
-                            g_magnePatchesInitialized = true;
+                        if (bestCandidate != 0) {
+                            tasks[4].address = bestCandidate;
+                            tasks[4].found = true;
+                            foundAny = true;
+                            DllLog("[SUCCESS] Verified Magne Target Sig at 0x%llX (Score: %d). Detour hooks injected.", bestCandidate, bestScore);
+
                             if (g_pSharedMemory) {
-                                g_pSharedMemory->m_patchMagneDetourActive = true;
+                                g_pSharedMemory->m_statusAddrMagneTarget = bestCandidate;
                             }
+                            g_addrMagneTarget = bestCandidate;
+
+                            EnterCriticalSection(&g_patchCS);
+                            if (!g_magnePatchesInitialized) {
+                                g_magneXPatch = { bestCandidate + vCfg.magnesisXOffset, 7, {}, false };
+                                g_magneYPatch = { bestCandidate + vCfg.magnesisYOffset, 7, {}, false };
+                                g_magneZPatch = { bestCandidate + vCfg.magnesisZOffset, 7, {}, false };
+
+                                g_magneXPatch.Backup();
+                                g_magneYPatch.Backup();
+                                g_magneZPatch.Backup();
+
+                                if (vCfg.detourTargetAxis == 'Z') {
+                                    g_magneDetourPatch = { bestCandidate + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
+                                    g_magneDetourPatch.Backup();
+                                    g_magnesisZWriterReturn = bestCandidate + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
+                                    if (currentExperimental) {
+                                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriterExp);
+                                    } else {
+                                        g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
+                                    }
+                                } else if (vCfg.detourTargetAxis == 'Y') {
+                                    g_magneDetourPatch = { bestCandidate + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, false };
+                                    g_magneDetourPatch.Backup();
+                                    g_magnesisYWriterReturn = bestCandidate + vCfg.magnesisYOffset + vCfg.magnesisDetourSize;
+                                    g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
+                                }
+
+                                g_magnePatchesInitialized = true;
+                                if (g_pSharedMemory) {
+                                    g_pSharedMemory->m_patchMagneDetourActive = true;
+                                }
+                            }
+                            LeaveCriticalSection(&g_patchCS);
+                        } else {
+                            DllLog("[WARNING] All Magne Target Sig candidates rejected by offset/opcode verification. Retrying in 1s...");
                         }
-                        LeaveCriticalSection(&g_patchCS);
                     } else {
                         DllLog("[WARNING] Magne Target Sig not found. Retrying in 1s...");
                     }
@@ -2197,6 +2287,8 @@ namespace Mod {
                 g_pSharedMemory->m_statusAddrShortcutMenu  = scanShortcutMenu ? g_addrShortcutMenu.load() : 0;
                 g_pSharedMemory->m_statusAddrMenuState     = scanMenuState ? g_addrMenuState.load() : 0;
                 g_pSharedMemory->m_statusAddrMagneTarget   = scanMagneTarget ? g_addrMagneTarget.load() : 0;
+                g_pSharedMemory->m_statusMenuTrampolinesReady = scanMenuState && g_menuStateHook1Active && g_menuStateHook2Active;
+                g_pSharedMemory->m_statusShortcutHookReady = scanShortcutMenu && g_shortcutHookActive;
 
                 EnterCriticalSection(&g_patchCS);
                 g_pSharedMemory->m_patchMagneDetourActive = scanMagneTarget && g_magnePatchesInitialized && g_magneDetourPatch.active;
@@ -2542,7 +2634,8 @@ namespace Mod {
                 if (val == 2) {
                     if (!resetTriggeredOnState2) {
                         resetTriggeredOnState2 = true;
-                        DllLog("[INFO] MenuState is 2 (Game Reload / Save Load detected). Triggering scanner reset.");
+                        DllLog("[INFO] MenuState is 2 (Game Reload / Save Load detected). Triggering scanner reset (excluding MenuState).");
+                        g_preserveMenuStateOnReset = true;
                         if (g_pSharedMemory) {
                             g_pSharedMemory->m_reqResetScan = true;
                         }
@@ -3078,7 +3171,7 @@ namespace Mod {
                         }
                     }
 
-                    const float MAX_PITCH_RAD = 1.5620697f; // 89.5 degrees (179 degrees total range)
+                    const float MAX_PITCH_RAD = 1.4835299f; // 85.0 degrees (170 degrees total range)
                     orbit_pitch = (std::max)(-MAX_PITCH_RAD, (std::min)(MAX_PITCH_RAD, orbit_pitch));
 
                     if (!virt_cam_initialized) {
@@ -3223,11 +3316,11 @@ namespace Mod {
                         }
 
                         // --- Overwrite detection ---
-                        // Read back what's in camera memory only once every 250ms (4Hz).
+                        // Read back what's in camera memory only once every 100ms (10Hz).
                         // If the game stomped our values, a new writer appeared. Arm the guard for a brief window.
                         static uint64_t last_overwrite_check_ms = 0;
                         uint64_t now_ms = GetTickCount64();
-                        if (has_written_once && g_writerHuntActive && (now_ms - last_overwrite_check_ms >= 250)) {
+                        if (has_written_once && g_writerHuntActive && (now_ms - last_overwrite_check_ms >= 100)) {
                             last_overwrite_check_ms = now_ms;
                             float cur_x = ReadFloatBE(g_addrGameRomCamera + 0x550);
                             float cur_y = ReadFloatBE(g_addrGameRomCamera + 0x554);

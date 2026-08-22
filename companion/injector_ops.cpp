@@ -43,6 +43,8 @@ uint8_t g_liveMenuState = 1;
 bool g_mousecamActive = false;
 uint32_t g_writersFound = 0;
 bool g_magneDetourActive = false;
+bool g_menuTrampolinesReady = false;
+bool g_shortcutHookReady = false;
 
 float g_liveMagneTargetX = 0.0f;
 float g_liveMagneTargetY = 0.0f;
@@ -278,7 +280,7 @@ void UpdateTelemetryGui() {
     if (!g_pSharedMemory) {
         g_addrGameRomCamera = 0; g_addrMagneTarget = 0; g_addrShortcutMenu = 0; g_addrMenuState = 0; g_writersFound = 0;
         g_liveCamPosX = 0; g_liveCamPosY = 0; g_liveCamPosZ = 0; g_liveCamFocX = 0; g_liveCamFocY = 0; g_liveCamFocZ = 0; g_liveCamFOV = 0;
-        g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false;
+        g_liveShortcutMenu = -1; g_liveMenuState = 1; g_magneDetourActive = false; g_menuTrampolinesReady = false; g_shortcutHookReady = false;
         g_liveMagneTargetX = 0.0f; g_liveMagneTargetY = 0.0f; g_liveMagneTargetZ = 0.0f;
         g_magneSpeedH = 0.0f; g_magneSpeedV = 0.0f;
         g_mousecamActive = false;
@@ -304,6 +306,8 @@ void UpdateTelemetryGui() {
         g_liveCamFocX = g_pSharedMemory->m_teleLiveCamFocX; g_liveCamFocY = g_pSharedMemory->m_teleLiveCamFocY; g_liveCamFocZ = g_pSharedMemory->m_teleLiveCamFocZ;
         g_liveCamFOV = g_pSharedMemory->m_teleLiveCamFOV; g_liveShortcutMenu = g_pSharedMemory->m_teleLiveShortcutMenu; g_liveMenuState = g_pSharedMemory->m_teleLiveMenuState;
         g_magneDetourActive = g_pSharedMemory->m_patchMagneDetourActive;
+        g_menuTrampolinesReady = g_pSharedMemory->m_statusMenuTrampolinesReady;
+        g_shortcutHookReady = g_pSharedMemory->m_statusShortcutHookReady;
 
         g_liveMagneTargetX = g_pSharedMemory->m_teleMagneTargetX;
         g_liveMagneTargetY = g_pSharedMemory->m_teleMagneTargetY;

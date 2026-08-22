@@ -35,6 +35,8 @@ float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0, g_animInd
 float g_animToggleMagneTarget = 0, g_animToggleShortcutMenu = 0, g_animToggleMenuState = 0;
 float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0;
 float g_animMagneSens = 0, g_animMagneSensV = 0;
+float g_animMagneSpeedBtn[3] = {0, 0, 0};
+bool  g_hoverMagneSpeedBtn[3] = {false, false, false};
 float g_animMagnePullSens = 0;
 float g_animFpsMagnesis = 0, g_animFpsMagneEyeHeight = 0, g_animFpsMagneOffsetForward = 0, g_animFpsMagneOffsetSide = 0;
 float g_animDrop[5] = {0, 0, 0, 0, 0};
@@ -312,11 +314,14 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         UpdateConsoleEditPosition(hWnd);
         InvalidateRect(hWnd, nullptr, FALSE);
     }
-    if (ui.rMagneSpeedMode.Contains(x, y)) {
-        g_config.magnesis_speed_mode = (g_config.magnesis_speed_mode + 1) % 3;
-        SaveConfig();
-        WriteConfigToSharedMemory();
-        InvalidateRect(hWnd, nullptr, FALSE);
+    for (int i = 0; i < 3; ++i) {
+        if (ui.rMagneSpeedBtn[i].Contains(x, y)) {
+            g_config.magnesis_speed_mode = i;
+            SaveConfig();
+            WriteConfigToSharedMemory();
+            InvalidateRect(hWnd, nullptr, FALSE);
+            return 0;
+        }
     }
     if (ui.rFpsMagnesis.Contains(x, y)) {
         g_config.fps_magnesis = !g_config.fps_magnesis;
@@ -543,6 +548,9 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             checkHov(g_hoverMagneSensV, false);
         }
 
+        for (int i = 0; i < 3; ++i) {
+            checkHov(g_hoverMagneSpeedBtn[i], ui.rMagneSpeedBtn[i].Contains(x, y));
+        }
         Rect hBoxP = ui.rMagnePullSens; hBoxP.Y += 15; hBoxP.Height = 24;
         checkHov(g_hoverMagnePullSens, hBoxP.Contains(x, y));
 
@@ -563,6 +571,7 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     } else {
         checkHov(g_hoverMagneSens, false);
         checkHov(g_hoverMagneSensV, false);
+        for (int i = 0; i < 3; ++i) checkHov(g_hoverMagneSpeedBtn[i], false);
         checkHov(g_hoverMagnePullSens, false);
         checkHov(g_hoverFpsMagnesis, false);
         checkHov(g_hoverFpsMagneEyeHeight, false);
@@ -628,8 +637,12 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             tip = L"Light theme";
         else if (ui.rCemuExperimental.Contains(x, y))
             tip = g_targetInjected ? L"Cemu Experimental Mode (Cannot change settings while injected)" : L"Use AOB patterns and offsets optimized for Cemu Experimental";
-        else if (ui.rMagneSpeedMode.Contains(x, y))
-            tip = L"Click to cycle: Vanilla -> Extended -> Unlimited";
+        else if (ui.rMagneSpeedBtn[0].Contains(x, y))
+            tip = L"Magnesis Speed: Vanilla (original game speed)";
+        else if (ui.rMagneSpeedBtn[1].Contains(x, y))
+            tip = L"Magnesis Speed: Extended (faster speed)";
+        else if (ui.rMagneSpeedBtn[2].Contains(x, y))
+            tip = L"Magnesis Speed: Unlimited (no speed limit)";
         else if (ui.rMagneSens.Contains(x, y))
             tip = L"Adjust sensitivity multiplier for Magnesis movement (0.01 to 2.0)";
         else if (ui.rMagneSensV.Contains(x, y))
@@ -673,7 +686,8 @@ LRESULT HandleMouseLeave(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     g_hoverDarkBtn = g_hoverLightBtn = false;
     g_hoverPath = g_hoverPathReset = false;
     g_hoverScrollHelper = g_hoverOrbitCam = g_hoverIndepSens = g_hoverCemuExperimental = false;
-    g_hoverSensH = g_hoverSensV = g_hoverMagneSens = g_hoverMagnePullSens = g_hoverFpsMagnesis = g_hoverClearLog = false;
+    g_hoverSensH = g_hoverSensV = g_hoverMagneSens = g_hoverMagneSensV = g_hoverMagnePullSens = g_hoverFpsMagnesis = g_hoverClearLog = false;
+    for (int i = 0; i < 3; ++i) g_hoverMagneSpeedBtn[i] = false;
     g_hoverFpsMagneEyeHeight = g_hoverFpsMagneOffsetForward = g_hoverFpsMagneOffsetSide = false;
     g_hoverDrop = g_hoverDropMenuRow = -1;
     if (g_tooltipActive) ShowTooltip(hWnd, nullptr, 0, 0);
@@ -720,6 +734,8 @@ LRESULT HandleSetCursor(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     else if (ui.rScrollHelper.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rOrbitCam.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rIndepSens.Contains(pt.x, pt.y)) overClickable = true;
+    else if (ui.rIndepMagneSens.Contains(pt.x, pt.y)) overClickable = true;
+    else if (ui.rMagneSpeedBtn[0].Contains(pt.x, pt.y) || ui.rMagneSpeedBtn[1].Contains(pt.x, pt.y) || ui.rMagneSpeedBtn[2].Contains(pt.x, pt.y)) overClickable = true;
     else if (!g_targetInjected && ui.rCemuExperimental.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rClearLog.Contains(pt.x, pt.y)) overClickable = true;
     else {

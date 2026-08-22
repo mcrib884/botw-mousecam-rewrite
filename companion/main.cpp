@@ -105,6 +105,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_animSensV += (g_hoverSensV ? 0.05f : -0.05f);
         g_animMagneSens += (g_hoverMagneSens ? 0.05f : -0.05f);
         g_animMagneSensV += (g_hoverMagneSensV ? 0.05f : -0.05f);
+        for (int i = 0; i < 3; ++i) g_animMagneSpeedBtn[i] += (g_hoverMagneSpeedBtn[i] ? 0.05f : -0.05f);
         g_animMagnePullSens += (g_hoverMagnePullSens ? 0.05f : -0.05f);
         g_animFpsMagnesis += (g_config.fps_magnesis ? 0.075f : -0.075f);
         g_animFpsMagneEyeHeight += (g_hoverFpsMagneEyeHeight ? 0.05f : -0.05f);
@@ -120,7 +121,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         clampF(g_animScrollHelper); clampF(g_animOrbitCam);
         clampF(g_animIndepSens); clampF(g_animIndepMagneSens); clampF(g_animCemuExperimental);
         clampF(g_animToggleMagneTarget); clampF(g_animToggleShortcutMenu); clampF(g_animToggleMenuState);
-        clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneSens); clampF(g_animMagneSensV); clampF(g_animMagnePullSens);
+        clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneSens); clampF(g_animMagneSensV);
+        for (int i = 0; i < 3; ++i) clampF(g_animMagneSpeedBtn[i]);
+        clampF(g_animMagnePullSens);
         clampF(g_animFpsMagnesis); clampF(g_animFpsMagneEyeHeight); clampF(g_animFpsMagneOffsetForward); clampF(g_animFpsMagneOffsetSide); clampF(g_animClearLog);
         for (int i = 0; i < 5; ++i) clampF(g_animDrop[i]);
 
@@ -169,6 +172,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                        (g_animFpsMagnesis > 0 && g_animFpsMagnesis < 1) || (g_animFpsMagneEyeHeight > 0 && g_animFpsMagneEyeHeight < 1) ||
                        (g_animFpsMagneOffsetForward > 0 && g_animFpsMagneOffsetForward < 1) || (g_animFpsMagneOffsetSide > 0 && g_animFpsMagneOffsetSide < 1) ||
                        (g_animClearLog > 0 && g_animClearLog < 1);
+        for (int i = 0; i < 3; ++i) if (g_animMagneSpeedBtn[i] > 0 && g_animMagneSpeedBtn[i] < 1) hasAnim = true;
         for (int i = 0; i < 5; ++i) if (g_animDrop[i] > 0 && g_animDrop[i] < 1) hasAnim = true;
         if (changed || g_dragSlider != -1 || !g_targetInjected || hasAnim) {
             InvalidateRect(hWnd, nullptr, FALSE);

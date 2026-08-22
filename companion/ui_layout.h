@@ -26,17 +26,17 @@ struct UIRects {
     Rect rToggleMagneTarget;
     Rect rToggleShortcutMenu;
     Rect rToggleMenuState;
-
-    Rect rScrollHelper;
-    Rect rOrbitCam;
-    Rect rIndepSens;
-    Rect rIndepMagneSens;
     Rect rCemuExperimental;
+
     Rect rSensH;
     Rect rSensV;
-    Rect rMagneSpeedMode;
+    Rect rIndepSens;
+    Rect rScrollHelper;
+    Rect rOrbitCam;
     Rect rMagneSens;
     Rect rMagneSensV;
+    Rect rIndepMagneSens;
+    Rect rMagneSpeedBtn[3];
     Rect rMagnePullSens;
     Rect rFpsMagnesis;
     Rect rFpsMagneEyeHeight;

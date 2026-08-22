@@ -90,42 +90,53 @@ void CalculateUIRects(UIRects& r, int w, int h) {
 
     int nextSetY = curY + 35;
     if (g_collapsedSet) {
-        r.rScrollHelper = Rect(0, 0, 0, 0);
-        r.rOrbitCam = Rect(0, 0, 0, 0);
-        r.rIndepSens = Rect(0, 0, 0, 0);
-        r.rIndepMagneSens = Rect(0, 0, 0, 0);
         r.rSensH = Rect(0, 0, 0, 0);
         r.rSensV = Rect(0, 0, 0, 0);
-        r.rMagneSpeedMode = Rect(0, 0, 0, 0);
+        r.rIndepSens = Rect(0, 0, 0, 0);
+        r.rScrollHelper = Rect(0, 0, 0, 0);
+        r.rOrbitCam = Rect(0, 0, 0, 0);
         r.rMagneSens = Rect(0, 0, 0, 0);
         r.rMagneSensV = Rect(0, 0, 0, 0);
+        r.rIndepMagneSens = Rect(0, 0, 0, 0);
+        for (int i = 0; i < 3; ++i) r.rMagneSpeedBtn[i] = Rect(0, 0, 0, 0);
         r.rMagnePullSens = Rect(0, 0, 0, 0);
         r.rFpsMagnesis = Rect(0, 0, 0, 0);
         r.rFpsMagneEyeHeight = Rect(0, 0, 0, 0);
         r.rFpsMagneOffsetForward = Rect(0, 0, 0, 0);
         r.rFpsMagneOffsetSide = Rect(0, 0, 0, 0);
     } else {
-        r.rScrollHelper = Rect(pad + 10, nextSetY, (std::min)(250, panelW - 20), 20); nextSetY += 25;
-        r.rOrbitCam = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 25;
-        r.rIndepSens = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 25;
-        r.rIndepMagneSens = Rect(pad + 10, nextSetY, (std::min)(340, panelW - 20), 20); nextSetY += 30;
-
+        // 1. Camera Sensitivity at the very top of Camera Settings
         r.rSensH = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
         if (indepSens) {
             r.rSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
         } else {
             r.rSensV = Rect(0, 0, 0, 0);
         }
+        r.rIndepSens = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 25;
+        r.rScrollHelper = Rect(pad + 10, nextSetY, (std::min)(250, panelW - 20), 20); nextSetY += 25;
+        r.rOrbitCam = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 30;
 
-        r.rMagneSpeedMode = Rect(pad + 10, nextSetY, (std::min)(290, panelW - 20), 20); nextSetY += 30;
+        // 2. Magnesis Sensitivity and controls
         r.rMagneSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
         if (indepMagneSens) {
             r.rMagneSensV = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
         } else {
             r.rMagneSensV = Rect(0, 0, 0, 0);
         }
+        r.rIndepMagneSens = Rect(pad + 10, nextSetY, (std::min)(340, panelW - 20), 20); nextSetY += 30;
+
+        // 3. Three Magnesis Speed buttons (Vanilla, Extended, Unlimited) under Magnesis Sensitivity
+        nextSetY += 18;
+        int totalBtnW = panelW - 20;
+        int btnW = (totalBtnW - 12) / 3;
+        r.rMagneSpeedBtn[0] = Rect(pad + 10, nextSetY, btnW, 24);
+        r.rMagneSpeedBtn[1] = Rect(pad + 10 + btnW + 6, nextSetY, btnW, 24);
+        r.rMagneSpeedBtn[2] = Rect(pad + 10 + (btnW + 6) * 2, nextSetY, totalBtnW - (btnW + 6) * 2, 24);
+        nextSetY += 32;
+
         r.rMagnePullSens = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;
 
+        // 4. FPS Magnesis
         r.rFpsMagnesis = Rect(pad + 10, nextSetY, (std::min)(175, panelW - 20), 20); nextSetY += 30;
         if (fpsMagne) {
             r.rFpsMagneEyeHeight = Rect(pad + 10, nextSetY, panelW - 40, 24); nextSetY += 30;

@@ -26,6 +26,8 @@ extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animIndepMag
 extern float g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
 extern float g_animSensH, g_animSensV, g_animClearLog;
 extern float g_animMagneSens, g_animMagneSensV;
+extern float g_animMagneSpeedBtn[3];
+extern bool  g_hoverMagneSpeedBtn[3];
 extern float g_animMagnePullSens;
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;
 extern float g_animDrop[5];

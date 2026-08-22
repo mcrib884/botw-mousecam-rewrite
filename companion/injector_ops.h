@@ -53,6 +53,8 @@ extern bool  g_hasDeactSpeed;
 extern bool g_mousecamActive;
 extern uint32_t g_writersFound;
 extern bool g_magneDetourActive;
+extern bool g_menuTrampolinesReady;
+extern bool g_shortcutHookReady;
 
 enum class ScrollMenuType {
     None,

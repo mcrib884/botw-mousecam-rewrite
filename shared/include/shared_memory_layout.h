@@ -74,6 +74,8 @@ struct SharedMemoryLayout {
     bool    m_statusScanning;
     uint32_t m_statusWritersFound;
     bool    m_patchMagneDetourActive;
+    bool    m_statusMenuTrampolinesReady;
+    bool    m_statusShortcutHookReady;
     bool    m_statusMousecamActive;
 
     // --- Log queue (written by DLL, read by companion) ---

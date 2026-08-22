@@ -18,6 +18,7 @@ extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
 extern float g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
 extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneSens, g_animMagnePullSens;
+extern float g_animMagneSpeedBtn[3];
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;
 extern float g_animDrop[5];
 extern bool g_downInject, g_downReinject, g_downReset, g_downToggleCam, g_downPath;
@@ -157,7 +158,7 @@ void PaintWindow(HWND hWnd) {
             g.DrawString(wbuf, -1, &fontBody, PointF((REAL)(pad + 210), (REAL)(ui.rMemPanel.Y + 35)), &textBrush);
         }
 
-        drawMemLine(L"Magne Target:", getAddrStr(g_addrMagneTarget, g_magneDetourActive ? L"NOP'd" : L"Found", g_config.scan_magne_target), 58);
+        drawMemLine(L"Magnesis Address:", getAddrStr(g_addrMagneTarget, L"Found", g_config.scan_magne_target), 58);
         DrawToggle(g, ui.rToggleMagneTarget.X, ui.rToggleMagneTarget.Y, g_animToggleMagneTarget, L"", ff, false);
 
         wchar_t valBuf1[64], valBuf2[64];
@@ -169,10 +170,39 @@ void PaintWindow(HWND hWnd) {
         } else {
             swprintf_s(valBuf2, L"Value: %d", g_liveMenuState);
         }
-        drawMemLine(L"Shortcut Menu:", getAddrStr(g_addrShortcutMenu, valBuf1, g_config.scan_shortcut_menu), 81);
+
+        std::wstring shortcutMenuStr;
+        if (!g_config.scan_shortcut_menu) {
+            shortcutMenuStr = L"Disabled";
+        } else if (!g_targetInjected) {
+            shortcutMenuStr = L"Not injected yet";
+        } else if (g_addrShortcutMenu == 0) {
+            if (g_shortcutHookReady) {
+                shortcutMenuStr = L"Please open any of the dpad menus";
+            } else {
+                shortcutMenuStr = L"Scanning...";
+            }
+        } else {
+            shortcutMenuStr = valBuf1;
+        }
+        drawMemLine(L"Shortcut Menu:", shortcutMenuStr, 81);
         DrawToggle(g, ui.rToggleShortcutMenu.X, ui.rToggleShortcutMenu.Y, g_animToggleShortcutMenu, L"", ff, false);
 
-        drawMemLine(L"Menu State:", getAddrStr(g_addrMenuState, valBuf2, g_config.scan_menu_state), 104);
+        std::wstring menuStateStr;
+        if (!g_config.scan_menu_state) {
+            menuStateStr = L"Disabled";
+        } else if (!g_targetInjected) {
+            menuStateStr = L"Not injected yet";
+        } else if (g_addrMenuState == 0) {
+            if (g_menuTrampolinesReady) {
+                menuStateStr = L"Please open your menu";
+            } else {
+                menuStateStr = L"Scanning...";
+            }
+        } else {
+            menuStateStr = valBuf2;
+        }
+        drawMemLine(L"Menu State:", menuStateStr, 104);
         DrawToggle(g, ui.rToggleMenuState.X, ui.rToggleMenuState.Y, g_animToggleMenuState, L"", ff, false);
     }
 
@@ -191,15 +221,12 @@ void PaintWindow(HWND hWnd) {
             g.DrawString(yb, -1, &fontBody, PointF((REAL)(pad + numXOffset + 95), (REAL)(ui.rTelePanel.Y + yOffset)), &textBrush);
             g.DrawString(zb, -1, &fontBody, PointF((REAL)(pad + numXOffset + 190), (REAL)(ui.rTelePanel.Y + yOffset)), &textBrush);
         };
-        float pX = g_pSharedMemory ? g_pSharedMemory->m_telePivotX : 0.0f;
-        float pY = g_pSharedMemory ? g_pSharedMemory->m_telePivotY : 0.0f;
-        float pZ = g_pSharedMemory ? g_pSharedMemory->m_telePivotZ : 0.0f;
-        drawVecLine(L"Player Position:", pX, pY, pZ, 35, 115);
-        drawVecLine(L"Focus:", g_liveCamFocX, g_liveCamFocY, g_liveCamFocZ, 50, 115);
+        drawVecLine(L"Camera Position:", g_liveCamPosX, g_liveCamPosY, g_liveCamPosZ, 35, 125);
+        drawVecLine(L"Focus:", g_liveCamFocX, g_liveCamFocY, g_liveCamFocZ, 50, 125);
         g.DrawString(L"FOV:", -1, &fontBody, PointF((REAL)(pad + 10), (REAL)(ui.rTelePanel.Y + 65)), &textBrush);
         wchar_t fovb[32];
         swprintf_s(fovb, L"%.2f\x00B0", g_liveCamFOV);
-        g.DrawString(fovb, -1, &fontBody, PointF((REAL)(pad + 115), (REAL)(ui.rTelePanel.Y + 65)), &textBrush);
+        g.DrawString(fovb, -1, &fontBody, PointF((REAL)(pad + 125), (REAL)(ui.rTelePanel.Y + 65)), &textBrush);
 
         float mX = 0, mY = 0, mZ = 0;
         if (g_magneDetourActive) {
@@ -207,7 +234,7 @@ void PaintWindow(HWND hWnd) {
             mY = g_liveMagneTargetY;
             mZ = g_liveMagneTargetZ;
         }
-        drawVecLine(L"MTarget:", mX, mY, mZ, 80, 115);
+        drawVecLine(L"MTarget:", mX, mY, mZ, 80, 125);
     }
 
     // CAMERA SETTINGS
@@ -215,38 +242,52 @@ void PaintWindow(HWND hWnd) {
     const wchar_t* setTitle = g_collapsedSet ? L"\u25b6  CAMERA SETTINGS" : L"\u25bc  CAMERA SETTINGS";
     g.DrawString(setTitle, -1, &fontSec, PointF((REAL)(pad + 10), (REAL)(ui.rSetPanel.Y + 8)), &textBrush);
     if (!g_collapsedSet) {
+        // 1. Camera Sensitivity at the very top
+        DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Camera Sensitivity (H)" : L"Camera Sensitivity", ff);
+        if (g_config.use_independent_sens)
+            DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Camera Sensitivity (V)", ff);
+
+        DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff, false);
         DrawToggle(g, ui.rScrollHelper.X, ui.rScrollHelper.Y, g_animScrollHelper, L"Scroll Wheel Weapon Select", ff, false);
         DrawToggle(g, ui.rOrbitCam.X, ui.rOrbitCam.Y, g_animOrbitCam, L"Full Orbit Camera", ff, false);
-        DrawToggle(g, ui.rIndepSens.X, ui.rIndepSens.Y, g_animIndepSens, L"Independent Vertical Sensitivity", ff, false);
-        DrawToggle(g, ui.rIndepMagneSens.X, ui.rIndepMagneSens.Y, g_animIndepMagneSens, L"Independent Vertical Sensitivity (Magnesis)", ff, false);
-        DrawSlider(g, ui.rSensH.X, ui.rSensH.Y, ui.rSensH.Width, g_config.sensitivity_x, SENS_MIN, SENS_MAX, g_animSensH, g_config.use_independent_sens ? L"Sensitivity (H)" : L"Sensitivity & Speed", ff);
-        if (g_config.use_independent_sens)
-            DrawSlider(g, ui.rSensV.X, ui.rSensV.Y, ui.rSensV.Width, g_config.sensitivity_y, SENS_MIN, SENS_MAX, g_animSensV, L"Sensitivity (V)", ff);
 
-        // Magnesis speed mode cycle button
-        {
-            const wchar_t* modeLabels[] = { L"Vanilla", L"Extended", L"Unlimited" };
-            int mode = g_config.magnesis_speed_mode;
-            if (mode < 0 || mode > 2) mode = 0;
-
-            Color pillColors[] = { Color(255, 80, 180, 80), Color(255, 220, 160, 40), Color(255, 200, 60, 60) };
-            SolidBrush pillBrush(pillColors[mode]);
-            g.FillEllipse(&pillBrush, ui.rMagneSpeedMode.X, ui.rMagneSpeedMode.Y + 3, 14, 14);
-
-            wchar_t buf[64];
-            swprintf_s(buf, L"  Magnesis Speed: %s", modeLabels[mode]);
-            Font font(&ff, 12, FontStyleRegular, UnitPixel);
-            SolidBrush textBrush(g_theme.text);
-            g.DrawString(buf, -1, &font, PointF((REAL)(ui.rMagneSpeedMode.X + 14), (REAL)(ui.rMagneSpeedMode.Y + 2)), &textBrush);
-        }
-
+        // 2. Magnesis Sensitivity and controls
         DrawSlider(g, ui.rMagneSens.X, ui.rMagneSens.Y, ui.rMagneSens.Width, g_config.magnesis_sensitivity, MAGNE_SENS_MIN, MAGNE_SENS_MAX, g_animMagneSens, g_config.use_independent_magne_sens ? L"Magnesis Sensitivity (H)" : L"Magnesis Sensitivity", ff);
-
         if (g_config.use_independent_magne_sens)
             DrawSlider(g, ui.rMagneSensV.X, ui.rMagneSensV.Y, ui.rMagneSensV.Width, g_config.magnesis_sensitivity_y, MAGNE_SENS_MIN, MAGNE_SENS_MAX, g_animMagneSensV, L"Magnesis Sensitivity (V)", ff);
 
+        DrawToggle(g, ui.rIndepMagneSens.X, ui.rIndepMagneSens.Y, g_animIndepMagneSens, L"Independent Vertical Sensitivity (Magnesis)", ff, false);
+
+        // 3. Three Magnesis Speed buttons (Vanilla, Extended, Unlimited)
+        {
+            Font labelFont(&ff, 12, FontStyleRegular, UnitPixel);
+            SolidBrush labelBrush(g_theme.text);
+            g.DrawString(L"Magnesis Speed:", -1, &labelFont, PointF((REAL)(pad + 10), (REAL)(ui.rMagneSpeedBtn[0].Y - 18)), &labelBrush);
+
+            const wchar_t* modeLabels[3] = { L"Vanilla", L"Extended", L"Unlimited" };
+            int currentMode = g_config.magnesis_speed_mode;
+            if (currentMode < 0 || currentMode > 2) currentMode = 0;
+
+            for (int i = 0; i < 3; ++i) {
+                bool isSelected = (currentMode == i);
+                Color baseColor = isSelected ? g_theme.accent : g_theme.panel;
+                Color hoverColor = isSelected ? Color(255, 70, 100, 150) : LerpColor(g_theme.panel, g_theme.border, 0.4f);
+                Color btnColor = LerpColor(baseColor, hoverColor, g_animMagneSpeedBtn[i]);
+                SolidBrush btnBrush(btnColor);
+
+                DrawRoundedRect(g, ui.rMagneSpeedBtn[i], 4, isSelected ? nullptr : &borderPen, &btnBrush);
+
+                SolidBrush btnTextBrush(isSelected ? Color(255, 255, 255, 255) : g_theme.text);
+                Font btnFont(&ff, 12, isSelected ? FontStyleBold : FontStyleRegular, UnitPixel);
+                g.DrawString(modeLabels[i], -1, &btnFont,
+                             RectF((REAL)ui.rMagneSpeedBtn[i].X, (REAL)ui.rMagneSpeedBtn[i].Y, (REAL)ui.rMagneSpeedBtn[i].Width, (REAL)ui.rMagneSpeedBtn[i].Height),
+                             &sfCenter, &btnTextBrush);
+            }
+        }
+
         DrawSlider(g, ui.rMagnePullSens.X, ui.rMagnePullSens.Y, ui.rMagnePullSens.Width, g_config.magnesis_pull_sensitivity, 1.0f, 10.0f, g_animMagnePullSens, L"Magnesis Pull Sensitivity", ff);
 
+        // 4. FPS Magnesis
         DrawToggle(g, ui.rFpsMagnesis.X, ui.rFpsMagnesis.Y, g_animFpsMagnesis, L"FPS Magnesis", ff, false);
 
         if (g_config.fps_magnesis) {
