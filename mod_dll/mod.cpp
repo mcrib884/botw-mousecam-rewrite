@@ -3253,15 +3253,17 @@ namespace Mod {
                         }
 
                         // --- Overwrite detection ---
-                        // Read back what's in camera memory and compare to what we wrote.
-                        // If the game stomped our values, a new writer appeared (JIT recompile,
-                        // new code path, etc.). Arm the guard so the VEH identifies it.
-                        if (has_written_once && g_writerHuntActive) {
+                        // Read back what's in camera memory only once every 250ms (4Hz).
+                        // If the game stomped our values, a new writer appeared. Arm the guard for a brief window.
+                        static uint64_t last_overwrite_check_ms = 0;
+                        uint64_t now_ms = GetTickCount64();
+                        if (has_written_once && g_writerHuntActive && (now_ms - last_overwrite_check_ms >= 250)) {
+                            last_overwrite_check_ms = now_ms;
                             float cur_x = ReadFloatBE(g_addrGameRomCamera + 0x550);
                             float cur_y = ReadFloatBE(g_addrGameRomCamera + 0x554);
                             float cur_z = ReadFloatBE(g_addrGameRomCamera + 0x558);
                             if (cur_x != last_written_x || cur_y != last_written_y || cur_z != last_written_z) {
-                                // Overwrite detected — hunt for the next ~40ms
+                                // Overwrite detected — hunt for the next ~40ms (10 frames)
                                 g_huntFramesLeft = 10;
                             }
                         }
@@ -3366,7 +3368,7 @@ namespace Mod {
             }
 #endif
 
-            Sleep(250);
+            Sleep(4);
         }
 
         SetGlobalCursorVisibility(true);
