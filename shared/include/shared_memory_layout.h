@@ -79,7 +79,7 @@ struct SharedMemoryLayout {
     bool    m_statusMousecamActive;
 
     // --- Log queue (written by DLL, read by companion) ---
-    char     m_logQueue[8][128];
+    char     m_logQueue[8][256];
     uint32_t m_logWriteIdx;
     bool     m_statusShutdownDone;
 

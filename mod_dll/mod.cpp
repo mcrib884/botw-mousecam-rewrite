@@ -165,14 +165,14 @@ namespace Mod {
     static void DllLog(const char* format, ...) {
         if (!g_pSharedMemory) return;
 
-        char msg[128] = {};
+        char msg[256] = {};
         va_list args;
         va_start(args, format);
         vsnprintf(msg, sizeof(msg), format, args);
         va_end(args);
 
         uint32_t idx = g_pSharedMemory->m_logWriteIdx % 8;
-        memcpy(g_pSharedMemory->m_logQueue[idx], msg, 128);
+        memcpy(g_pSharedMemory->m_logQueue[idx], msg, sizeof(g_pSharedMemory->m_logQueue[idx]));
         g_pSharedMemory->m_logWriteIdx++;
     }
 
@@ -1564,6 +1564,7 @@ namespace Mod {
     static std::atomic<uint64_t>     g_lastBlacklistedWriteTime{0};
     static std::atomic<int>          g_huntFramesLeft{0};
     static std::atomic<bool>         g_blacklistedMode{false};
+    static std::atomic<bool>         g_hunterResetPending{false}; // explicit reset atomic: ScanAobThread sets on reset, CameraControlThread consumes after new GameRomCamera
 
     static size_t DetectWriteInstructionSize(const uint8_t* p) {
         size_t off = 0;
@@ -2191,6 +2192,8 @@ namespace Mod {
                         g_lastBlacklistedWriteTime.store(0);
                         DllLog("[INFO] Hunter preserve — all writer NOPs cleared (reset2 forgets per your report)");
                     }
+                    g_hunterResetPending.store(true);
+                    DllLog("[INFO] Hunter explicit reset atomic armed (reset pending until new GameRomCamera)");
 
                     ResetScannerState();
                     allOtherFound = false;
@@ -3015,6 +3018,42 @@ namespace Mod {
                 }
             }
 
+            // Explicit reset atomic: restart writer hunt after GameRomCamera re-found (reset2) — delayed to let level load finish
+            if (g_hunterResetPending.load() && gc_addr != 0) {
+                if (g_hunterResetPending.exchange(false)) {
+                    DllLog("[INFO] Writer hunt explicit reset — new GameRomCamera 0x%llX, restarting detect window (delayed 2.5s for load)", g_addrGameRomCamera.load());
+                    hunter_hasWritten = false;
+                    hunter_mouseMovedSinceLastCheck = false;
+                    hunter_lastCheckMs = GetTickCount64() + 2500; // delay first overwrite check 2.5s to avoid collecting loading writers
+                    hunter_lastWrittenX = hunter_lastWrittenY = hunter_lastWrittenZ = 0.0f;
+                    g_huntFramesLeft.store(0);
+                    DisarmPageGuard();
+                    EnterCriticalSection(&g_writerCS);
+                    g_pendingRips.clear();
+                    LeaveCriticalSection(&g_writerCS);
+                    g_blacklistedMode.store(false);
+                    g_lastBlacklistedWriteTime.store(0);
+                    hunter_blacklistRecheckMs = GetTickCount64() + 2500;
+                    if (should_control) {
+                        if (!g_writerHuntActive.load()) {
+                            StartWriterHunt();
+                        } else {
+                            if (!g_vehHandle) g_vehHandle = AddVectoredExceptionHandler(1, CameraWriterVehHandler);
+                            DllLog("[INFO] Writer hunt explicit reset — hunt already active, fresh window armed (delayed 2.5s)");
+                        }
+                        hunter_hasWritten = false;
+                        hunter_mouseMovedSinceLastCheck = false;
+                        hunter_lastCheckMs = GetTickCount64() + 2500;
+                        g_huntFramesLeft.store(0);
+                    } else {
+                        if (g_writerHuntActive.load()) StopWriterHunt();
+                        hunter_hasWritten = false;
+                        hunter_mouseMovedSinceLastCheck = false;
+                    }
+                    virt_cam_initialized = false;
+                }
+            }
+
             if (g_pSharedMemory) {
                 g_pSharedMemory->m_cfgMagnesisEnabled = magnesis_mode;
             }
@@ -3048,9 +3087,12 @@ namespace Mod {
                     g_pSharedMemory->m_teleLiveCamFOV = g_liveCamFOV;
                 }
 
-                // New feature: if any 4 of 7 cam coords/FOV are 0.0 at same time, do reset2
+                // New feature: if any 4 of 7 cam coords/FOV are ~0 at same time, do reset2.
+                // Debounced: must hold for ~100ms (25 frames @4ms) to avoid single-frame
+                // false positives near world origin / shrine interiors that spike companion.
                 {
                     static bool wasZeroTriggered = false;
+                    static int zeroStreak = 0;
                     int zeroCount = 0;
                     if (fabsf(g_liveCamPosX.load()) < 0.001f) zeroCount++;
                     if (fabsf(g_liveCamPosY.load()) < 0.001f) zeroCount++;
@@ -3060,14 +3102,18 @@ namespace Mod {
                     if (fabsf(g_liveCamFocZ.load()) < 0.001f) zeroCount++;
                     if (fabsf(g_liveCamFOV.load()) < 0.001f) zeroCount++;
                     bool isZero = (zeroCount >= 4);
-                    if (isZero && !wasZeroTriggered) {
-                        wasZeroTriggered = true;
-                        DllLog("[INFO] Cam 4/7 is 0.0 (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f count %d) — triggering reset2", g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load(), zeroCount);
-                        if (g_pSharedMemory) {
-                            g_pSharedMemory->m_reqResetPreserveMenu = true;
-                            g_pSharedMemory->m_reqResetScan = false;
+                    if (isZero) {
+                        if (zeroStreak < 1000) zeroStreak++;
+                        if (zeroStreak >= 25 && !wasZeroTriggered) {
+                            wasZeroTriggered = true;
+                            DllLog("[INFO] Cam 4/7 is 0.0 for %d frames (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f count %d) — triggering reset2", zeroStreak, g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load(), zeroCount);
+                            if (g_pSharedMemory) {
+                                g_pSharedMemory->m_reqResetPreserveMenu = true;
+                                g_pSharedMemory->m_reqResetScan = false;
+                            }
                         }
-                    } else if (!isZero) {
+                    } else {
+                        zeroStreak = 0;
                         wasZeroTriggered = false;
                     }
                 }
@@ -3553,6 +3599,26 @@ namespace Mod {
                         }
                     }
 
+                    // Global blacklist auto-recovery — runs even when menu/magnesis blocks hunt, so level-change stall recovers without F2
+                    if (g_blacklistedMode.load() && g_lastBlacklistedWriteTime.load() != 0) {
+                        uint64_t nowBl = GetTickCount64();
+                        uint64_t blAge = nowBl - g_lastBlacklistedWriteTime.load();
+                        if (blAge >= 2500) {
+                            DllLog("[INFO] Blacklist auto-cleared after %llums timeout (global) — retrying hunt", blAge);
+                            g_blacklistedMode.store(false);
+                            g_lastBlacklistedWriteTime.store(0);
+                            hunter_hasWritten = false;
+                            hunter_mouseMovedSinceLastCheck = false;
+                            hunter_lastCheckMs = nowBl;
+                            hunter_blacklistRecheckMs = nowBl;
+                            g_huntFramesLeft.store(0);
+                            DisarmPageGuard();
+                            EnterCriticalSection(&g_writerCS);
+                            g_pendingRips.clear();
+                            LeaveCriticalSection(&g_writerCS);
+                        }
+                    }
+
                     if ((!magnesis_mode || fps_magne_active) && !menu_active) {
                         // 250ms overwrite check, 100ms catch window (25 frames @4ms)
                         uint64_t nowMs = GetTickCount64();
@@ -3582,8 +3648,20 @@ namespace Mod {
                                     DllLog("[INFO] Blacklisted — re-checking writers (100ms)");
                                 }
                             }
-                            virt_cam_initialized = false;
-                            hunter_hasWritten = false;
+                            // Auto-clear after 2s to avoid permanent stall requiring F2 (level change still loading at first collect)
+                            uint64_t blAge = nowMs2 - g_lastBlacklistedWriteTime.load();
+                            if (g_lastBlacklistedWriteTime.load() != 0 && blAge >= 2000) {
+                                DllLog("[INFO] Blacklist auto-cleared after %llums timeout — retrying hunt", blAge);
+                                g_blacklistedMode.store(false);
+                                g_lastBlacklistedWriteTime.store(0);
+                                hunter_hasWritten = false;
+                                hunter_mouseMovedSinceLastCheck = false;
+                                hunter_lastCheckMs = nowMs2;
+                                hunter_blacklistRecheckMs = nowMs2;
+                            } else {
+                                virt_cam_initialized = false;
+                                hunter_hasWritten = false;
+                            }
                         } else {
                             WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
                             WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);

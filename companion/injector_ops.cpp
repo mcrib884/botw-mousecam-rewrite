@@ -412,12 +412,12 @@ void UpdateTelemetryGui() {
         }
         while (g_logReadIdx < writeIdx) {
             uint32_t idx = g_logReadIdx % 8;
-            char localLog[129];
-            memcpy(localLog, g_pSharedMemory->m_logQueue[idx], 128);
-            localLog[128] = '\0'; // Guarantee null termination
+            char localLog[257];
+            memcpy(localLog, g_pSharedMemory->m_logQueue[idx], sizeof(g_pSharedMemory->m_logQueue[idx]));
+            localLog[sizeof(g_pSharedMemory->m_logQueue[idx])] = '\0'; // Guarantee null termination
             std::string logMsg(localLog);
             std::wstring wLogMsg = Utf8ToWstr(logMsg);
-            LogToConsole(wLogMsg.c_str());
+            LogToConsole(L"%s", wLogMsg.c_str());
             g_logReadIdx++;
         }
     }
