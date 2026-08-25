@@ -17,18 +17,13 @@
 // ============================================================================
 // Why this DLL contains camera logic rather than being a pure memory relay:
 //
-// Three subsystems fundamentally require in-process execution:
+// Two subsystems fundamentally require in-process execution:
 //
-// 1. VEH (Vectored Exception Handler) — The dynamic writer detection works by
-//    arming PAGE_GUARD on camera memory and catching STATUS_GUARD_PAGE_VIOLATION.
-//    VEH handlers must run in the faulting process; you cannot catch another
-//    process's exceptions. This forces the writer-hunting system into the DLL.
-//
-// 2. Low-level mouse hook (SetWindowsHookExW / WH_MOUSE_LL) — Capturing scroll
+// 1. Low-level mouse hook (SetWindowsHookExW / WH_MOUSE_LL) — Capturing scroll
 //    events reliably requires a hook in the same desktop thread as the game.
 //    A cross-process approach would miss events or add unpredictable latency.
 //
-// 3. Camera update latency — The camera control loop runs at ~200 Hz. Marshaling
+// 2. Camera update latency — The camera control loop runs at ~200 Hz. Marshaling
 //    mouse deltas across process boundaries via shared memory polling every 5ms
 //    would add jitter and input lag. Direct in-process memory reads are instant.
 //
@@ -529,7 +524,6 @@ namespace Mod {
     static size_t g_emulatedRamSize = 0;
 
     static int32_t ReadInt32BE(uintptr_t address);
-    static std::atomic<uint64_t> g_lastBlacklistedWriteTime = 0;
 
     static std::vector<Pattern> g_writerBlacklist;
 
@@ -1535,315 +1529,6 @@ namespace Mod {
     }
 
     // -------------------------------------------------------------------------
-    // Dynamic camera writer detection via VEH + page guard.
-    // When mousecam is active we arm a PAGE_GUARD on the camera position fields.
-    // Any game JIT instruction that tries to write there fires STATUS_GUARD_PAGE_VIOLATION.
-    // Our VEH identifies the instruction, NOPs it, caches it, then re-arms the guard
-    // so the next writer is also caught. After the hunt is satisfied we remove the guard.
-    // On subsequent mousecam enables the cached NOPs are applied instantly with no hunt delay.
-    // -------------------------------------------------------------------------
-
-    struct WriterRecord {
-        uintptr_t rip;                 // address of the write instruction
-        uint8_t   g_originalBytes[16];   // saved original bytes
-        size_t    patchSize;           // how many bytes we NOP'd
-        bool      nopActive;
-    };
-
-    static std::vector<WriterRecord> g_discoveredWriters;   // protected by g_writerCS
-    static CRITICAL_SECTION          g_writerCS;
-    static PVOID                     g_vehHandle = nullptr;
-    static std::atomic<bool>         g_guardArmed{false};
-    static std::atomic<bool>         g_writerHuntActive{false};
-    static uintptr_t                 g_guardPage = 0;       // base address of the guarded page
-    static DWORD                     g_guardOldProtect = 0;
-
-    // DetectWriteInstructionSize decodes x86 MOVBE and MOV store instructions
-    // to determine how many bytes to NOP. We must be precise — NOPing too many
-    // bytes would corrupt the next instruction; too few leaves a partial write.
-    // Only MOVBE (0F 38 F1) and MOV (89) stores are handled because JIT output
-    // on Wii U emulation uses these for big-endian float writes.
-    static size_t DetectWriteInstructionSize(const uint8_t* p) {
-        size_t offset = 0;
-
-        // Consume optional REX prefix (0x40–0x4F)
-        bool hasRex = (p[offset] >= 0x40 && p[offset] <= 0x4F);
-        if (hasRex) offset++;
-
-        // MOVBE store:  [REX] 0F 38 F1 /r
-        if (p[offset] == 0x0F && p[offset+1] == 0x38 && p[offset+2] == 0xF1) {
-            offset += 3; // 0F 38 F1
-            uint8_t modrm = p[offset++];
-            uint8_t mod = (modrm >> 6) & 3;
-            uint8_t rm  = modrm & 7;
-            bool hasSib = (rm == 4);    // SIB byte follows when rm==4
-            if (hasSib) offset++;       // SIB
-            if      (mod == 1) offset += 1; // disp8
-            else if (mod == 2) offset += 4; // disp32
-            else if (mod == 0 && rm == 5) offset += 4; // RIP-relative disp32
-            return offset;
-        }
-
-        // MOV r/m32, r32:  [REX] 89 /r
-        if (p[offset] == 0x89) {
-            offset++;
-            uint8_t modrm = p[offset++];
-            uint8_t mod = (modrm >> 6) & 3;
-            uint8_t rm  = modrm & 7;
-            bool hasSib = (rm == 4);
-            if (hasSib) offset++;
-            if      (mod == 1) offset += 1;
-            else if (mod == 2) offset += 4;
-            else if (mod == 0 && rm == 5) offset += 4;
-            return offset;
-        }
-
-        return 0; // unrecognized instruction — leaving it alone is safer than corrupting code
-    }
-
-    // NOP the write instruction at rip. Returns true and populates rec on success.
-    static bool NopInstruction(uintptr_t rip, WriterRecord& rec) {
-        uint8_t buf[16] = {};
-        __try { memcpy(buf, (const void*)rip, 16); }
-        __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
-
-        size_t sz = DetectWriteInstructionSize(buf);
-        if (sz == 0 || sz > 15) return false;
-
-        DWORD oldProt = 0;
-        if (!VirtualProtect((LPVOID)rip, sz, PAGE_EXECUTE_READWRITE, &oldProt))
-            return false;
-
-        memcpy(rec.g_originalBytes, buf, sz);
-        rec.rip       = rip;
-        rec.patchSize = sz;
-        rec.nopActive = true;
-        memset((void*)rip, 0x90, sz);
-        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rip, sz);
-
-        VirtualProtect((LPVOID)rip, sz, oldProt, &oldProt);
-        return true;
-    }
-
-    // Restore a previously NOP'd instruction from its WriterRecord.
-    static void RestoreInstruction(WriterRecord& rec) {
-        if (!rec.nopActive || rec.patchSize == 0) return;
-        DWORD oldProt = 0;
-        if (VirtualProtect((LPVOID)rec.rip, rec.patchSize, PAGE_EXECUTE_READWRITE, &oldProt)) {
-            memcpy((void*)rec.rip, rec.g_originalBytes, rec.patchSize);
-            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rec.rip, rec.patchSize);
-            VirtualProtect((LPVOID)rec.rip, rec.patchSize, oldProt, &oldProt);
-        }
-        rec.nopActive = false;
-    }
-
-    // Remove PAGE_GUARD from the camera page.
-    static void DisarmPageGuard() {
-        if (!g_guardArmed) return;
-        DWORD old = 0;
-        VirtualProtect((LPVOID)g_guardPage, 0x1000, g_guardOldProtect & ~PAGE_GUARD, &old);
-        g_guardArmed = false;
-    }
-
-    // Arm PAGE_GUARD on the 4 KB page containing the camera position fields.
-    // The guard is one-shot — after the first write the OS clears it and fires
-    // STATUS_GUARD_PAGE_VIOLATION, which our VEH catches to identify the writer.
-    // We then decide whether to NOP the writer or single-step and re-arm.
-    static void ArmPageGuard(uintptr_t gc_addr) {
-        uintptr_t page = gc_addr & ~(uintptr_t)0xFFF;
-        if (g_guardArmed) {
-            if (g_guardPage == page) return;
-            DisarmPageGuard(); // Disarm old page before arming new one
-        }
-        DWORD old = 0;
-        if (VirtualProtect((LPVOID)page, 0x1000, PAGE_READWRITE | PAGE_GUARD, &old)) {
-            g_guardPage       = page;
-            g_guardOldProtect = old;
-            g_guardArmed      = true;
-        }
-    }
-
-    static thread_local bool t_isSingleStepping = false;
-
-    // Vectored Exception Handler: catches PAGE_GUARD violations on camera memory.
-    static LONG NTAPI CameraWriterVehHandler(PEXCEPTION_POINTERS ep) {
-        if (ep->ExceptionRecord->ExceptionCode == STATUS_SINGLE_STEP) {
-            if (t_isSingleStepping) {
-                t_isSingleStepping = false;
-                // Instruction finished executing, re-arm the guard page
-                if (g_writerHuntActive) {
-                    ArmPageGuard(g_addrGameRomCamera + 0x550);
-                }
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-
-        if (ep->ExceptionRecord->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION)
-            return EXCEPTION_CONTINUE_SEARCH;
-
-        // ExceptionInformation[1] = the virtual address that was accessed
-        uintptr_t faultAddr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
-        if (faultAddr < g_guardPage || faultAddr >= g_guardPage + 0x1000)
-            return EXCEPTION_CONTINUE_SEARCH;
-
-        // Guard is one-shot — OS has stripped it, mark disarmed immediately
-        g_guardArmed = false;
-
-        bool isWrite = (ep->ExceptionRecord->ExceptionInformation[0] == 1);
-        uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
-
-        // We only want to NOP JIT writes to the specific camera coordinates.
-        // For everything else (reads, or writes to other variables on the page),
-        // we must single-step over the instruction to re-arm the guard page.
-        bool shouldNop = false;
-
-        if (isWrite && g_writerHuntActive) {
-            uintptr_t base = g_addrGameRomCamera;
-            if (faultAddr == base + 0x550 || faultAddr == base + 0x554 || faultAddr == base + 0x558) {
-                MEMORY_BASIC_INFORMATION mbi = {};
-                VirtualQuery((LPCVOID)rip, &mbi, sizeof(mbi));
-                bool isJit = (mbi.Type == MEM_PRIVATE) &&
-                             (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
-                if (isJit) {
-                    shouldNop = true;
-                    if (!g_writerBlacklist.empty()) {
-                        bool isBlacklisted = false;
-                        __try {
-                            uintptr_t win_start = rip >= 128 ? rip - 128 : 0;
-                            uintptr_t win_end = rip + 128;
-                            for (const auto& pat : g_writerBlacklist) {
-                                size_t patLen = pat.bytes.size();
-                                uintptr_t win_start = (rip >= patLen) ? (rip - patLen + 1) : 0;
-                                uintptr_t win_end = rip;
-                                for (uintptr_t search_ptr = win_start; search_ptr <= win_end; search_ptr++) {
-                                    bool match = true;
-                                    for (size_t i = 0; i < patLen; ++i) {
-                                        if (!pat.isWildcard[i] && *(uint8_t*)(search_ptr + i) != pat.bytes[i]) {
-                                            match = false;
-                                            break;
-                                        }
-                                    }
-                                    if (match) {
-                                        isBlacklisted = true;
-                                        break;
-                                    }
-                                }
-                                if (isBlacklisted) break;
-                            }
-                        } __except (EXCEPTION_EXECUTE_HANDLER) {
-                        }
-                        if (isBlacklisted) {
-                            shouldNop = false;
-                            g_lastBlacklistedWriteTime.store(GetTickCount64());
-                        }
-                    }
-                }
-            }
-        }
-
-        if (shouldNop) {
-            // Use EnterCriticalSection (not Try) — we must never miss a writer.
-            EnterCriticalSection(&g_writerCS);
-            bool alreadyKnown = false;
-            for (auto& wr : g_discoveredWriters) {
-                if (wr.rip == rip) {
-                    alreadyKnown = true;
-                    // JIT must have recompiled and overwritten our NOPs. Re-apply them.
-                    if (wr.patchSize > 0) {
-                        DWORD old = 0;
-                        if (VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
-                            memset((void*)wr.rip, 0x90, wr.patchSize);
-                            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
-                            VirtualProtect((LPVOID)wr.rip, wr.patchSize, old, &old);
-                            wr.nopActive = true;
-                        }
-                    }
-                    break; 
-                }
-            }
-            if (!alreadyKnown) {
-                WriterRecord rec = {};
-                if (NopInstruction(rip, rec)) {
-                    g_discoveredWriters.push_back(rec);
-                    if (g_pSharedMemory) {
-                        g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
-                    }
-                } else {
-                    // Failed to NOP (unrecognized instruction), we must single step it
-                    shouldNop = false; 
-                }
-            }
-            LeaveCriticalSection(&g_writerCS);
-
-            if (shouldNop) {
-                // We successfully NOP'd the instruction (or re-NOP'd it). 
-                // The instruction pointer is still at the NOPs. When we continue execution, 
-                // it will execute the NOPs (which don't access memory) and naturally proceed.
-                // We intentionally DO NOT re-arm the guard page here so performance returns to normal.
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
-
-        // If we reach here, we are NOT NOPing the instruction.
-        // We must execute it to let it access the memory, but if we do, the guard page is gone.
-        // So we set the Trap Flag (Single Step). The CPU will execute this ONE instruction,
-        // then fire STATUS_SINGLE_STEP, where we will catch it and re-arm the guard page.
-        ep->ContextRecord->EFlags |= 0x100; // Set TF
-        t_isSingleStepping = true;
-        
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-
-    // Apply NOPs for all already-discovered writers (instant, no hunt needed).
-    static void ApplyAllWriterNops() {
-        EnterCriticalSection(&g_writerCS);
-        for (auto& wr : g_discoveredWriters) {
-            if (!wr.nopActive && wr.patchSize > 0) {
-                DWORD old = 0;
-                if (VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
-                    memset((void*)wr.rip, 0x90, wr.patchSize);
-                    FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
-                    VirtualProtect((LPVOID)wr.rip, wr.patchSize, old, &old);
-                    wr.nopActive = true;
-                }
-            }
-        }
-        LeaveCriticalSection(&g_writerCS);
-    }
-
-    // Restore original bytes for all discovered writers.
-    static void RestoreAllWriterNops() {
-        EnterCriticalSection(&g_writerCS);
-        for (auto& wr : g_discoveredWriters) {
-            RestoreInstruction(wr);
-        }
-        LeaveCriticalSection(&g_writerCS);
-    }
-
-    // Camera position fields at GameRomCamera + 0x550/0x554/0x558.
-    // These are reverse-engineered offsets in the game's camera struct.
-    // We guard this specific page so writes to unrelated fields on the same
-    // page (which share the 4 KB guard) are single-stepped through without NOP.
-    static void StartWriterHunt() {
-        ApplyAllWriterNops();
-        if (!g_vehHandle) {
-            g_vehHandle = AddVectoredExceptionHandler(1, CameraWriterVehHandler);
-        }
-        g_writerHuntActive = true;
-
-        // Always arm — even with cached writers, JIT recompile may have created new ones.
-        ArmPageGuard(g_addrGameRomCamera + 0x550);
-    }
-
-    // Disable writer hunting: remove guard, restore NOPs, keep list for next time.
-    static void StopWriterHunt() {
-        g_writerHuntActive = false;
-        DisarmPageGuard();
-        // VEH stays installed (low overhead when not hunting)
-        RestoreAllWriterNops();
-    }
-
     static float ReadFloatBE(uintptr_t address) {
         uint32_t val = 0;
         __try {
@@ -2025,13 +1710,6 @@ namespace Mod {
                     g_magnePatchesInitialized = false;
                     LeaveCriticalSection(&g_patchCS);
 
-                    g_writerHuntActive = false;
-                    DisarmPageGuard();
-                    EnterCriticalSection(&g_writerCS);
-                    for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
-                    g_discoveredWriters.clear();
-                    LeaveCriticalSection(&g_writerCS);
-                    
                     g_pSharedMemory->m_statusWritersFound = 0;
                     g_pSharedMemory->m_statusAddrGameRomCamera = 0;
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
@@ -2061,15 +1739,6 @@ namespace Mod {
                     tasks[0].found = false;
                     tasks[0].address = 0;
                     g_addrGameRomCamera = 0;
-
-                    // Address voided — stop any active hunt and discard all cached writers
-                    // (their RIPs are tied to the old JIT layout and are now stale).
-                    g_writerHuntActive = false;
-                    DisarmPageGuard();
-                    EnterCriticalSection(&g_writerCS);
-                    for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
-                    g_discoveredWriters.clear();
-                    LeaveCriticalSection(&g_writerCS);
 
                     for (size_t i = 1; i < tasks.size(); ++i) {
                         if (preserveMenu && (i == 1 || i == 2)) continue;
@@ -2553,9 +2222,6 @@ namespace Mod {
         timeBeginPeriod(1);
 
         bool last_f2_state = false;
-#ifdef _DEBUG
-        int aob_dump_countdown = 0;
-#endif
         
         bool virt_cam_initialized = false;
         float vcam_pos_x = 0.0f, vcam_pos_y = 0.0f, vcam_pos_z = 0.0f;
@@ -2576,11 +2242,7 @@ namespace Mod {
         ScrollMenuType active_menu = ScrollMenuType::None;
         auto menu_hold_timer = std::chrono::steady_clock::now();
 
-        bool last_should_nop = false;
-        float last_written_x = 0.0f;  // what we wrote to +0x550 last frame
-        float last_written_y = 0.0f;  // what we wrote to +0x554 last frame
-        float last_written_z = 0.0f;  // what we wrote to +0x558 last frame
-        bool  has_written_once = false; // avoid false overwrite on first frame after enable
+        bool last_should_control = false;
         auto last_frame_time = std::chrono::steady_clock::now();
 
         bool ki_enabled = true;
@@ -2617,19 +2279,6 @@ namespace Mod {
             static uintptr_t last_gc_addr = 0;
             if (gc_addr != last_gc_addr) {
                 last_gc_addr = gc_addr;
-                // Camera reset! Clear cached writers to prevent stale NOPs and corruption
-                if (g_writerHuntActive) {
-                    EnterCriticalSection(&g_writerCS);
-                    for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
-                    g_discoveredWriters.clear();
-                    if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = 0;
-                    LeaveCriticalSection(&g_writerCS);
-                }
-                if (gc_addr == 0) {
-                    last_should_nop = false;
-                    g_writerHuntActive = false;
-                    has_written_once = false;
-                }
             }
 
             HWND hwndFg = GetForegroundWindow();
@@ -2819,27 +2468,11 @@ namespace Mod {
                 LeaveCriticalSection(&g_patchCS);
             }
 
-            bool should_nop = g_mousecamActive && (!magnesis_mode || fps_magne_active) && !menu_active && !is_shortcut_open;
-            if (should_nop && !g_writerHuntActive) {
-                last_should_nop = false;
-            }
-            if (should_nop != last_should_nop) {
-                last_should_nop = should_nop;
-                if (should_nop) {
-                    // Start the hunt: apply cached NOPs instantly, arm guard to catch new writers
-                    StartWriterHunt();
-                } else {
-                    // Stop hunting: disarm guard, restore all writer instructions
-                    StopWriterHunt();
-                    // Reset tracking so we don't get a false overwrite on re-enable
-                    last_written_x = 0.0f;
-                    last_written_y = 0.0f;
-                    last_written_z = 0.0f;
-                    has_written_once = false;
-                }
-
+            bool should_control = g_mousecamActive && (!magnesis_mode || fps_magne_active) && !menu_active && !is_shortcut_open;
+            if (should_control != last_should_control) {
+                last_should_control = should_control;
                 // SMOOTH TRANSITION: Restore orbital camera angles from the game camera on recapture (1:1 with Rust)
-                if (should_nop && gc_addr != 0) {
+                if (should_control && gc_addr != 0) {
                     float gc_pos_x = ReadFloatBE(gc_addr + 0);
                     float gc_pos_y = ReadFloatBE(gc_addr + 4);
                     float gc_pos_z = ReadFloatBE(gc_addr + 8);
@@ -3277,12 +2910,6 @@ namespace Mod {
                         virt_cam_initialized = true;
                     }
 
-                    // Suspend guard page during our own background reads/writes to avoid triggering the VEH
-                    bool wasArmed = g_guardArmed;
-                    if (wasArmed) {
-                        DisarmPageGuard();
-                    }
-
                     float pivot_x = 0.0f, pivot_y = 0.0f, pivot_z = 0.0f;
                     float raw_pivot_x = ReadFloatBE(g_addrGameRomCamera + 0x674);
                     float raw_pivot_y = ReadFloatBE(g_addrGameRomCamera + 0x678);
@@ -3377,60 +3004,9 @@ namespace Mod {
                     }
 
                     if ((!magnesis_mode || fps_magne_active) && !menu_active) {
-                        static int g_huntFramesLeft = 0;
-                        static uint32_t last_writers_found = 0;
-
-                        if (g_pSharedMemory) {
-                            uint32_t curr_writers = g_pSharedMemory->m_statusWritersFound;
-                            if (curr_writers > last_writers_found) {
-                                // We successfully caught a writer! Stop hunting immediately.
-                                g_huntFramesLeft = 0;
-                                last_writers_found = curr_writers;
-                            }
-                        }
-
-                        // --- Overwrite detection ---
-                        // Read back what's in camera memory only once every 100ms (10Hz).
-                        // If the game stomped our values, a new writer appeared. Arm the guard for a brief window.
-                        static uint64_t last_overwrite_check_ms = 0;
-                        uint64_t now_ms = GetTickCount64();
-                        if (has_written_once && g_writerHuntActive && (now_ms - last_overwrite_check_ms >= 100)) {
-                            last_overwrite_check_ms = now_ms;
-                            float cur_x = ReadFloatBE(g_addrGameRomCamera + 0x550);
-                            float cur_y = ReadFloatBE(g_addrGameRomCamera + 0x554);
-                            float cur_z = ReadFloatBE(g_addrGameRomCamera + 0x558);
-                            if (cur_x != last_written_x || cur_y != last_written_y || cur_z != last_written_z) {
-                                // Overwrite detected — hunt for the next ~40ms (10 frames)
-                                g_huntFramesLeft = 10;
-                            }
-                        }
-
-                        uint64_t now = GetTickCount64();
-                        if (now - g_lastBlacklistedWriteTime.load() <= 50) {
-                            // A blacklisted writer is currently in control. Pause mousecam.
-                            virt_cam_initialized = false;
-                        } else {
-                            WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
-                            WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
-                            WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
-
-                            last_written_x = vcam_pos_x;
-                            last_written_y = vcam_pos_y;
-                            last_written_z = vcam_pos_z;
-                            has_written_once = true;
-                        }
-
-                        // Arm guard if we are currently hunting
-                        if (g_writerHuntActive && g_huntFramesLeft > 0) {
-                            ArmPageGuard(g_addrGameRomCamera + 0x550);
-                            g_huntFramesLeft--;
-                        }
-                    } else {
-                        // Not writing. If we were hunting, maintain the guard page.
-                        static int g_huntFramesLeft = 0; // shadowing, but menu state shouldn't leak hunt
-                        if (wasArmed) {
-                            ArmPageGuard(g_addrGameRomCamera + 0x550);
-                        }
+                        WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
+                        WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
+                        WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
                     }
                 }
             }
@@ -3438,70 +3014,7 @@ namespace Mod {
 #ifdef _DEBUG
             if (g_pSharedMemory && g_pSharedMemory->m_reqDumpAob) {
                 g_pSharedMemory->m_reqDumpAob = false;
-                
-                // Constraint: Only work when camera is on and magnesis is off
-                if (g_mousecamActive && !magnesis_auto_active) {
-                    // 1. Clear known writers and restore them
-                    EnterCriticalSection(&g_writerCS);
-                    for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
-                    g_discoveredWriters.clear();
-                    LeaveCriticalSection(&g_writerCS);
-                    
-                    // 2. We don't sleep here. We set a countdown. 
-                    // The main loop's overwrite detection will naturally catch the 3 writers over the next few frames.
-                    // We wait 125 frames (~500ms) to ensure all 3 writers (X, Y, Z) are caught even at 30fps.
-                    aob_dump_countdown = 125;
-                    g_pSharedMemory->m_statusWritersFound = 0;
-                }
-            }
-
-            if (aob_dump_countdown > 0) {
-                aob_dump_countdown--;
-                if (aob_dump_countdown == 0) {
-                    // Dump newly discovered (currently active) writers
-                    EnterCriticalSection(&g_writerCS);
-                    if (!g_discoveredWriters.empty()) {
-                        uintptr_t min_rip = UINTPTR_MAX;
-                        uintptr_t max_rip = 0;
-                        size_t max_patch = 0;
-                        for (auto& wr : g_discoveredWriters) {
-                            if (wr.rip < min_rip) min_rip = wr.rip;
-                            if (wr.rip > max_rip) { max_rip = wr.rip; max_patch = wr.patchSize; }
-                        }
-                        
-                        uintptr_t start_dump = min_rip - 32;
-                        uintptr_t end_dump = max_rip + max_patch + 32;
-                        
-                        FILE* f = nullptr;
-                        if (_wfopen_s(&f, L"cemu_aob_dump.txt", L"a") == 0) {
-                            fwprintf(f, L"AOB Dump from %llX to %llX\n", start_dump, end_dump);
-                            for (uintptr_t ptr = start_dump; ptr < end_dump; ptr++) {
-                                bool isStart = false;
-                                bool isEnd = false;
-                                bool insideWriter = false;
-                                uint8_t byte_to_print = *(uint8_t*)ptr;
-                                
-                                for (auto& wr : g_discoveredWriters) {
-                                    if (wr.rip == ptr) isStart = true;
-                                    if (wr.rip + wr.patchSize - 1 == ptr) isEnd = true;
-                                    if (ptr >= wr.rip && ptr < wr.rip + wr.patchSize) {
-                                        insideWriter = true;
-                                        byte_to_print = wr.g_originalBytes[ptr - wr.rip];
-                                        // Don't break, so we correctly set isStart and isEnd if overlapping (though they shouldn't overlap)
-                                    }
-                                }
-                                
-                                if (isStart) fprintf(f, "[ ");
-                                fprintf(f, "%02X", byte_to_print);
-                                if (isEnd) fprintf(f, " ] ");
-                                else fprintf(f, " ");
-                            }
-                            fprintf(f, "\n");
-                            fclose(f);
-                        }
-                    }
-                    LeaveCriticalSection(&g_writerCS);
-                }
+                DllLog("[INFO] Writer hunter removed — AOB dump no-op.");
             }
 #endif
 
@@ -3528,7 +3041,6 @@ namespace Mod {
     void Init(HMODULE hModule) {
         g_hModule = hModule;
         InitializeCriticalSection(&g_patchCS);
-        InitializeCriticalSection(&g_writerCS);
         InitializeCriticalSection(&g_menuCandidateCS);
 
         if (g_sharedMemory.Create(L"Local\\BotwMousecamSharedMemory")) {
@@ -3580,19 +3092,9 @@ namespace Mod {
         RemoveShortcutHook();
         RemoveMenuStateHooks();
 
-        g_writerHuntActive = false;
-        DisarmPageGuard();
-        RestoreAllWriterNops();
-
-        if (g_vehHandle) {
-            RemoveVectoredExceptionHandler(g_vehHandle);
-            g_vehHandle = nullptr;
-        }
-
         RestoreAllPatches();
 
         DeleteCriticalSection(&g_patchCS);
-        DeleteCriticalSection(&g_writerCS);
         DeleteCriticalSection(&g_menuCandidateCS);
 
         g_sharedMemory.Close();
