@@ -2182,17 +2182,14 @@ namespace Mod {
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
                         EnterCriticalSection(&g_writerCS);
+                        for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
+                        g_discoveredWriters.clear();
                         g_pendingRips.clear();
+                        if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = 0;
                         LeaveCriticalSection(&g_writerCS);
-                        // Reset2 while blacklisted was stuck — must clear blacklist to unfreeze mouse (per your report)
-                        if (g_blacklistedMode.load()) {
-                            g_blacklistedMode.store(false);
-                            g_lastBlacklistedWriteTime.store(0);
-                            DllLog("[INFO] Hunter preserve — keeping %zu writer NOPs, blacklist cleared (was stuck)", g_discoveredWriters.size());
-                        } else {
-                            if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
-                            DllLog("[INFO] Hunter preserve — keeping %zu writer NOPs", g_discoveredWriters.size());
-                        }
+                        g_blacklistedMode.store(false);
+                        g_lastBlacklistedWriteTime.store(0);
+                        DllLog("[INFO] Hunter preserve — all writer NOPs cleared (reset2 forgets per your report)");
                     }
 
                     ResetScannerState();
