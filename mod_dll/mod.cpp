@@ -3055,13 +3055,13 @@ namespace Mod {
                 {
                     static bool wasZeroTriggered = false;
                     int zeroCount = 0;
-                    if (g_liveCamPosX.load() == 0.0f) zeroCount++;
-                    if (g_liveCamPosY.load() == 0.0f) zeroCount++;
-                    if (g_liveCamPosZ.load() == 0.0f) zeroCount++;
-                    if (g_liveCamFocX.load() == 0.0f) zeroCount++;
-                    if (g_liveCamFocY.load() == 0.0f) zeroCount++;
-                    if (g_liveCamFocZ.load() == 0.0f) zeroCount++;
-                    if (g_liveCamFOV.load() == 0.0f) zeroCount++;
+                    if (fabsf(g_liveCamPosX.load()) < 0.001f) zeroCount++;
+                    if (fabsf(g_liveCamPosY.load()) < 0.001f) zeroCount++;
+                    if (fabsf(g_liveCamPosZ.load()) < 0.001f) zeroCount++;
+                    if (fabsf(g_liveCamFocX.load()) < 0.001f) zeroCount++;
+                    if (fabsf(g_liveCamFocY.load()) < 0.001f) zeroCount++;
+                    if (fabsf(g_liveCamFocZ.load()) < 0.001f) zeroCount++;
+                    if (fabsf(g_liveCamFOV.load()) < 0.001f) zeroCount++;
                     bool isZero = (zeroCount >= 5);
                     if (isZero && !wasZeroTriggered) {
                         wasZeroTriggered = true;
