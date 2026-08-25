@@ -3048,7 +3048,7 @@ namespace Mod {
                     g_pSharedMemory->m_teleLiveCamFOV = g_liveCamFOV;
                 }
 
-                // New feature: if any 5 of 7 cam coords/FOV are 0.0 at same time, do reset2
+                // New feature: if any 4 of 7 cam coords/FOV are 0.0 at same time, do reset2
                 {
                     static bool wasZeroTriggered = false;
                     int zeroCount = 0;
@@ -3059,10 +3059,10 @@ namespace Mod {
                     if (fabsf(g_liveCamFocY.load()) < 0.001f) zeroCount++;
                     if (fabsf(g_liveCamFocZ.load()) < 0.001f) zeroCount++;
                     if (fabsf(g_liveCamFOV.load()) < 0.001f) zeroCount++;
-                    bool isZero = (zeroCount >= 5);
+                    bool isZero = (zeroCount >= 4);
                     if (isZero && !wasZeroTriggered) {
                         wasZeroTriggered = true;
-                        DllLog("[INFO] Cam 5/7 is 0.0 (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f count %d) — triggering reset2", g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load(), zeroCount);
+                        DllLog("[INFO] Cam 4/7 is 0.0 (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f count %d) — triggering reset2", g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load(), zeroCount);
                         if (g_pSharedMemory) {
                             g_pSharedMemory->m_reqResetPreserveMenu = true;
                             g_pSharedMemory->m_reqResetScan = false;
