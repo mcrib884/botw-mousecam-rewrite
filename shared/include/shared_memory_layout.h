@@ -85,7 +85,8 @@ struct SharedMemoryLayout {
 
     // --- Commands (written by companion, read by DLL) ---
     bool m_reqDumpAob;
-    bool m_reqResetScan;
+    bool m_reqResetScan;              // reset: forget everything, fresh start
+    bool m_reqResetPreserveMenu;      // reset2: like reset but spares MenuState
     bool m_reqShutdown;
     bool m_reqToggleMousecam;
 };

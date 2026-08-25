@@ -661,6 +661,10 @@ namespace Mod {
     static float ReadFloatBE(uintptr_t address);
     static void PollHooksAndSyncSharedMemory();
 
+    static inline bool IsResetRequested() {
+        return g_pSharedMemory && (g_pSharedMemory->m_reqResetScan || g_pSharedMemory->m_reqResetPreserveMenu);
+    }
+
     static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress) {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
@@ -691,6 +695,7 @@ namespace Mod {
             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
                 return false;
             }
+            if (IsResetRequested()) return false;
             if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) {
                 break;
             }
@@ -713,6 +718,7 @@ namespace Mod {
                     if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
                         return false;
                     }
+                    if (IsResetRequested()) return false;
                     PollHooksAndSyncSharedMemory();
                     size_t toRead = (std::min)(chunkSize, regionSize - offset);
                     __try {
@@ -761,6 +767,7 @@ namespace Mod {
             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
                 return false;
             }
+            if (IsResetRequested()) return false;
             if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) {
                 break;
             }
@@ -783,6 +790,7 @@ namespace Mod {
                     if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) {
                         return false;
                     }
+                    if (IsResetRequested()) return false;
                     PollHooksAndSyncSharedMemory();
                     size_t toRead = (std::min)(chunkSize, regionSize - offset);
                     __try {
@@ -817,7 +825,7 @@ namespace Mod {
 
         // FOV at gc_addr + 0x24 = base + 0x630 + 0x24 = base + 0x654
         float fov = ReadFloatBE(base + 0x654);
-        if (std::isnan(fov) || std::isinf(fov) || fov <= 0.05f || fov > 3.5f) {
+        if (std::isnan(fov) || std::isinf(fov) || fov < 0.1f || fov > 0.99f) {
             return false;
         }
 
@@ -851,8 +859,16 @@ namespace Mod {
             return false;
         }
 
+        // Hard reject: any field exactly 1.0 is a known fake signature (e.g. Foc=[1,1,1])
+        auto isOne = [](float v) { return v == 1.0f; };
+        if (isOne(fov) || isOne(posX) || isOne(posY) || isOne(posZ) ||
+            isOne(focX) || isOne(focY) || isOne(focZ) ||
+            isOne(pivX) || isOne(pivY) || isOne(pivZ)) {
+            return false;
+        }
+
         score = 10;
-        if (fov >= 0.4f && fov <= 1.8f) score += 20;
+        if (fov >= 0.4f && fov <= 0.99f) score += 20;
         if (posX != 0.0f || posY != 0.0f || posZ != 0.0f) score += 25;
         if (focX != 0.0f || focY != 0.0f || focZ != 0.0f) score += 20;
         if (pivX != 0.0f || pivY != 0.0f || pivZ != 0.0f) score += 10;
@@ -935,6 +951,7 @@ namespace Mod {
         MEMORY_BASIC_INFORMATION mbi;
         while (current < end) {
             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
+            if (IsResetRequested()) return;
             if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) break;
 
             uintptr_t pageAllocBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
@@ -951,6 +968,7 @@ namespace Mod {
                 size_t regionSize = mbi.RegionSize;
                 for (size_t offset = 0; offset < regionSize; offset += (chunkSize > overlap ? chunkSize - overlap : chunkSize)) {
                     if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
+                    if (IsResetRequested()) return;
                     PollHooksAndSyncSharedMemory();
                     size_t toRead = (std::min)(chunkSize, regionSize - offset);
                     __try {
@@ -1111,7 +1129,6 @@ namespace Mod {
     static std::set<uintptr_t> g_menuStateCandidates1;
     static std::set<uintptr_t> g_menuStateCandidates2;
     static CRITICAL_SECTION g_menuCandidateCS;
-    static std::atomic<bool> g_preserveMenuStateOnReset{false};
 
     static LPVOID AllocateWithin2GB(uintptr_t targetAddr, size_t size) {
         SYSTEM_INFO si;
@@ -1490,10 +1507,7 @@ namespace Mod {
 
                             bool inBoth = (g_menuStateCandidates1.count(baseAddr) > 0) && (g_menuStateCandidates2.count(baseAddr) > 0);
 
-#ifdef _DEBUG
-                            DllLog("[INFO] MenuState hook %u fired at 0x%llX (val: %d, Pattern 6E valid). Candidate sets: Writer1=%zu, Writer2=%zu",
-                                   writerId, baseAddr, tempVal, g_menuStateCandidates1.size(), g_menuStateCandidates2.size());
-#endif
+                            // Fire logging silenced for both writers in all builds
 
                             if (inBoth) {
                                 g_addrMenuState = baseAddr;
@@ -1510,14 +1524,10 @@ namespace Mod {
                         }
                         LeaveCriticalSection(&g_menuCandidateCS);
                     } else {
-#ifdef _DEBUG
-                        DllLog("[WARNING] MenuState hook %u fired at address 0x%llX (val: %d), but pattern 6E** ** ** not found at -4.", writerId, tempAddr, tempVal);
-#endif
+                        // Pattern 6E miss — silenced in all builds
                     }
                 } else {
-#ifdef _DEBUG
-                    DllLog("[INFO] MenuState hook %u fired at address 0x%llX with val: %d (unexpected for writer %u). Ignoring for selection.", writerId, tempAddr, tempVal, writerId);
-#endif
+                    // Unexpected value — silenced in all builds
                 }
             }
         }
@@ -1665,17 +1675,23 @@ namespace Mod {
                 }
                 g_pSharedMemory->m_statusScanning = true;
                 
-                if (g_pSharedMemory->m_reqResetScan) {
+                // --- Reset pathways ---
+                // reset  : full fresh start (Reset button)
+                // reset2 : preserve MenuState (MenuState==2)
+                if (g_pSharedMemory->m_reqResetScan || g_pSharedMemory->m_reqResetPreserveMenu) {
+                    bool preserveMenu = g_pSharedMemory->m_reqResetPreserveMenu && !g_pSharedMemory->m_reqResetScan;
+                    // if MenuState not yet valid, preserve is meaningless — do full reset
+                    if (preserveMenu && g_addrMenuState.load() == 0) preserveMenu = false;
                     g_pSharedMemory->m_reqResetScan = false;
-                    bool preserveMenu = g_preserveMenuStateOnReset.exchange(false) && (g_addrMenuState.load() != 0);
+                    g_pSharedMemory->m_reqResetPreserveMenu = false;
 
-                    DllLog("[INFO] Scanner reset requested (%s). Clearing addresses and reloading blacklist.",
-                           preserveMenu ? "excluding MenuState" : "full reset");
+                    DllLog("[INFO] Scanner reset requested (%s). Clearing and reloading blacklist.",
+                           preserveMenu ? "preserve MenuState" : "full");
                     LoadWriterBlacklist();
 
                     currentExperimental = g_pSharedMemory->m_cfgCemuExperimental;
                     vCfg = GetCemuVersionConfig(currentExperimental);
-                    DllLog("[INFO] Scanner reset applied. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
+                    DllLog("[INFO] Reset applied. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
                     tasks[0].patternStr = vCfg.gameRomCameraAob;
                     tasks[1].patternStr = vCfg.menuStateAob1;
                     tasks[2].patternStr = vCfg.menuStateAob2;
@@ -1683,9 +1699,7 @@ namespace Mod {
                     tasks[4].patternStr = vCfg.magnesisAob;
 
                     for (size_t i = 0; i < tasks.size(); ++i) {
-                        if (preserveMenu && (i == 1 || i == 2)) {
-                            continue;
-                        }
+                        if (preserveMenu && (i == 1 || i == 2)) continue;
                         tasks[i].found = false;
                         tasks[i].address = 0;
                     }
@@ -1702,22 +1716,35 @@ namespace Mod {
                         g_pSharedMemory->m_statusMenuTrampolinesReady = false;
                     }
                     g_addrMagneTarget = 0;
-                    
-                    RemoveShortcutHook();
 
-                    RestoreAllPatches();
+                    RemoveShortcutHook();
+                    g_tempShortcutAddress = 0;
+                    g_tempShortcutValue = 0;
+                    if (!preserveMenu) {
+                        g_menuStateQueueWriteIdx = 0;
+                        g_menuStateQueueReadIdx = 0;
+                        memset(g_menuStateQueue, 0, sizeof(g_menuStateQueue));
+                    }
+
                     EnterCriticalSection(&g_patchCS);
-                    g_magnePatchesInitialized = false;
+                    if (g_magnePatchesInitialized) {
+                        g_magneDetourPatch.Restore();
+                        g_magneXPatch.Restore();
+                        g_magneYPatch.Restore();
+                        g_magneZPatch.Restore();
+                        g_magnePatchesInitialized = false;
+                    }
                     LeaveCriticalSection(&g_patchCS);
 
-                    g_pSharedMemory->m_statusWritersFound = 0;
                     g_pSharedMemory->m_statusAddrGameRomCamera = 0;
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
-                    if (!preserveMenu) {
-                        g_pSharedMemory->m_statusAddrMenuState = 0;
-                    }
+                    if (!preserveMenu) g_pSharedMemory->m_statusAddrMenuState = 0;
                     g_pSharedMemory->m_statusAddrMagneTarget = 0;
-                    
+                    g_pSharedMemory->m_statusWritersFound = 0;
+                    g_pSharedMemory->m_patchMagneDetourActive = false;
+                    g_pSharedMemory->m_statusShortcutHookReady = false;
+
+                    ResetScannerState();
                     allOtherFound = false;
                     nextIdx = 1;
                 }
@@ -1733,36 +1760,20 @@ namespace Mod {
                 }
 
                 if (!verifySuccess) {
-                    bool preserveMenu = (g_addrMenuState.load() != 0);
-                    DllLog("[WARNING] GameRomCamera memory inaccessible. Address voided! Resetting scanner (%s).",
-                           preserveMenu ? "preserving MenuState" : "full reset");
-                    tasks[0].found = false;
-                    tasks[0].address = 0;
-                    g_addrGameRomCamera = 0;
-
-                    for (size_t i = 1; i < tasks.size(); ++i) {
-                        if (preserveMenu && (i == 1 || i == 2)) continue;
-                        tasks[i].found = false;
-                        tasks[i].address = 0;
+                    DllLog("[WARNING] GameRomCamera lost — triggering full scanner reset.");
+                    if (g_pSharedMemory) {
+                        g_pSharedMemory->m_reqResetScan = true;
+                        g_pSharedMemory->m_reqResetPreserveMenu = false;
+                    } else {
+                        // Fallback when shared memory unavailable: clear locally
+                        tasks[0].found = false;
+                        tasks[0].address = 0;
+                        g_addrGameRomCamera = 0;
                     }
-
-                    g_addrShortcutMenu = 0;
-                    if (!preserveMenu) {
-                        g_addrMenuState = 0;
-                        EnterCriticalSection(&g_menuCandidateCS);
-                        g_menuStateCandidates1.clear();
-                        g_menuStateCandidates2.clear();
-                        LeaveCriticalSection(&g_menuCandidateCS);
-                    }
-                    g_addrMagneTarget = 0;
-
-                    RestoreAllPatches();
-
-                    EnterCriticalSection(&g_patchCS);
-                    g_magnePatchesInitialized = false;
-                    LeaveCriticalSection(&g_patchCS);
-
-                    ResetScannerState();
+                    // Let the reset handler above do the heavy lifting next iteration
+                    // Sleep briefly then continue to reset path
+                    for (int i = 0; i < 2 && g_scanning; ++i) Sleep(50);
+                    continue;
                 }
             }
 
@@ -1776,6 +1787,7 @@ namespace Mod {
                 size_t totalCandidates = 0;
 
                 ScanGameRomCameraImmediate(pat, bestCandidate, bestScore, fallbackCandidate, totalCandidates);
+                if (IsResetRequested()) continue;
 
                 if (bestCandidate != 0) {
                     tasks[0].found = true;
@@ -1786,14 +1798,31 @@ namespace Mod {
                     }
                     DllLog("[SUCCESS] Verified active GameRomCamera at 0x%llX (Score: %d) [%zu candidates scanned]", bestCandidate, bestScore, totalCandidates);
                 } else if (fallbackCandidate != 0) {
-                    // Fallback: If in a loading screen where coords are uninitialized, take first candidate if available
-                    tasks[0].found = true;
-                    tasks[0].address = fallbackCandidate;
-                    g_addrGameRomCamera = fallbackCandidate;
-                    if (g_pSharedMemory) {
-                        g_pSharedMemory->m_statusAddrGameRomCamera = fallbackCandidate;
+                    // Fallback: only if fallback looks sane (FOV 0.1-0.99, not 1.0, marker readable)
+                    // Prevents picking a fake like [1.9,4.8,1.8]/Foc[1,1,1]/FOV 1.00 and later corrupting game memory
+                    float fbFov = ReadFloatBE(fallbackCandidate + 0x654);
+                    uint16_t fbMarker = 0;
+                    bool fbMarkerOk = SafeReadMarker(fallbackCandidate, fbMarker);
+                    bool fbFovOk = !std::isnan(fbFov) && !std::isinf(fbFov) && fbFov >= 0.1f && fbFov <= 0.99f && fbFov != 1.0f;
+                    // extra hard reject for 1.0 signature on fallback too
+                    float fbPosX = ReadFloatBE(fallbackCandidate + 0x550);
+                    float fbPosY = ReadFloatBE(fallbackCandidate + 0x554);
+                    float fbPosZ = ReadFloatBE(fallbackCandidate + 0x558);
+                    float fbFocX = ReadFloatBE(fallbackCandidate + 0x63C);
+                    float fbFocY = ReadFloatBE(fallbackCandidate + 0x640);
+                    float fbFocZ = ReadFloatBE(fallbackCandidate + 0x644);
+                    bool fbHasOne = (fbFov==1.0f || fbPosX==1.0f || fbPosY==1.0f || fbPosZ==1.0f || fbFocX==1.0f || fbFocY==1.0f || fbFocZ==1.0f);
+                    if (fbFovOk && fbMarkerOk && !fbHasOne) {
+                        tasks[0].found = true;
+                        tasks[0].address = fallbackCandidate;
+                        g_addrGameRomCamera = fallbackCandidate;
+                        if (g_pSharedMemory) {
+                            g_pSharedMemory->m_statusAddrGameRomCamera = fallbackCandidate;
+                        }
+                        DllLog("[INFO] Selected initial GameRomCamera at 0x%llX (will re-verify on gameplay) [%zu candidates scanned]", fallbackCandidate, totalCandidates);
+                    } else {
+                        DllLog("[WARNING] Fallback candidate at 0x%llX rejected (FOV=%.2f markerOk=%d hasOne=%d) — rescanning in 500ms...", fallbackCandidate, fbFov, fbMarkerOk?1:0, fbHasOne?1:0);
                     }
-                    DllLog("[INFO] Selected initial GameRomCamera at 0x%llX (will re-verify on gameplay) [%zu candidates scanned]", fallbackCandidate, totalCandidates);
                 } else if (totalCandidates > 0) {
                     DllLog("[WARNING] GameRomCamera candidates rejected (%zu scanned). Retrying in 500ms...", totalCandidates);
                 } else {
@@ -1904,7 +1933,7 @@ namespace Mod {
                         } else {
                             DllLog("[ERROR] Failed to set up trampoline hook 1 for MenuState.");
                         }
-                    } else {
+                    } else if (!IsResetRequested()) {
                         DllLog("[WARNING] MenuState AOB 1 instruction pattern not found. Retrying in 1s...");
                     }
                 } else if (targetIdx == 2 && scanMenuState && !tasks[2].found && !g_menuStateHook2Active && g_addrMenuState == 0) {
@@ -1919,7 +1948,7 @@ namespace Mod {
                         } else {
                             DllLog("[ERROR] Failed to set up trampoline hook 2 for MenuState.");
                         }
-                    } else {
+                    } else if (!IsResetRequested()) {
                         DllLog("[WARNING] MenuState AOB 2 instruction pattern not found. Retrying in 1s...");
                     }
                 } else if (targetIdx == 3 && scanShortcutMenu && !tasks[3].found && !g_shortcutHookActive) {
@@ -1934,7 +1963,7 @@ namespace Mod {
                         } else {
                             DllLog("[ERROR] Failed to set up detour hook for ShortcutMenu.");
                         }
-                    } else {
+                    } else if (!IsResetRequested()) {
                         DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
                     }
                 } else if (targetIdx == 4 && scanMagneTarget && !tasks[4].found) {
@@ -2003,14 +2032,16 @@ namespace Mod {
                                 }
                             }
                             LeaveCriticalSection(&g_patchCS);
-                        } else {
+                        } else if (!IsResetRequested()) {
                             DllLog("[WARNING] All Magne Target Sig candidates rejected by offset/opcode verification. Retrying in 1s...");
                         }
-                    } else {
+                    } else if (!IsResetRequested()) {
                         DllLog("[WARNING] Magne Target Sig not found. Retrying in 1s...");
                     }
                 }
             }
+
+            if (IsResetRequested()) continue;
 
             allOtherFound = true;
             for (size_t i = 1; i < tasks.size(); ++i) {
@@ -2345,7 +2376,9 @@ namespace Mod {
             bool scanShortcutMenu = g_pSharedMemory ? g_pSharedMemory->m_cfgScanShortcutMenu : true;
 
             bool menu_active = false;
-            static bool resetTriggeredOnState2 = false;
+            static int32_t prevMenuStateVal = INT32_MIN;
+            static bool reset2Pending = false;
+            static std::chrono::steady_clock::time_point reset2PendingTime{};
             if (scanMenuState && g_addrMenuState != 0) {
                 int32_t val = ReadInt32BE(g_addrMenuState);
                 g_liveMenuState = val;
@@ -2354,25 +2387,33 @@ namespace Mod {
                 }
                 menu_active = (val == 6 || val == 10);
 
-                if (val == 2) {
-                    if (!resetTriggeredOnState2) {
-                        resetTriggeredOnState2 = true;
-                        DllLog("[INFO] MenuState is 2 (Game Reload / Save Load detected). Triggering scanner reset (excluding MenuState).");
-                        g_preserveMenuStateOnReset = true;
+                // reset2 on falling edge 2 -> X, with 1s delay after the change
+                if (prevMenuStateVal == 2 && val != 2 && !reset2Pending) {
+                    reset2Pending = true;
+                    reset2PendingTime = std::chrono::steady_clock::now();
+                    DllLog("[INFO] MenuState left 2 -> %d — arming reset2 in 1s...", val);
+                }
+                if (reset2Pending) {
+                    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - reset2PendingTime).count();
+                    if (elapsedMs >= 1000) {
+                        reset2Pending = false;
+                        DllLog("[INFO] MenuState was 2 — 1s since leaving 2, triggering reset2 (preserve MenuState).");
                         if (g_pSharedMemory) {
-                            g_pSharedMemory->m_reqResetScan = true;
+                            g_pSharedMemory->m_reqResetPreserveMenu = true;
+                            g_pSharedMemory->m_reqResetScan = false;
                         }
                     }
-                } else {
-                    resetTriggeredOnState2 = false;
                 }
+                prevMenuStateVal = val;
             } else {
                 menu_active = false;
                 g_liveMenuState = 3;
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_teleLiveMenuState = 3;
                 }
-                resetTriggeredOnState2 = false;
+                prevMenuStateVal = INT32_MIN;
+                reset2Pending = false;
             }
 
             bool is_shortcut_open = false;
@@ -3058,6 +3099,10 @@ namespace Mod {
                 memset(g_pSharedMemory->m_logQueue, 0, sizeof(g_pSharedMemory->m_logQueue));
                 g_pSharedMemory->m_statusShutdownDone = false;
                 g_pSharedMemory->m_reqToggleMousecam = false;
+                g_pSharedMemory->m_reqResetScan = false;
+                g_pSharedMemory->m_reqResetPreserveMenu = false;
+                g_pSharedMemory->m_reqDumpAob = false;
+                g_pSharedMemory->m_reqShutdown = false;
             }
         }
 

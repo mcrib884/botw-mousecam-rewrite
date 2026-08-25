@@ -248,12 +248,13 @@ void DoInjectOrEject() {
 }
 
 void DoReinject() {
+    // reinject: eject -> reload settings -> inject fresh -> restart whole mod logic
     DWORD pid = GetSelectedOrTargetPid();
-    if (!pid) return;
+    if (!pid) { SetStatus(L"Error: cemu.exe not found."); return; }
     std::wstring dllPath = GetCompanionDllPath();
     if (Injector::IsModuleLoaded(pid, Injector::GetFileName(dllPath))) {
         SetStatus(L"Unloading DLL...");
-        SafeEjectDLL(pid, dllPath);
+        if (!SafeEjectDLL(pid, dllPath)) { SetStatus(L"Error: eject failed."); return; }
         Sleep(100);
     }
     g_ki.ReloadSettings();
@@ -261,8 +262,12 @@ void DoReinject() {
     if (MapSharedMemory()) {
         WriteConfigToSharedMemory();
     }
-    if (Injector::InjectDLL(pid, dllPath)) SetStatus(L"Reinjected successfully!");
-    else SetStatus(L"Reinject error: injection failed.");
+    if (Injector::InjectDLL(pid, dllPath)) {
+        SetStatus(L"Reinjected successfully!");
+        UpdateUiState();
+    } else {
+        SetStatus(L"Reinject error: injection failed \x2014 try running as Administrator.");
+    }
 }
 
 void DoEjectOnClose() {

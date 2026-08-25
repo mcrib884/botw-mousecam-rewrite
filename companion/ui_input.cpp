@@ -294,10 +294,7 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         g_config.cemu_experimental = !g_config.cemu_experimental;
         SaveConfig();
         WriteConfigToSharedMemory();
-        if (g_pSharedMemory) {
-            g_pSharedMemory->m_reqResetScan = true;
-            LogToConsole(L"[INFO] Switched Cemu mode. Triggering scanner reset...");
-        }
+        // Purged: Cemu mode switch no longer triggers scanner reset
         InvalidateRect(hWnd, nullptr, FALSE);
     }
     if (ui.rIndepSens.Contains(x, y)) {
@@ -474,7 +471,13 @@ LRESULT HandleLButtonUp(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     if (g_downReset) {
         g_downReset = false;
         ReleaseCapture();
-        if (g_pSharedMemory) g_pSharedMemory->m_reqResetScan = true;
+        if (g_pSharedMemory) {
+            g_pSharedMemory->m_reqResetScan = true;
+            g_pSharedMemory->m_reqResetPreserveMenu = false;
+            LogToConsole(L"[INFO] Reset requested — full scanner reset.");
+        } else {
+            LogToConsole(L"[WARNING] Reset failed: shared memory not mapped (not injected).");
+        }
         InvalidateRect(hWnd, nullptr, FALSE);
     }
     if (g_downToggleCam) {
