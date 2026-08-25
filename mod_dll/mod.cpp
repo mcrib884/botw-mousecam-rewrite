@@ -3037,6 +3037,24 @@ namespace Mod {
                     g_pSharedMemory->m_teleLiveCamFOV = g_liveCamFOV;
                 }
 
+                // New feature: if any cam coord or FOV becomes 0.0, immediately do reset2
+                {
+                    static bool wasZeroTriggered = false;
+                    bool isZero = (g_liveCamPosX.load() == 0.0f || g_liveCamPosY.load() == 0.0f || g_liveCamPosZ.load() == 0.0f ||
+                                   g_liveCamFocX.load() == 0.0f || g_liveCamFocY.load() == 0.0f || g_liveCamFocZ.load() == 0.0f ||
+                                   g_liveCamFOV.load() == 0.0f);
+                    if (isZero && !wasZeroTriggered) {
+                        wasZeroTriggered = true;
+                        DllLog("[INFO] Cam coord/FOV is 0.0 (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f) — triggering reset2", g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load());
+                        if (g_pSharedMemory) {
+                            g_pSharedMemory->m_reqResetPreserveMenu = true;
+                            g_pSharedMemory->m_reqResetScan = false;
+                        }
+                    } else if (!isZero) {
+                        wasZeroTriggered = false;
+                    }
+                }
+
                 if (scanShortcutMenu && g_addrShortcutMenu != 0) {
                     g_liveShortcutMenu = ReadInt32BE(g_addrShortcutMenu + 128);
                 } else {
