@@ -902,6 +902,108 @@ namespace Mod {
     }
 
     // -------------------------------------------------------------------------
+    // GameRomCamera immediate-verify scan.
+    // Scans memory like ScanProcessAOBAll but verifies each candidate immediately
+    // via VerifyGameRomCamera instead of batch-collecting all matches first.
+    // This ensures the best candidate is tracked incrementally and logging
+    // happens per-hit as the scan progresses.
+    // Separated into its own function to keep __try out of ScanAobThread
+    // (which owns std::vector tasks and would trigger C2712).
+    // -------------------------------------------------------------------------
+    static void ScanGameRomCameraImmediate(const Pattern& pat, uintptr_t& outBest, int& outBestScore, uintptr_t& outFallback, size_t& outTotal) {
+        outBest = 0;
+        outBestScore = -1;
+        outFallback = 0;
+        outTotal = 0;
+
+        if (pat.bytes.empty()) return;
+
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        uintptr_t start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
+        uintptr_t end = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
+        uintptr_t current = start;
+        size_t chunkSize = 2 * 1024 * 1024;
+        size_t overlap = pat.bytes.size();
+
+        uintptr_t ourAllocBase = 0;
+        MEMORY_BASIC_INFORMATION ourMbi;
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(g_hModule), &ourMbi, sizeof(ourMbi))) {
+            ourAllocBase = reinterpret_cast<uintptr_t>(ourMbi.AllocationBase);
+        }
+        uintptr_t stackAllocBase = 0;
+        MEMORY_BASIC_INFORMATION stackMbi;
+        int stackVar = 0;
+        if (VirtualQuery(&stackVar, &stackMbi, sizeof(stackMbi))) {
+            stackAllocBase = reinterpret_cast<uintptr_t>(stackMbi.AllocationBase);
+        }
+
+        MEMORY_BASIC_INFORMATION mbi;
+        while (current < end) {
+            if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) break;
+
+            uintptr_t pageAllocBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
+            bool isOurMemory = (ourAllocBase != 0 && pageAllocBase == ourAllocBase) ||
+                               (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
+            bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
+                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED) &&
+                                (mbi.Protect != 0) &&
+                                !(mbi.Protect & PAGE_NOACCESS) &&
+                                !(mbi.Protect & PAGE_GUARD);
+
+            if (scanThisPage) {
+                uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+                size_t regionSize = mbi.RegionSize;
+                for (size_t offset = 0; offset < regionSize; offset += (chunkSize > overlap ? chunkSize - overlap : chunkSize)) {
+                    if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
+                    PollHooksAndSyncSharedMemory();
+                    size_t toRead = (std::min)(chunkSize, regionSize - offset);
+                    __try {
+                        size_t searchPos = 0;
+                        while (searchPos + pat.bytes.size() <= toRead) {
+                            size_t matchOffset = 0;
+                            if (SearchPattern(reinterpret_cast<const unsigned char*>(regionAddress + offset + searchPos), toRead - searchPos, pat, matchOffset)) {
+                                uintptr_t rawAddr = regionAddress + offset + searchPos + matchOffset;
+                                uintptr_t cand = rawAddr - 0x10;
+                                outTotal++;
+                                if (outFallback == 0) outFallback = cand;
+                                int score = 0;
+                                bool valid = VerifyGameRomCamera(cand, score);
+#ifdef _DEBUG
+                                float fov = ReadFloatBE(cand + 0x654);
+                                float posX = ReadFloatBE(cand + 0x550);
+                                float posY = ReadFloatBE(cand + 0x554);
+                                float posZ = ReadFloatBE(cand + 0x558);
+                                float focX = ReadFloatBE(cand + 0x63C);
+                                float focY = ReadFloatBE(cand + 0x640);
+                                float focZ = ReadFloatBE(cand + 0x644);
+                                DllLog("[INFO] Match [%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
+                                       outTotal, cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
+#endif
+                                if (valid) {
+                                    if (score > outBestScore) {
+                                        outBestScore = score;
+                                        outBest = cand;
+                                    }
+                                    // Stop scanning immediately once a valid candidate is verified
+                                    return;
+                                }
+                                searchPos += matchOffset + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    }
+                    if (toRead < chunkSize) break;
+                }
+            }
+            current += mbi.RegionSize;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // CodePatch: used for magnesis detour only. Camera writers are now handled
     // dynamically via the VEH page-guard system below.
     // -------------------------------------------------------------------------
@@ -1859,9 +1961,9 @@ namespace Mod {
 
         std::vector<AobTask> tasks = {
             { L"GameRomCamera",  vCfg.gameRomCameraAob, false, 0 },
-            { L"ShortcutMenu",    vCfg.shortcutMenuAob, false, 0 },
             { L"MenuState 1",     vCfg.menuStateAob1,   false, 0 },
             { L"MenuState 2",     vCfg.menuStateAob2,   false, 0 },
+            { L"ShortcutMenu",    vCfg.shortcutMenuAob, false, 0 },
             { L"Magne Target Sig", vCfg.magnesisAob,     false, 0 }
         };
 
@@ -1890,13 +1992,13 @@ namespace Mod {
                     vCfg = GetCemuVersionConfig(currentExperimental);
                     DllLog("[INFO] Scanner reset applied. Mode: %ls", currentExperimental ? L"Cemu Experimental" : L"Cemu 2.6");
                     tasks[0].patternStr = vCfg.gameRomCameraAob;
-                    tasks[1].patternStr = vCfg.shortcutMenuAob;
-                    tasks[2].patternStr = vCfg.menuStateAob1;
-                    tasks[3].patternStr = vCfg.menuStateAob2;
+                    tasks[1].patternStr = vCfg.menuStateAob1;
+                    tasks[2].patternStr = vCfg.menuStateAob2;
+                    tasks[3].patternStr = vCfg.shortcutMenuAob;
                     tasks[4].patternStr = vCfg.magnesisAob;
 
                     for (size_t i = 0; i < tasks.size(); ++i) {
-                        if (preserveMenu && (i == 2 || i == 3)) {
+                        if (preserveMenu && (i == 1 || i == 2)) {
                             continue;
                         }
                         tasks[i].found = false;
@@ -1970,7 +2072,7 @@ namespace Mod {
                     LeaveCriticalSection(&g_writerCS);
 
                     for (size_t i = 1; i < tasks.size(); ++i) {
-                        if (preserveMenu && (i == 2 || i == 3)) continue;
+                        if (preserveMenu && (i == 1 || i == 2)) continue;
                         tasks[i].found = false;
                         tasks[i].address = 0;
                     }
@@ -1998,61 +2100,33 @@ namespace Mod {
             if (!tasks[0].found) {
                 DllLog("[INFO] Scanning for GameRomCamera...");
                 Pattern pat = ParseAOB(tasks[0].patternStr);
-                std::vector<uintptr_t> rawCandidates;
 
-                if (ScanProcessAOBAll(pat, rawCandidates)) {
-#ifdef _DEBUG
-                    DllLog("[INFO] Found %zu GameRomCamera match candidate(s). Verifying offsets and telemetry...", rawCandidates.size());
-#endif
-                    uintptr_t bestCandidate = 0;
-                    int bestScore = -1;
+                uintptr_t bestCandidate = 0;
+                int bestScore = -1;
+                uintptr_t fallbackCandidate = 0;
+                size_t totalCandidates = 0;
 
-                    for (size_t i = 0; i < rawCandidates.size(); ++i) {
-                        uintptr_t cand = rawCandidates[i] - 0x10;
-                        int score = 0;
-                        bool valid = VerifyGameRomCamera(cand, score);
-#ifdef _DEBUG
-                        float fov = ReadFloatBE(cand + 0x654);
-                        float posX = ReadFloatBE(cand + 0x550);
-                        float posY = ReadFloatBE(cand + 0x554);
-                        float posZ = ReadFloatBE(cand + 0x558);
-                        float focX = ReadFloatBE(cand + 0x63C);
-                        float focY = ReadFloatBE(cand + 0x640);
-                        float focZ = ReadFloatBE(cand + 0x644);
+                ScanGameRomCameraImmediate(pat, bestCandidate, bestScore, fallbackCandidate, totalCandidates);
 
-                        DllLog("[INFO] Match [%zu/%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
-                               i + 1, rawCandidates.size(), cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
-#endif
-
-                        if (valid && score > bestScore) {
-                            bestScore = score;
-                            bestCandidate = cand;
-                        }
+                if (bestCandidate != 0) {
+                    tasks[0].found = true;
+                    tasks[0].address = bestCandidate;
+                    g_addrGameRomCamera = bestCandidate;
+                    if (g_pSharedMemory) {
+                        g_pSharedMemory->m_statusAddrGameRomCamera = bestCandidate;
                     }
-
-                    if (bestCandidate != 0) {
-                        tasks[0].found = true;
-                        tasks[0].address = bestCandidate;
-                        g_addrGameRomCamera = bestCandidate;
-                        if (g_pSharedMemory) {
-                            g_pSharedMemory->m_statusAddrGameRomCamera = bestCandidate;
-                        }
-                        DllLog("[SUCCESS] Verified active GameRomCamera at 0x%llX (Score: %d)", bestCandidate, bestScore);
-                    } else {
-                        // Fallback: If in a loading screen where coords are uninitialized, take first candidate if available
-                        if (!rawCandidates.empty()) {
-                            uintptr_t fallback = rawCandidates[0] - 0x10;
-                            tasks[0].found = true;
-                            tasks[0].address = fallback;
-                            g_addrGameRomCamera = fallback;
-                            if (g_pSharedMemory) {
-                                g_pSharedMemory->m_statusAddrGameRomCamera = fallback;
-                            }
-                            DllLog("[INFO] Selected initial GameRomCamera at 0x%llX (will re-verify on gameplay)", fallback);
-                        } else {
-                            DllLog("[WARNING] GameRomCamera candidates rejected. Retrying in 500ms...");
-                        }
+                    DllLog("[SUCCESS] Verified active GameRomCamera at 0x%llX (Score: %d) [%zu candidates scanned]", bestCandidate, bestScore, totalCandidates);
+                } else if (fallbackCandidate != 0) {
+                    // Fallback: If in a loading screen where coords are uninitialized, take first candidate if available
+                    tasks[0].found = true;
+                    tasks[0].address = fallbackCandidate;
+                    g_addrGameRomCamera = fallbackCandidate;
+                    if (g_pSharedMemory) {
+                        g_pSharedMemory->m_statusAddrGameRomCamera = fallbackCandidate;
                     }
+                    DllLog("[INFO] Selected initial GameRomCamera at 0x%llX (will re-verify on gameplay) [%zu candidates scanned]", fallbackCandidate, totalCandidates);
+                } else if (totalCandidates > 0) {
+                    DllLog("[WARNING] GameRomCamera candidates rejected (%zu scanned). Retrying in 500ms...", totalCandidates);
                 } else {
                     DllLog("[WARNING] GameRomCamera pattern not found in memory. Retrying in 500ms...");
                 }
@@ -2072,8 +2146,8 @@ namespace Mod {
 
             if (!scanShortcutMenu) {
                 if (g_shortcutHookActive) RemoveShortcutHook();
-                tasks[1].found = false;
-                tasks[1].address = 0;
+                tasks[3].found = false;
+                tasks[3].address = 0;
                 g_addrShortcutMenu = 0;
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
@@ -2087,10 +2161,10 @@ namespace Mod {
                 g_menuStateCandidates1.clear();
                 g_menuStateCandidates2.clear();
                 LeaveCriticalSection(&g_menuCandidateCS);
+                tasks[1].found = false;
+                tasks[1].address = 0;
                 tasks[2].found = false;
                 tasks[2].address = 0;
-                tasks[3].found = false;
-                tasks[3].address = 0;
                 g_addrMenuState = 0;
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_statusAddrMenuState = 0;
@@ -2117,13 +2191,13 @@ namespace Mod {
                 }
             }
 
-            // Find the next unfound task and scan it
+            // Find the next unfound task and scan it (MenuState 1/2 before ShortcutMenu, Magnesis last)
             size_t targetIdx = 0;
             for (size_t i = 0; i < tasks.size() - 1; ++i) {
                 size_t idx = 1 + ((nextIdx - 1 + i) % (tasks.size() - 1));
                 bool enabled = true;
-                if (idx == 1) enabled = scanShortcutMenu;
-                else if (idx == 2 || idx == 3) enabled = scanMenuState;
+                if (idx == 3) enabled = scanShortcutMenu;
+                else if (idx == 1 || idx == 2) enabled = scanMenuState;
                 else if (idx == 4) enabled = scanMagneTarget;
 
                 if (enabled && !tasks[idx].found) {
@@ -2138,39 +2212,24 @@ namespace Mod {
             PollHooksAndSyncSharedMemory();
 
             if (scanShortcutMenu && g_addrShortcutMenu != 0) {
-                tasks[1].found = true;
+                tasks[3].found = true;
             }
             if (scanMenuState && g_addrMenuState != 0) {
+                tasks[1].found = true;
                 tasks[2].found = true;
-                tasks[3].found = true;
             }
 
             // 2. Perform AOB pattern scanning for the current target task
             if (targetIdx != 0) {
                 nextIdx = (targetIdx % (tasks.size() - 1)) + 1;
 
-                if (targetIdx == 1 && scanShortcutMenu && !tasks[1].found && !g_shortcutHookActive) {
-                    DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
+                if (targetIdx == 1 && scanMenuState && !tasks[1].found && !g_menuStateHook1Active && g_addrMenuState == 0) {
+                    DllLog("[INFO] Scanning for MenuState AOB 1 instruction pattern...");
                     Pattern pat = ParseAOB(tasks[1].patternStr);
                     uintptr_t foundAddress = 0;
                     if (ScanProcessAOB(pat, foundAddress)) {
-                        DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
-                        tasks[1].address = foundAddress;
-                        if (SetupShortcutHook(foundAddress)) {
-                            DllLog("[SUCCESS] Detour hook set up successfully. Waiting for game write...");
-                        } else {
-                            DllLog("[ERROR] Failed to set up detour hook for ShortcutMenu.");
-                        }
-                    } else {
-                        DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
-                    }
-                } else if (targetIdx == 2 && scanMenuState && !tasks[2].found && !g_menuStateHook1Active && g_addrMenuState == 0) {
-                    DllLog("[INFO] Scanning for MenuState AOB 1 instruction pattern...");
-                    Pattern pat = ParseAOB(tasks[2].patternStr);
-                    uintptr_t foundAddress = 0;
-                    if (ScanProcessAOB(pat, foundAddress)) {
                         DllLog("[SUCCESS] Found MenuState AOB 1 instruction at 0x%llX. Setting up trampoline hook 1...", foundAddress);
-                        tasks[2].address = foundAddress;
+                        tasks[1].address = foundAddress;
                         if (SetupMenuStateHook(foundAddress, 1)) {
                             DllLog("[SUCCESS] MenuState trampoline hook 1 set up successfully. Waiting for game write...");
                         } else {
@@ -2179,13 +2238,13 @@ namespace Mod {
                     } else {
                         DllLog("[WARNING] MenuState AOB 1 instruction pattern not found. Retrying in 1s...");
                     }
-                } else if (targetIdx == 3 && scanMenuState && !tasks[3].found && !g_menuStateHook2Active && g_addrMenuState == 0) {
+                } else if (targetIdx == 2 && scanMenuState && !tasks[2].found && !g_menuStateHook2Active && g_addrMenuState == 0) {
                     DllLog("[INFO] Scanning for MenuState AOB 2 instruction pattern...");
-                    Pattern pat = ParseAOB(tasks[3].patternStr);
+                    Pattern pat = ParseAOB(tasks[2].patternStr);
                     uintptr_t foundAddress = 0;
                     if (ScanProcessAOB(pat, foundAddress)) {
                         DllLog("[SUCCESS] Found MenuState AOB 2 instruction at 0x%llX. Setting up trampoline hook 2...", foundAddress);
-                        tasks[3].address = foundAddress;
+                        tasks[2].address = foundAddress;
                         if (SetupMenuStateHook(foundAddress, 2)) {
                             DllLog("[SUCCESS] MenuState trampoline hook 2 set up successfully. Waiting for game write...");
                         } else {
@@ -2193,6 +2252,21 @@ namespace Mod {
                         }
                     } else {
                         DllLog("[WARNING] MenuState AOB 2 instruction pattern not found. Retrying in 1s...");
+                    }
+                } else if (targetIdx == 3 && scanShortcutMenu && !tasks[3].found && !g_shortcutHookActive) {
+                    DllLog("[INFO] Scanning for ShortcutMenu instruction pattern...");
+                    Pattern pat = ParseAOB(tasks[3].patternStr);
+                    uintptr_t foundAddress = 0;
+                    if (ScanProcessAOB(pat, foundAddress)) {
+                        DllLog("[SUCCESS] Found ShortcutMenu instruction at 0x%llX. Setting up detour hook...", foundAddress);
+                        tasks[3].address = foundAddress;
+                        if (SetupShortcutHook(foundAddress)) {
+                            DllLog("[SUCCESS] Detour hook set up successfully. Waiting for game write...");
+                        } else {
+                            DllLog("[ERROR] Failed to set up detour hook for ShortcutMenu.");
+                        }
+                    } else {
+                        DllLog("[WARNING] ShortcutMenu instruction pattern not found. Retrying in 1s...");
                     }
                 } else if (targetIdx == 4 && scanMagneTarget && !tasks[4].found) {
                     DllLog("[INFO] Scanning for Magne Target Sig...");
@@ -2272,8 +2346,8 @@ namespace Mod {
             allOtherFound = true;
             for (size_t i = 1; i < tasks.size(); ++i) {
                 bool enabled = true;
-                if (i == 1) enabled = scanShortcutMenu;
-                else if (i == 2 || i == 3) enabled = scanMenuState;
+                if (i == 3) enabled = scanShortcutMenu;
+                else if (i == 1 || i == 2) enabled = scanMenuState;
                 else if (i == 4) enabled = scanMagneTarget;
 
                 if (enabled && !tasks[i].found) {
