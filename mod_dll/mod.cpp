@@ -1952,6 +1952,11 @@ namespace Mod {
         EnterCriticalSection(&g_writerCS);
         g_pendingRips.clear();
         LeaveCriticalSection(&g_writerCS);
+        if (g_blacklistedMode.load()) {
+            g_blacklistedMode.store(false);
+            g_lastBlacklistedWriteTime.store(0);
+            DllLog("[INFO] Blacklist cleared on hunt STOP");
+        }
         DllLog("[INFO] Writer hunt STOP — NOPs restored (%zu remembered)", g_discoveredWriters.size());
     }
 
@@ -2170,15 +2175,24 @@ namespace Mod {
                         g_pendingRips.clear();
                         if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = 0;
                         LeaveCriticalSection(&g_writerCS);
-                        DllLog("[INFO] Hunter reset — all writer NOPs cleared");
+                        g_blacklistedMode.store(false);
+                        g_lastBlacklistedWriteTime.store(0);
+                        DllLog("[INFO] Hunter reset — all writer NOPs cleared, blacklist cleared");
                     } else {
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
                         EnterCriticalSection(&g_writerCS);
                         g_pendingRips.clear();
                         LeaveCriticalSection(&g_writerCS);
-                        if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
-                        DllLog("[INFO] Hunter preserve — keeping %zu writer NOPs", g_discoveredWriters.size());
+                        // Reset2 while blacklisted was stuck — must clear blacklist to unfreeze mouse (per your report)
+                        if (g_blacklistedMode.load()) {
+                            g_blacklistedMode.store(false);
+                            g_lastBlacklistedWriteTime.store(0);
+                            DllLog("[INFO] Hunter preserve — keeping %zu writer NOPs, blacklist cleared (was stuck)", g_discoveredWriters.size());
+                        } else {
+                            if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
+                            DllLog("[INFO] Hunter preserve — keeping %zu writer NOPs", g_discoveredWriters.size());
+                        }
                     }
 
                     ResetScannerState();
@@ -3037,15 +3051,21 @@ namespace Mod {
                     g_pSharedMemory->m_teleLiveCamFOV = g_liveCamFOV;
                 }
 
-                // New feature: if any cam coord or FOV becomes 0.0, immediately do reset2
+                // New feature: if any 5 of 7 cam coords/FOV are 0.0 at same time, do reset2
                 {
                     static bool wasZeroTriggered = false;
-                    bool isZero = (g_liveCamPosX.load() == 0.0f || g_liveCamPosY.load() == 0.0f || g_liveCamPosZ.load() == 0.0f ||
-                                   g_liveCamFocX.load() == 0.0f || g_liveCamFocY.load() == 0.0f || g_liveCamFocZ.load() == 0.0f ||
-                                   g_liveCamFOV.load() == 0.0f);
+                    int zeroCount = 0;
+                    if (g_liveCamPosX.load() == 0.0f) zeroCount++;
+                    if (g_liveCamPosY.load() == 0.0f) zeroCount++;
+                    if (g_liveCamPosZ.load() == 0.0f) zeroCount++;
+                    if (g_liveCamFocX.load() == 0.0f) zeroCount++;
+                    if (g_liveCamFocY.load() == 0.0f) zeroCount++;
+                    if (g_liveCamFocZ.load() == 0.0f) zeroCount++;
+                    if (g_liveCamFOV.load() == 0.0f) zeroCount++;
+                    bool isZero = (zeroCount >= 5);
                     if (isZero && !wasZeroTriggered) {
                         wasZeroTriggered = true;
-                        DllLog("[INFO] Cam coord/FOV is 0.0 (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f) — triggering reset2", g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load());
+                        DllLog("[INFO] Cam 5/7 is 0.0 (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f count %d) — triggering reset2", g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load(), zeroCount);
                         if (g_pSharedMemory) {
                             g_pSharedMemory->m_reqResetPreserveMenu = true;
                             g_pSharedMemory->m_reqResetScan = false;
@@ -3771,6 +3791,8 @@ namespace Mod {
         for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
         g_discoveredWriters.clear();
         g_pendingRips.clear();
+        g_blacklistedMode.store(false);
+        g_lastBlacklistedWriteTime.store(0);
         if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = 0;
         LeaveCriticalSection(&g_writerCS);
         if (g_vehHandle) { RemoveVectoredExceptionHandler(g_vehHandle); g_vehHandle = nullptr; }
