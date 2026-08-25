@@ -1539,6 +1539,422 @@ namespace Mod {
     }
 
     // -------------------------------------------------------------------------
+    // Hunter — Page-Guard VEH, mouse-gated, 250ms detect / 100ms catch
+    //   detect: every 250ms if mouse moved and cur != lastWritten → overwrite
+    //   catch:  arm guard for 100ms (25 frames @4ms) → VEH captures RIP
+    //   AOB:    dump RIP±32 like F5, test vs blacklist, NOP else pause 50ms
+    //   life:   F2 off restores (keeps list), F2 on re-NOPs; Reset forgets, Reset2 keeps
+    // -------------------------------------------------------------------------
+
+    struct WriterRecord {
+        uintptr_t rip;
+        uint8_t   origBytes[16];
+        size_t    patchSize;
+        bool      nopActive;
+    };
+
+    static std::vector<WriterRecord> g_discoveredWriters; // protected by g_writerCS
+    static std::vector<uintptr_t>    g_pendingRips; // accumulated during 10-frame window, protected by g_writerCS
+    static CRITICAL_SECTION          g_writerCS;
+    static PVOID                     g_vehHandle = nullptr;
+    static std::atomic<bool>         g_guardArmed{false};
+    static std::atomic<bool>         g_writerHuntActive{false};
+    static uintptr_t                 g_guardPage = 0;
+    static DWORD                     g_guardOldProtect = 0;
+    static std::atomic<uint64_t>     g_lastBlacklistedWriteTime{0};
+    static std::atomic<int>          g_huntFramesLeft{0};
+    static std::atomic<bool>         g_blacklistedMode{false};
+
+    static size_t DetectWriteInstructionSize(const uint8_t* p) {
+        size_t off = 0;
+        // REX
+        bool hasRex = (p[off] >= 0x40 && p[off] <= 0x4F);
+        if (hasRex) off++;
+        // Prefixes: 66/F2/F3
+        bool has66 = false, hasF2 = false, hasF3 = false;
+        if (p[off] == 0x66) { has66 = true; off++; if (p[off] >= 0x40 && p[off] <= 0x4F) { hasRex = true; off++; } }
+        if (p[off] == 0xF2) { hasF2 = true; off++; }
+        if (p[off] == 0xF3) { hasF3 = true; off++; }
+        // MOVBE: 0F 38 F1
+        if (p[off] == 0x0F && p[off+1] == 0x38 && p[off+2] == 0xF1) {
+            off += 3;
+            uint8_t modrm = p[off++];
+            uint8_t mod = (modrm >> 6) & 3;
+            uint8_t rm  = modrm & 7;
+            bool hasSib = (rm == 4);
+            if (hasSib) off++;
+            if      (mod == 1) off += 1;
+            else if (mod == 2) off += 4;
+            else if (mod == 0 && rm == 5) off += 4;
+            return off;
+        }
+        // MOV r/m32, r32: 89 /r
+        if (p[off] == 0x89) {
+            off++;
+            uint8_t modrm = p[off++];
+            uint8_t mod = (modrm >> 6) & 3;
+            uint8_t rm  = modrm & 7;
+            bool hasSib = (rm == 4);
+            if (hasSib) off++;
+            if      (mod == 1) off += 1;
+            else if (mod == 2) off += 4;
+            else if (mod == 0 && rm == 5) off += 4;
+            return off;
+        }
+        // MOVSS m32, xmm: F3 0F 11 /r  and MOVUPS/SD variants: 0F 11, 66 0F 11, F2 0F 11
+        if (p[off] == 0x0F && (p[off+1] == 0x11 || p[off+1] == 0x29 || p[off+1] == 0x7F)) {
+            // 0F 11 = MOVUPS, 0F 29 = MOVAPS, 0F 7F = MOVQ
+            off += 2;
+            uint8_t modrm = p[off++];
+            uint8_t mod = (modrm >> 6) & 3;
+            uint8_t rm  = modrm & 7;
+            bool hasSib = (rm == 4);
+            if (hasSib) off++;
+            if      (mod == 1) off += 1;
+            else if (mod == 2) off += 4;
+            else if (mod == 0 && rm == 5) off += 4;
+            return off;
+        }
+        // With F3 prefix already consumed, check again
+        if (hasF3 && p[off] == 0x0F && p[off+1] == 0x11) {
+            off += 2;
+            uint8_t modrm = p[off++];
+            uint8_t mod = (modrm >> 6) & 3;
+            uint8_t rm  = modrm & 7;
+            bool hasSib = (rm == 4);
+            if (hasSib) off++;
+            if      (mod == 1) off += 1;
+            else if (mod == 2) off += 4;
+            else if (mod == 0 && rm == 5) off += 4;
+            return off;
+        }
+        return 0;
+    }
+
+    static bool NopInstruction(uintptr_t rip, WriterRecord& rec) {
+        uint8_t buf[16] = {};
+        __try { memcpy(buf, (const void*)rip, 16); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+        size_t sz = DetectWriteInstructionSize(buf);
+        if (sz == 0 || sz > 15) {
+            // Fallback: many JIT stores are 5-7 bytes; try 7 with warning
+            DllLog("[WARNING] Detect size 0 for RIP 0x%llX bytes %02X %02X %02X %02X — fallback to 7", rip, buf[0], buf[1], buf[2], buf[3]);
+            sz = 7;
+        }
+        DWORD old = 0;
+        if (!VirtualProtect((LPVOID)rip, sz, PAGE_EXECUTE_READWRITE, &old)) return false;
+        memcpy(rec.origBytes, buf, sz);
+        rec.rip = rip;
+        rec.patchSize = sz;
+        rec.nopActive = true;
+        memset((void*)rip, 0x90, sz);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rip, sz);
+        VirtualProtect((LPVOID)rip, sz, old, &old);
+        return true;
+    }
+
+    static void RestoreInstruction(WriterRecord& rec) {
+        if (!rec.nopActive || rec.patchSize == 0) return;
+        DWORD old = 0;
+        if (VirtualProtect((LPVOID)rec.rip, rec.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
+            memcpy((void*)rec.rip, rec.origBytes, rec.patchSize);
+            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rec.rip, rec.patchSize);
+            VirtualProtect((LPVOID)rec.rip, rec.patchSize, old, &old);
+        }
+        rec.nopActive = false;
+    }
+
+    static void DisarmPageGuard() {
+        if (!g_guardArmed) return;
+        DWORD old = 0;
+        VirtualProtect((LPVOID)g_guardPage, 0x1000, g_guardOldProtect & ~PAGE_GUARD, &old);
+        g_guardArmed = false;
+    }
+
+    static void ArmPageGuard(uintptr_t gc_addr) {
+        uintptr_t page = gc_addr & ~(uintptr_t)0xFFF;
+        if (g_guardArmed) {
+            if (g_guardPage == page) return;
+            DisarmPageGuard();
+        }
+        DWORD old = 0;
+        if (VirtualProtect((LPVOID)page, 0x1000, PAGE_READWRITE | PAGE_GUARD, &old)) {
+            g_guardPage = page;
+            g_guardOldProtect = old;
+            g_guardArmed = true;
+            // Only log when hunting to avoid spam
+            if (g_huntFramesLeft.load() > 0) {
+                DllLog("[DEBUG] ArmPageGuard page 0x%llX huntFrames %d", page, g_huntFramesLeft.load());
+            }
+        } else {
+            DllLog("[WARNING] ArmPageGuard failed page 0x%llX err %u", page, GetLastError());
+        }
+    }
+
+    static thread_local bool t_isSingleStepping = false;
+
+    static inline bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out) {
+        __try { out = *(const uint8_t*)addr; return true; } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
+    static std::string GenerateWriterAob(uintptr_t rip, size_t patchSize) {
+        std::string out;
+        uintptr_t start = rip >= 32 ? rip - 32 : 0;
+        uintptr_t end   = rip + patchSize + 32;
+        char buf[8];
+        for (uintptr_t p = start; p < end; ++p) {
+            uint8_t b = 0;
+            SafeReadU8_SEH(p, b);
+            if (p == rip) out += "[ ";
+            snprintf(buf, sizeof(buf), "%02X ", b);
+            out += buf;
+            if (p == rip + patchSize - 1) out += "] ";
+        }
+        return out;
+    }
+
+    static bool IsWriterBlacklisted(uintptr_t rip) {
+        if (g_writerBlacklist.empty()) return false;
+        // Generate writer AOB like F5 does (RIP-32 .. RIP+size+32), then see if any blacklist pattern lives inside that AOB
+        uint8_t tmp[16] = {};
+        for (int i = 0; i < 16; ++i) { uint8_t b = 0; if (!SafeReadU8_SEH(rip + i, b)) break; tmp[i] = b; }
+        size_t patchSize = DetectWriteInstructionSize(tmp);
+        if (patchSize == 0 || patchSize > 15) patchSize = 7;
+        uintptr_t start = rip >= 32 ? rip - 32 : 0;
+        uintptr_t end = rip + patchSize + 32;
+        size_t bufLen = (size_t)(end - start);
+        if (bufLen == 0 || bufLen > 512) return false;
+        std::vector<uint8_t> buf(bufLen);
+        for (size_t i = 0; i < bufLen; ++i) { uint8_t b = 0; SafeReadU8_SEH(start + i, b); buf[i] = b; }
+        for (const auto& pat : g_writerBlacklist) {
+            size_t patLen = pat.bytes.size();
+            if (patLen == 0 || patLen > bufLen) continue;
+            for (size_t off = 0; off + patLen <= bufLen; ++off) {
+                bool match = true;
+                for (size_t j = 0; j < patLen; ++j) {
+                    if (!pat.isWildcard[j] && buf[off + j] != pat.bytes[j]) { match = false; break; }
+                }
+                if (match) return true;
+            }
+        }
+        return false;
+    }
+
+    static LONG NTAPI CameraWriterVehHandler(PEXCEPTION_POINTERS ep) {
+        if (ep->ExceptionRecord->ExceptionCode == STATUS_SINGLE_STEP) {
+            if (t_isSingleStepping) {
+                t_isSingleStepping = false;
+                if (g_huntFramesLeft.load() > 0) {
+                    uintptr_t base = g_addrGameRomCamera.load();
+                    if (base != 0) ArmPageGuard(base + 0x550);
+                }
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (ep->ExceptionRecord->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION)
+            return EXCEPTION_CONTINUE_SEARCH;
+        uintptr_t faultAddr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        if (faultAddr < g_guardPage || faultAddr >= g_guardPage + 0x1000)
+            return EXCEPTION_CONTINUE_SEARCH;
+        g_guardArmed = false;
+        bool isWrite = (ep->ExceptionRecord->ExceptionInformation[0] == 1);
+        uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
+        // Log every guard fault for diagnostics (even if not collected)
+        bool shouldCollect = false;
+        if (isWrite && g_writerHuntActive.load()) {
+            uintptr_t base = g_addrGameRomCamera.load();
+            if (base != 0 && (faultAddr == base + 0x550 || faultAddr == base + 0x554 || faultAddr == base + 0x558)) {
+                MEMORY_BASIC_INFORMATION mbi = {};
+                VirtualQuery((LPCVOID)rip, &mbi, sizeof(mbi));
+                bool isExec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+                bool isJit = (mbi.Type == MEM_PRIVATE) && isExec;
+                if (!isJit) {
+                    // Strict: only JIT (MEM_PRIVATE + exec) is a real camera writer; our own writes are MEM_IMAGE and must be single-stepped
+                    // Don't log MEM_IMAGE faults at high frequency to avoid spam, but log once per burst
+                    static uint64_t lastLogMs = 0;
+                    uint64_t nowDbg = GetTickCount64();
+                    if (nowDbg - lastLogMs > 500) {
+                        lastLogMs = nowDbg;
+                        DllLog("[DEBUG] Guard fault RIP 0x%llX fault 0x%llX Type %u Protect 0x%X — not JIT, single-step", rip, faultAddr, mbi.Type, mbi.Protect);
+                    }
+                } else {
+                    shouldCollect = true;
+                }
+            } else {
+                // Not XYZ — page guard hit for other var on same 4KB page, just single-step, no log to avoid flood
+            }
+        } else if (g_writerHuntActive.load() && isWrite) {
+            // Write fault outside our XYZ — still log
+            DllLog("[DEBUG] Guard write fault RIP 0x%llX fault 0x%llX not XYZ or not huntActive", rip, faultAddr);
+        }
+        if (shouldCollect) {
+            EnterCriticalSection(&g_writerCS);
+            bool alreadyPending = false, alreadyDiscovered = false;
+            for (auto r : g_pendingRips) if (r == rip) alreadyPending = true;
+            for (auto &wr : g_discoveredWriters) if (wr.rip == rip) alreadyDiscovered = true;
+            if (!alreadyPending && !alreadyDiscovered) {
+                g_pendingRips.push_back(rip);
+                DllLog("[INFO] Collected writer RIP 0x%llX (fault 0x%llX) pending %zu (accumulating 10 frames)", rip, faultAddr, g_pendingRips.size());
+                if (g_pendingRips.size() >= 3) {
+                    // Got X/Y/Z — stop immediately, don't wait full 10 frames
+                    g_huntFramesLeft.store(1);
+                    DllLog("[INFO] Got 3 writers — arming shortened to process immediately");
+                }
+            }
+            LeaveCriticalSection(&g_writerCS);
+        }
+        ep->ContextRecord->EFlags |= 0x100;
+        t_isSingleStepping = true;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    // Called after 10-frame window closes — build ONE combined AOB like F5 (minRip-32 .. maxRip+size+32) and compare that single AOB vs blacklist
+    static void ProcessPendingWriters() {
+        std::vector<uintptr_t> toProcess;
+        EnterCriticalSection(&g_writerCS);
+        if (g_pendingRips.empty()) {
+            bool wasBlacklisted = g_blacklistedMode.load();
+            LeaveCriticalSection(&g_writerCS);
+            if (wasBlacklisted) {
+                DllLog("[INFO] Blacklist re-check: no writers — re-enabling mouse");
+                g_blacklistedMode.store(false);
+            }
+            return;
+        }
+        toProcess.swap(g_pendingRips);
+        LeaveCriticalSection(&g_writerCS);
+        // Sort to find earliest/latest like F5 does
+        std::sort(toProcess.begin(), toProcess.end());
+        // Build combined AOB buffer like F5 dump does (min-32 .. max+size+32)
+        uintptr_t minRip = toProcess.front();
+        uintptr_t maxRip = toProcess.back();
+        // Need max patch size — compute for maxRip
+        uint8_t tmpMax[16] = {}; for (int i=0;i<16;++i){ uint8_t b=0; SafeReadU8_SEH(maxRip+i,b); tmpMax[i]=b; }
+        size_t maxPatch = DetectWriteInstructionSize(tmpMax);
+        if (maxPatch==0||maxPatch>15) maxPatch=7;
+        uintptr_t start = minRip >= 32 ? minRip - 32 : 0;
+        uintptr_t end = maxRip + maxPatch + 32;
+        size_t bufLen = (size_t)(end - start);
+        if (bufLen==0 || bufLen>2048) bufLen = 0;
+        std::vector<uint8_t> combined;
+        if (bufLen) {
+            combined.resize(bufLen);
+            for (size_t i=0;i<bufLen;++i){ uint8_t b=0; SafeReadU8_SEH(start+i,b); combined[i]=b; }
+            // Restore original bytes for inside-writer regions like F5 does (so blacklist wildcards still match)
+            EnterCriticalSection(&g_writerCS);
+            for (auto &wr : g_discoveredWriters) {
+                if (wr.rip >= start && wr.rip + wr.patchSize <= end) {
+                    for (size_t k=0;k<wr.patchSize;++k) combined[wr.rip - start + k] = wr.origBytes[k];
+                }
+            }
+            // Also for toProcess pending writers, ensure their original bytes are used (they are not yet NOP'd, but use live bytes which are original)
+            LeaveCriticalSection(&g_writerCS);
+        }
+        // Generate hex string for logging like F5 (with [ ] markers)
+        std::string combinedAobStr;
+        if (bufLen) {
+            char hb[8];
+            for (uintptr_t p=start; p<end; ++p) {
+                bool isStart=false,isEnd=false;
+                for (auto r: toProcess) {
+                    uint8_t tm2[16]={}; for(int i=0;i<16;++i){uint8_t b=0; SafeReadU8_SEH(r+i,b); tm2[i]=b;}
+                    size_t sz2 = DetectWriteInstructionSize(tm2); if(sz2==0||sz2>15) sz2=7;
+                    if (r==p) isStart=true;
+                    if (r+sz2-1==p) isEnd=true;
+                }
+                uint8_t b = combined[p - start];
+                if (isStart) combinedAobStr += "[ ";
+                char bb[4]; snprintf(bb,sizeof(bb),"%02X ", b); combinedAobStr += bb;
+                if (isEnd) combinedAobStr += "] ";
+            }
+        }
+        DllLog("[INFO] Processing %zu pending writers as ONE AOB [%llX..%llX] len %zu: %s", toProcess.size(), start, end, bufLen, combinedAobStr.c_str());
+        // Check this ONE combined AOB vs blacklist — if any blacklist pattern lives inside it, the whole set is blacklisted
+        bool blacklisted = false;
+        if (!combined.empty() && !g_writerBlacklist.empty()) {
+            for (const auto& pat : g_writerBlacklist) {
+                size_t patLen = pat.bytes.size();
+                if (patLen==0 || patLen > combined.size()) continue;
+                for (size_t off=0; off+patLen <= combined.size(); ++off) {
+                    bool match=true;
+                    for (size_t j=0;j<patLen;++j) if (!pat.isWildcard[j] && combined[off+j] != pat.bytes[j]) { match=false; break; }
+                    if (match) { blacklisted=true; break; }
+                }
+                if (blacklisted) break;
+            }
+        }
+        if (blacklisted) {
+            g_lastBlacklistedWriteTime.store(GetTickCount64());
+            g_blacklistedMode.store(true);
+            DllLog("[INFO] Pending set BLACKLISTED — AOB: %s — mouse/render DISABLED, re-check every 100ms", combinedAobStr.c_str());
+            return;
+        }
+        // Not blacklisted — if we were blacklisted, re-enable
+        if (g_blacklistedMode.load()) {
+            DllLog("[INFO] Blacklist no longer active — re-enabling mouse");
+            g_blacklistedMode.store(false);
+        }
+        // Not blacklisted — NOP all pending at once
+        for (uintptr_t rip : toProcess) {
+            EnterCriticalSection(&g_writerCS);
+            bool alreadyKnown=false;
+            for (auto &wr: g_discoveredWriters) if (wr.rip==rip) alreadyKnown=true;
+            if (!alreadyKnown) {
+                WriterRecord rec={};
+                std::string aob = GenerateWriterAob(rip, DetectWriteInstructionSize((uint8_t*)rip));
+                if (NopInstruction(rip, rec)) {
+                    DllLog("[SUCCESS] Writer NOP'd at 0x%llX size %zu — AOB: %s — total %zu", rip, rec.patchSize, aob.c_str(), g_discoveredWriters.size()+1);
+                    g_discoveredWriters.push_back(rec);
+                    if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
+                } else {
+                    DllLog("[WARNING] Pending writer at 0x%llX unrecognized — skip", rip);
+                }
+            }
+            LeaveCriticalSection(&g_writerCS);
+        }
+    }
+
+    static void ApplyAllWriterNops() {
+        EnterCriticalSection(&g_writerCS);
+        for (auto& wr : g_discoveredWriters) {
+            if (!wr.nopActive && wr.patchSize > 0) {
+                DWORD old = 0;
+                if (VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
+                    memset((void*)wr.rip, 0x90, wr.patchSize);
+                    FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
+                    VirtualProtect((LPVOID)wr.rip, wr.patchSize, old, &old);
+                    wr.nopActive = true;
+                }
+            }
+        }
+        LeaveCriticalSection(&g_writerCS);
+    }
+
+    static void RestoreAllWriterNops() {
+        EnterCriticalSection(&g_writerCS);
+        for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
+        LeaveCriticalSection(&g_writerCS);
+    }
+
+    static void StartWriterHunt() {
+        ApplyAllWriterNops();
+        if (!g_vehHandle) g_vehHandle = AddVectoredExceptionHandler(1, CameraWriterVehHandler);
+        g_writerHuntActive = true;
+        // Do not arm immediately — arm only on overwrite detection (250ms gate)
+        DllLog("[INFO] Writer hunt START (cached %zu)", g_discoveredWriters.size());
+    }
+
+    static void StopWriterHunt() {
+        g_writerHuntActive = false;
+        g_huntFramesLeft.store(0);
+        DisarmPageGuard();
+        RestoreAllWriterNops();
+        EnterCriticalSection(&g_writerCS);
+        g_pendingRips.clear();
+        LeaveCriticalSection(&g_writerCS);
+        DllLog("[INFO] Writer hunt STOP — NOPs restored (%zu remembered)", g_discoveredWriters.size());
+    }
+
     static float ReadFloatBE(uintptr_t address) {
         uint32_t val = 0;
         __try {
@@ -1740,9 +2156,30 @@ namespace Mod {
                     g_pSharedMemory->m_statusAddrShortcutMenu = 0;
                     if (!preserveMenu) g_pSharedMemory->m_statusAddrMenuState = 0;
                     g_pSharedMemory->m_statusAddrMagneTarget = 0;
-                    g_pSharedMemory->m_statusWritersFound = 0;
                     g_pSharedMemory->m_patchMagneDetourActive = false;
                     g_pSharedMemory->m_statusShortcutHookReady = false;
+
+                    // Hunter: Reset forgets (full), Reset2 keeps (preserve)
+                    if (!preserveMenu) {
+                        g_writerHuntActive.store(false);
+                        g_huntFramesLeft.store(0);
+                        DisarmPageGuard();
+                        EnterCriticalSection(&g_writerCS);
+                        for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
+                        g_discoveredWriters.clear();
+                        g_pendingRips.clear();
+                        if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = 0;
+                        LeaveCriticalSection(&g_writerCS);
+                        DllLog("[INFO] Hunter reset — all writer NOPs cleared");
+                    } else {
+                        g_huntFramesLeft.store(0);
+                        DisarmPageGuard();
+                        EnterCriticalSection(&g_writerCS);
+                        g_pendingRips.clear();
+                        LeaveCriticalSection(&g_writerCS);
+                        if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
+                        DllLog("[INFO] Hunter preserve — keeping %zu writer NOPs", g_discoveredWriters.size());
+                    }
 
                     ResetScannerState();
                     allOtherFound = false;
@@ -2276,6 +2713,14 @@ namespace Mod {
         bool last_should_control = false;
         auto last_frame_time = std::chrono::steady_clock::now();
 
+        // Hunter: 250ms detect, 100ms catch (10 frames @4ms) + 100ms blacklist re-check
+        float hunter_lastWrittenX = 0.0f, hunter_lastWrittenY = 0.0f, hunter_lastWrittenZ = 0.0f;
+        bool  hunter_hasWritten = false;
+        bool  hunter_mouseMovedSinceLastCheck = false;
+        uint64_t hunter_lastCheckMs = 0;
+        uint64_t hunter_blacklistRecheckMs = 0;
+        int   hunter_aobDumpCountdown = 0;
+
         bool ki_enabled = true;
         bool prev_pressed[5] = {false, false, false, false, false};
         std::chrono::steady_clock::time_point press_time[5];
@@ -2512,6 +2957,18 @@ namespace Mod {
             bool should_control = g_mousecamActive && (!magnesis_mode || fps_magne_active) && !menu_active && !is_shortcut_open;
             if (should_control != last_should_control) {
                 last_should_control = should_control;
+                if (should_control) {
+                    StartWriterHunt();
+                    hunter_hasWritten = false;
+                    hunter_mouseMovedSinceLastCheck = false;
+                    hunter_lastCheckMs = GetTickCount64();
+                    g_huntFramesLeft.store(0);
+                } else {
+                    StopWriterHunt();
+                    hunter_hasWritten = false;
+                    hunter_mouseMovedSinceLastCheck = false;
+                    g_huntFramesLeft.store(0);
+                }
                 // SMOOTH TRANSITION: Restore orbital camera angles from the game camera on recapture (1:1 with Rust)
                 if (should_control && gc_addr != 0) {
                     float gc_pos_x = ReadFloatBE(gc_addr + 0);
@@ -2551,6 +3008,16 @@ namespace Mod {
                 g_pSharedMemory->m_cfgMagnesisEnabled = magnesis_mode;
             }
 
+            // Diagnostic: log hunter state every second when mousecam on
+            {
+                static uint64_t lastDbgMs = 0;
+                uint64_t nowDbg = GetTickCount64();
+                if (nowDbg - lastDbgMs >= 1000 && g_mousecamActive) {
+                    lastDbgMs = nowDbg;
+                    DllLog("[DEBUG] should_ctrl %d blacklisted %d huntActive %d huntFrames %d hasWritten %d mouseMoved %d gc %llX", should_control, g_blacklistedMode.load(), g_writerHuntActive.load(), g_huntFramesLeft.load(), hunter_hasWritten, hunter_mouseMovedSinceLastCheck, gc_addr);
+                }
+            }
+
             if (gc_addr != 0) {
                 g_liveCamPosX = ReadFloatBE(gc_addr + 0);
                 g_liveCamPosY = ReadFloatBE(gc_addr + 4);
@@ -2582,7 +3049,9 @@ namespace Mod {
                 float dx = 0.0f;
                 float dy = 0.0f;
 
-                if (g_mousecamActive && is_foreground) {
+                if (g_blacklistedMode.load()) {
+                    dx = 0.0f; dy = 0.0f;
+                } else if (g_mousecamActive && is_foreground) {
                     POINT pt = {0, 0};
                     GetCursorPos(&pt);
                     POINT center = GetCemuWindowCenter(hwndFg);
@@ -2594,9 +3063,14 @@ namespace Mod {
                         SetCursorPos(center.x, center.y);
                     }
                 }
+                if ((dx != 0.0f || dy != 0.0f) && should_control && !g_blacklistedMode.load()) {
+                    hunter_mouseMovedSinceLastCheck = true;
+                }
 
-                if (g_mousecamActive) {
-                    float sensitivity_x = 1.0f;
+                if (g_blacklistedMode.load()) {
+                        // Blacklisted — mouse dead
+                    } else if (g_mousecamActive) {
+                        float sensitivity_x = 1.0f;
                     float sensitivity_y = 1.0f;
                     if (g_pSharedMemory) {
                         sensitivity_x = g_pSharedMemory->m_cfgSensitivityX;
@@ -3045,9 +3519,58 @@ namespace Mod {
                     }
 
                     if ((!magnesis_mode || fps_magne_active) && !menu_active) {
-                        WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
-                        WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
-                        WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
+                        // 250ms overwrite check, 100ms catch window (25 frames @4ms)
+                        uint64_t nowMs = GetTickCount64();
+                        bool shouldCheck = hunter_hasWritten && g_writerHuntActive.load() && (nowMs - hunter_lastCheckMs >= 250);
+                        if (shouldCheck) {
+                            hunter_lastCheckMs = nowMs;
+                            if (hunter_mouseMovedSinceLastCheck) {
+                                float curX = ReadFloatBE(g_addrGameRomCamera + 0x550);
+                                float curY = ReadFloatBE(g_addrGameRomCamera + 0x554);
+                                float curZ = ReadFloatBE(g_addrGameRomCamera + 0x558);
+                                if (curX != hunter_lastWrittenX || curY != hunter_lastWrittenY || curZ != hunter_lastWrittenZ) {
+                                    DllLog("[INFO] Overwrite detected (wrote [%.2f,%.2f,%.2f] -> cur [%.2f,%.2f,%.2f]) — arming guard 10 frames", hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
+                                    g_huntFramesLeft.store(10); // 10 frames
+                                    if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
+                                }
+                                hunter_mouseMovedSinceLastCheck = false;
+                            }
+                        }
+                        if (g_blacklistedMode.load()) {
+                            // Blacklisted — flawless: not one frame of mouse leaks. Re-check every 100ms
+                            uint64_t nowMs2 = GetTickCount64();
+                            if (nowMs2 - hunter_blacklistRecheckMs >= 100) {
+                                hunter_blacklistRecheckMs = nowMs2;
+                                if (g_addrGameRomCamera.load() != 0) {
+                                    g_huntFramesLeft.store(10);
+                                    ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
+                                    DllLog("[INFO] Blacklisted — re-checking writers (100ms)");
+                                }
+                            }
+                            virt_cam_initialized = false;
+                            hunter_hasWritten = false;
+                        } else {
+                            WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
+                            WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
+                            WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
+                            hunter_lastWrittenX = vcam_pos_x;
+                            hunter_lastWrittenY = vcam_pos_y;
+                            hunter_lastWrittenZ = vcam_pos_z;
+                            hunter_hasWritten = true;
+                        }
+                        if (g_writerHuntActive.load() && g_huntFramesLeft.load() > 0) {
+                            if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
+                            int prev = g_huntFramesLeft.fetch_sub(1);
+                            if (prev == 1) ProcessPendingWriters();
+                        }
+                    } else {
+                        if (g_huntFramesLeft.load() > 0) {
+                            int prev = g_huntFramesLeft.fetch_sub(1);
+                            if (g_addrGameRomCamera.load() != 0 && g_writerHuntActive.load()) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
+                            if (prev == 1) ProcessPendingWriters();
+                        } else {
+                            hunter_hasWritten = false;
+                        }
                     }
                 }
             }
@@ -3055,7 +3578,90 @@ namespace Mod {
 #ifdef _DEBUG
             if (g_pSharedMemory && g_pSharedMemory->m_reqDumpAob) {
                 g_pSharedMemory->m_reqDumpAob = false;
-                DllLog("[INFO] Writer hunter removed — AOB dump no-op.");
+                if (g_mousecamActive && !magnesis_auto_active) {
+                    if (!g_discoveredWriters.empty()) {
+                        EnterCriticalSection(&g_writerCS);
+                        uintptr_t minRip = UINTPTR_MAX, maxRip = 0;
+                        size_t maxPatch = 0;
+                        for (auto& wr : g_discoveredWriters) {
+                            if (wr.rip < minRip) minRip = wr.rip;
+                            if (wr.rip > maxRip) { maxRip = wr.rip; maxPatch = wr.patchSize; }
+                        }
+                        uintptr_t startDump = minRip >= 32 ? minRip - 32 : 0;
+                        uintptr_t endDump = maxRip + maxPatch + 32;
+                        FILE* f = nullptr;
+                        if (_wfopen_s(&f, L"cemu_aob_dump.txt", L"a") == 0) {
+                            fwprintf(f, L"AOB Dump from %llX to %llX (%zu writers)\n", startDump, endDump, g_discoveredWriters.size());
+                            for (uintptr_t ptr = startDump; ptr < endDump; ++ptr) {
+                                bool isStart = false, isEnd = false;
+                                uint8_t b = 0;
+                                SafeReadU8_SEH(ptr, b);
+                                for (auto& wr : g_discoveredWriters) {
+                                    if (wr.rip == ptr) isStart = true;
+                                    if (wr.rip + wr.patchSize - 1 == ptr) isEnd = true;
+                                    if (ptr >= wr.rip && ptr < wr.rip + wr.patchSize) { b = wr.origBytes[ptr - wr.rip]; }
+                                }
+                                if (isStart) fprintf(f, "[ ");
+                                fprintf(f, "%02X", b);
+                                if (isEnd) fprintf(f, " ] ");
+                                else fprintf(f, " ");
+                                if ((ptr - startDump + 1) % 16 == 0) fprintf(f, "\n");
+                            }
+                            fprintf(f, "\n");
+                            fclose(f);
+                            DllLog("[INFO] AOB dump written to cemu_aob_dump.txt (%zu writers immediate)", g_discoveredWriters.size());
+                        }
+                        LeaveCriticalSection(&g_writerCS);
+                    } else {
+                        DllLog("[INFO] No writers yet — hunting 500ms then dumping");
+                        hunter_aobDumpCountdown = 125;
+                        g_huntFramesLeft.store(125);
+                        if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
+                    }
+                } else {
+                    DllLog("[WARNING] F5 dump ignored — mousecam must be ON and magnesis OFF");
+                }
+            }
+            if (hunter_aobDumpCountdown > 0) {
+                hunter_aobDumpCountdown--;
+                if (hunter_aobDumpCountdown == 0) {
+                    EnterCriticalSection(&g_writerCS);
+                    if (!g_discoveredWriters.empty()) {
+                        uintptr_t minRip = UINTPTR_MAX, maxRip = 0;
+                        size_t maxPatch = 0;
+                        for (auto& wr : g_discoveredWriters) {
+                            if (wr.rip < minRip) minRip = wr.rip;
+                            if (wr.rip > maxRip) { maxRip = wr.rip; maxPatch = wr.patchSize; }
+                        }
+                        uintptr_t startDump = minRip >= 32 ? minRip - 32 : 0;
+                        uintptr_t endDump = maxRip + maxPatch + 32;
+                        FILE* f = nullptr;
+                        if (_wfopen_s(&f, L"cemu_aob_dump.txt", L"a") == 0) {
+                            fwprintf(f, L"AOB Dump (delayed) from %llX to %llX (%zu writers)\n", startDump, endDump, g_discoveredWriters.size());
+                            for (uintptr_t ptr = startDump; ptr < endDump; ++ptr) {
+                                bool isStart = false, isEnd = false;
+                                uint8_t b = 0;
+                                SafeReadU8_SEH(ptr, b);
+                                for (auto& wr : g_discoveredWriters) {
+                                    if (wr.rip == ptr) isStart = true;
+                                    if (wr.rip + wr.patchSize - 1 == ptr) isEnd = true;
+                                    if (ptr >= wr.rip && ptr < wr.rip + wr.patchSize) { b = wr.origBytes[ptr - wr.rip]; }
+                                }
+                                if (isStart) fprintf(f, "[ ");
+                                fprintf(f, "%02X", b);
+                                if (isEnd) fprintf(f, " ] ");
+                                else fprintf(f, " ");
+                                if ((ptr - startDump + 1) % 16 == 0) fprintf(f, "\n");
+                            }
+                            fprintf(f, "\n");
+                            fclose(f);
+                            DllLog("[INFO] Delayed AOB dump written (%zu writers)", g_discoveredWriters.size());
+                        }
+                    } else {
+                        DllLog("[INFO] Delayed AOB dump: no writers caught in 500ms");
+                    }
+                    LeaveCriticalSection(&g_writerCS);
+                }
             }
 #endif
 
@@ -3082,6 +3688,7 @@ namespace Mod {
     void Init(HMODULE hModule) {
         g_hModule = hModule;
         InitializeCriticalSection(&g_patchCS);
+        InitializeCriticalSection(&g_writerCS);
         InitializeCriticalSection(&g_menuCandidateCS);
 
         if (g_sharedMemory.Create(L"Local\\BotwMousecamSharedMemory")) {
@@ -3139,7 +3746,19 @@ namespace Mod {
 
         RestoreAllPatches();
 
+        g_writerHuntActive.store(false);
+        g_huntFramesLeft.store(0);
+        DisarmPageGuard();
+        EnterCriticalSection(&g_writerCS);
+        for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
+        g_discoveredWriters.clear();
+        g_pendingRips.clear();
+        if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = 0;
+        LeaveCriticalSection(&g_writerCS);
+        if (g_vehHandle) { RemoveVectoredExceptionHandler(g_vehHandle); g_vehHandle = nullptr; }
+
         DeleteCriticalSection(&g_patchCS);
+        DeleteCriticalSection(&g_writerCS);
         DeleteCriticalSection(&g_menuCandidateCS);
 
         g_sharedMemory.Close();
