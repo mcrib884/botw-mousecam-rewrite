@@ -25,6 +25,7 @@ bool g_hoverMagneSens = false, g_hoverMagneSensV = false;
 bool g_hoverMagnePullSens = false;
 bool g_hoverFpsMagnesis = false, g_hoverFpsMagneEyeHeight = false, g_hoverFpsMagneOffsetForward = false, g_hoverFpsMagneOffsetSide = false;
 bool g_hoverClearLog = false;
+bool g_hoverLogToFile = false;
 Rect g_clearLogRect;
 
 bool g_downInject = false, g_downReinject = false, g_downReset = false, g_downToggleCam = false;
@@ -33,7 +34,7 @@ float g_animInject = 0, g_animReinject = 0, g_animReset = 0, g_animToggleCam = 0
 float g_animDarkBtn = 0, g_animLightBtn = 0, g_animPath = 0, g_animPathReset = 0;
 float g_animScrollHelper = 0, g_animOrbitCam = 0, g_animIndepSens = 0, g_animIndepMagneSens = 0, g_animCemuExperimental = 0;
 float g_animToggleMagneTarget = 0, g_animToggleShortcutMenu = 0, g_animToggleMenuState = 0;
-float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0;
+float g_animSensH = 0, g_animSensV = 0, g_animClearLog = 0, g_animLogToFile = 0;
 float g_animMagneSens = 0, g_animMagneSensV = 0;
 float g_animMagneSpeedBtn[3] = {0, 0, 0};
 bool  g_hoverMagneSpeedBtn[3] = {false, false, false};
@@ -190,6 +191,17 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
         SaveConfig();
         InvalidateUIRectsCache();
         UpdateConsoleEditPosition(hWnd);
+        InvalidateRect(hWnd, nullptr, FALSE);
+        return 0;
+    }
+    if (!g_collapsedLog && ui.rLogToFile.Contains(x, y)) {
+        g_config.log_to_file = !g_config.log_to_file;
+        SaveConfig();
+        if (g_config.log_to_file) {
+            LogToConsole(L"[INFO] Log to file enabled — writing to mousecam.log");
+        } else {
+            LogToConsole(L"[INFO] Log to file disabled");
+        }
         InvalidateRect(hWnd, nullptr, FALSE);
         return 0;
     }
@@ -587,6 +599,7 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     }
     checkHovI(g_hoverDrop, dropHov);
     checkHov(g_hoverClearLog, ui.rClearLog.Contains(x, y));
+    checkHov(g_hoverLogToFile, !g_collapsedLog && ui.rLogToFile.Contains(x, y));
 
     if (g_dragSlider != -1) {
         int pad = 15;
@@ -652,6 +665,8 @@ LRESULT HandleMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             tip = L"Adjust vertical sensitivity multiplier for Magnesis movement (0.01 to 2.0)";
         else if (ui.rFpsMagnesis.Contains(x, y))
             tip = L"Enable First-Person Camera view looking directly at Magnesis target";
+        else if (!g_collapsedLog && ui.rLogToFile.Contains(x, y))
+            tip = L"Also write log to mousecam.log next to the companion exe";
         if (tip) ShowTooltip(hWnd, tip, x, y);
         else if (g_tooltipActive) ShowTooltip(hWnd, nullptr, 0, 0);
     }
@@ -689,7 +704,7 @@ LRESULT HandleMouseLeave(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     g_hoverDarkBtn = g_hoverLightBtn = false;
     g_hoverPath = g_hoverPathReset = false;
     g_hoverScrollHelper = g_hoverOrbitCam = g_hoverIndepSens = g_hoverCemuExperimental = false;
-    g_hoverSensH = g_hoverSensV = g_hoverMagneSens = g_hoverMagneSensV = g_hoverMagnePullSens = g_hoverFpsMagnesis = g_hoverClearLog = false;
+    g_hoverSensH = g_hoverSensV = g_hoverMagneSens = g_hoverMagneSensV = g_hoverMagnePullSens = g_hoverFpsMagnesis = g_hoverClearLog = g_hoverLogToFile = false;
     for (int i = 0; i < 3; ++i) g_hoverMagneSpeedBtn[i] = false;
     g_hoverFpsMagneEyeHeight = g_hoverFpsMagneOffsetForward = g_hoverFpsMagneOffsetSide = false;
     g_hoverDrop = g_hoverDropMenuRow = -1;
@@ -741,6 +756,7 @@ LRESULT HandleSetCursor(HWND hWnd, WPARAM wParam, LPARAM lParam) {
     else if (ui.rMagneSpeedBtn[0].Contains(pt.x, pt.y) || ui.rMagneSpeedBtn[1].Contains(pt.x, pt.y) || ui.rMagneSpeedBtn[2].Contains(pt.x, pt.y)) overClickable = true;
     else if (!g_targetInjected && ui.rCemuExperimental.Contains(pt.x, pt.y)) overClickable = true;
     else if (ui.rClearLog.Contains(pt.x, pt.y)) overClickable = true;
+    else if (!g_collapsedLog && ui.rLogToFile.Contains(pt.x, pt.y)) overClickable = true;
     else {
         for (int i = 0; i < 5; i++) {
             if (ui.rDrops[i].Contains(pt.x, pt.y)) { overClickable = true; break; }

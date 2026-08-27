@@ -18,6 +18,7 @@ extern bool g_tooltipActive;
 
 void LogToConsole(const wchar_t* format, ...);
 void ClearConsole();
+void ClearLogFile();
 void UpdateConsoleEditPosition(HWND hWnd);
 void ShowTooltip(HWND hWnd, const wchar_t* text, int x, int y);
 void SetStatus(const wchar_t* msg);

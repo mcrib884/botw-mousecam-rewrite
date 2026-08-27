@@ -30,6 +30,7 @@ struct AppConfig {
     bool  scan_magne_target = true;
     bool  scan_shortcut_menu = true;
     bool  scan_menu_state = true;
+    bool  log_to_file = false;
 };
 
 extern AppConfig g_config;

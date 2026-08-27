@@ -55,6 +55,7 @@ struct UIRects {
     Rect rStatusDot; // I3: status indicator dot
 
     Rect rClearLog; // UX6: [Clear] button
+    Rect rLogToFile; // log to file toggle
     Rect rLog;
 };
 

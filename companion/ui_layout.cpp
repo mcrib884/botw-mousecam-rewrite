@@ -176,10 +176,13 @@ void CalculateUIRects(UIRects& r, int w, int h) {
 
     int logH = g_collapsedLog ? 30 : (std::max)(10, h - curY - 10);
     r.rLog = Rect(pad, curY, panelW, logH);
-    if (g_collapsedLog)
+    if (g_collapsedLog) {
         r.rClearLog = Rect(0, 0, 0, 0);
-    else
+        r.rLogToFile = Rect(0, 0, 0, 0);
+    } else {
         r.rClearLog = Rect(pad + panelW - 60, curY + 10, 45, 18);
+        r.rLogToFile = Rect(pad + panelW - 210, curY + 10, 130, 20);
+    }
 
     g_cachedWidth = w;
     g_cachedHeight = h;

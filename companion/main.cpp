@@ -111,6 +111,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         g_animFpsMagneEyeHeight += (g_hoverFpsMagneEyeHeight ? 0.05f : -0.05f);
         g_animFpsMagneOffsetForward += (g_hoverFpsMagneOffsetForward ? 0.05f : -0.05f);
         g_animFpsMagneOffsetSide += (g_hoverFpsMagneOffsetSide ? 0.05f : -0.05f);
+        g_animLogToFile += (g_config.log_to_file ? 0.075f : -0.075f);
         g_animClearLog += (g_hoverClearLog ? 0.05f : -0.05f);
         for (int i = 0; i < 5; ++i) g_animDrop[i] += (g_hoverDrop == i ? 0.05f : -0.05f);
 
@@ -124,7 +125,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         clampF(g_animSensH); clampF(g_animSensV); clampF(g_animMagneSens); clampF(g_animMagneSensV);
         for (int i = 0; i < 3; ++i) clampF(g_animMagneSpeedBtn[i]);
         clampF(g_animMagnePullSens);
-        clampF(g_animFpsMagnesis); clampF(g_animFpsMagneEyeHeight); clampF(g_animFpsMagneOffsetForward); clampF(g_animFpsMagneOffsetSide); clampF(g_animClearLog);
+        clampF(g_animFpsMagnesis); clampF(g_animFpsMagneEyeHeight); clampF(g_animFpsMagneOffsetForward); clampF(g_animFpsMagneOffsetSide); clampF(g_animLogToFile); clampF(g_animClearLog);
         for (int i = 0; i < 5; ++i) clampF(g_animDrop[i]);
 
         float targetTheme = g_config.use_light_theme ? 0.0f : 1.0f;
@@ -169,9 +170,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
                        (g_animToggleMenuState > 0 && g_animToggleMenuState < 1) ||
                        (g_animSensH > 0 && g_animSensH < 1) || (g_animSensV > 0 && g_animSensV < 1) ||
                        (g_animMagneSens > 0 && g_animMagneSens < 1) || (g_animMagneSensV > 0 && g_animMagneSensV < 1) || (g_animMagnePullSens > 0 && g_animMagnePullSens < 1) ||
-                       (g_animFpsMagnesis > 0 && g_animFpsMagnesis < 1) || (g_animFpsMagneEyeHeight > 0 && g_animFpsMagneEyeHeight < 1) ||
-                       (g_animFpsMagneOffsetForward > 0 && g_animFpsMagneOffsetForward < 1) || (g_animFpsMagneOffsetSide > 0 && g_animFpsMagneOffsetSide < 1) ||
-                       (g_animClearLog > 0 && g_animClearLog < 1);
+                        (g_animFpsMagnesis > 0 && g_animFpsMagnesis < 1) || (g_animFpsMagneEyeHeight > 0 && g_animFpsMagneEyeHeight < 1) ||
+                        (g_animFpsMagneOffsetForward > 0 && g_animFpsMagneOffsetForward < 1) || (g_animFpsMagneOffsetSide > 0 && g_animFpsMagneOffsetSide < 1) ||
+                        (g_animLogToFile > 0 && g_animLogToFile < 1) || (g_animClearLog > 0 && g_animClearLog < 1);
         for (int i = 0; i < 3; ++i) if (g_animMagneSpeedBtn[i] > 0 && g_animMagneSpeedBtn[i] < 1) hasAnim = true;
         for (int i = 0; i < 5; ++i) if (g_animDrop[i] > 0 && g_animDrop[i] < 1) hasAnim = true;
         if (changed || g_dragSlider != -1 || !g_targetInjected || hasAnim) {
@@ -226,7 +227,36 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
     }
 }
 
+static LONG WINAPI CompanionExceptionHandler(PEXCEPTION_POINTERS ep) {
+    // Best-effort crash log — survives even if console is gone
+    // Note: must not use C++ objects with destructors inside __try (C2712)
+    __try {
+        wchar_t path[MAX_PATH] = {0};
+        GetModuleFileNameW(nullptr, path, MAX_PATH);
+        wchar_t* slash = wcsrchr(path, L'\\');
+        if (!slash) slash = wcsrchr(path, L'/');
+        if (slash) {
+            *(slash + 1) = L'\0';
+            wcscat_s(path, L"mousecam.log");
+        } else {
+            wcscpy_s(path, L"mousecam.log");
+        }
+        HANDLE hFile = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            char buf[512];
+            DWORD written = 0;
+            SYSTEMTIME st; GetLocalTime(&st);
+            int len = snprintf(buf, sizeof(buf), "%02d:%02d:%02d [CRASH] Exception 0x%08X at 0x%p — companion will exit. Please share mousecam.log\n",
+                st.wHour, st.wMinute, st.wSecond, (unsigned)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
+            if (len > 0) WriteFile(hFile, buf, (DWORD)len, &written, nullptr);
+            CloseHandle(hFile);
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    SetUnhandledExceptionFilter(CompanionExceptionHandler);
     LoadLibraryW(L"msftedit.dll");
 
     GdiplusStartupInput gdiplusStartupInput;
@@ -257,8 +287,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     wcexPopup.lpszClassName = L"DropdownPopupClass";
     RegisterClassExW(&wcexPopup);
 
+    // Every companion start clears the log file (fresh session) — do before LoadConfig
+    // so early config warnings are not erased and file starts empty
+    ClearLogFile();
     // Load config BEFORE window creation so theme colors are known (I2)
     LoadConfig();
+    // Init log-to-file anim to match saved state (avoid 1s lerp on startup)
+    extern float g_animLogToFile;
+    g_animLogToFile = g_config.log_to_file ? 1.0f : 0.0f;
+    if (g_config.log_to_file) {
+        LogToConsole(L"[INFO] Log to file enabled — writing to mousecam.log");
+    }
 
     // Initial rect
     RECT rc = { 0, 0, WND_W, WND_H };

@@ -164,6 +164,12 @@ namespace Mod {
 
     static void DllLog(const char* format, ...) {
         if (!g_pSharedMemory) return;
+#ifndef _DEBUG
+        // In Release, suppress [DEBUG] spam at the source — no queue slot wasted
+        if (format[0] == '[' && format[1] == 'D' && format[2] == 'E' && format[3] == 'B' && format[4] == 'U' && format[5] == 'G') {
+            return;
+        }
+#endif
 
         char msg[256] = {};
         va_list args;
@@ -823,7 +829,7 @@ namespace Mod {
         uint16_t marker = 0;
         if (!SafeReadMarker(base, marker)) return false;
 
-        // FOV at gc_addr + 0x24 = base + 0x630 + 0x24 = base + 0x654
+        // FOV at base + 0x654 — original Verify (not touched for hunter)
         float fov = ReadFloatBE(base + 0x654);
         if (std::isnan(fov) || std::isinf(fov) || fov < 0.1f || fov > 0.99f) {
             return false;
@@ -990,7 +996,7 @@ namespace Mod {
                                 float focX = ReadFloatBE(cand + 0x63C);
                                 float focY = ReadFloatBE(cand + 0x640);
                                 float focZ = ReadFloatBE(cand + 0x644);
-                                DllLog("[INFO] Match [%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
+                                DllLog("[DEBUG] Match [%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
                                        outTotal, cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
 #endif
                                 if (valid) {
@@ -1566,6 +1572,28 @@ namespace Mod {
     static std::atomic<bool>         g_blacklistedMode{false};
     static std::atomic<bool>         g_hunterResetPending{false}; // explicit reset atomic: ScanAobThread sets on reset, CameraControlThread consumes after new GameRomCamera
 
+    // FOV level-change detector — counts actual writes to FOV via code hook (captured via one-shot data guard)
+    static uintptr_t                 g_fovGuardPage = 0;
+    static DWORD                     g_fovOldProtect = 0;
+    static std::atomic<bool>         g_fovGuardArmed{false};
+    static std::atomic<uint64_t>     g_fovWriteCount{0};
+    static std::atomic<uint64_t>     g_lastFovWriteTick{0};
+    static std::atomic<uintptr_t>    g_fovPendingRIP{0};
+    static CodePatch                 g_fovHookPatch = {};
+    static LPVOID                    g_fovTrampoline = nullptr;
+    static std::atomic<bool>         g_fovHookActive{false};
+    // FOV writer discovery — data guard for a few frames to log writer RIP (no hook yet)
+    static std::atomic<bool>         g_fovHuntActive{false};
+    static std::atomic<int>          g_fovHuntFramesLeft{0};
+    static std::vector<uintptr_t>    g_fovHuntRips;
+    static CRITICAL_SECTION          g_fovHuntCS;
+    static bool                      g_fovHuntCSInit = false;
+    // DR0 hardware breakpoint for FOV (write-only, no PAGE_GUARD reads)
+    static std::atomic<bool>         g_fovHwActive{false};
+    static uintptr_t                 g_fovHwAddr = 0;
+    static std::atomic<bool>         g_fovStallReenablePending{false};
+    static std::atomic<bool>         g_forceShouldControlReset{false};
+
     static size_t DetectWriteInstructionSize(const uint8_t* p) {
         size_t off = 0;
         // REX
@@ -1666,6 +1694,11 @@ namespace Mod {
 
     static void DisarmPageGuard() {
         if (!g_guardArmed) return;
+        // If FOV shares same page, keep guard for FOV
+        if (g_fovGuardArmed && g_guardPage == g_fovGuardPage) {
+            g_guardArmed = false;
+            return;
+        }
         DWORD old = 0;
         VirtualProtect((LPVOID)g_guardPage, 0x1000, g_guardOldProtect & ~PAGE_GUARD, &old);
         g_guardArmed = false;
@@ -1682,16 +1715,221 @@ namespace Mod {
             g_guardPage = page;
             g_guardOldProtect = old;
             g_guardArmed = true;
-            // Only log when hunting to avoid spam
+            // Only log when hunting to avoid spam — debug only
+#ifdef _DEBUG
             if (g_huntFramesLeft.load() > 0) {
                 DllLog("[DEBUG] ArmPageGuard page 0x%llX huntFrames %d", page, g_huntFramesLeft.load());
             }
+#endif
         } else {
             DllLog("[WARNING] ArmPageGuard failed page 0x%llX err %u", page, GetLastError());
         }
     }
 
+    static void DisarmFovGuard() {
+        if (!g_fovGuardArmed) return;
+        // If FOV shares page with pos hunter guard, don't actually unprotect while hunter still guards it
+        if (g_guardArmed && g_fovGuardPage == g_guardPage) {
+            g_fovGuardArmed = false;
+            return;
+        }
+        DWORD old = 0;
+        VirtualProtect((LPVOID)g_fovGuardPage, 0x1000, g_fovOldProtect & ~PAGE_GUARD, &old);
+        g_fovGuardArmed = false;
+    }
+
+    static void ArmFovGuard(uintptr_t fovAddr) {
+        uintptr_t page = fovAddr & ~(uintptr_t)0xFFF;
+        if (g_fovGuardArmed && g_fovGuardPage == page) return;
+        if (g_fovGuardArmed) DisarmFovGuard();
+        // If hunter already guards this page, just share it
+        if (g_guardArmed && g_guardPage == page) {
+            g_fovGuardPage = page;
+            g_fovOldProtect = g_guardOldProtect;
+            g_fovGuardArmed = true;
+            return;
+        }
+        DWORD old = 0;
+        if (VirtualProtect((LPVOID)page, 0x1000, PAGE_READWRITE | PAGE_GUARD, &old)) {
+            g_fovGuardPage = page;
+            g_fovOldProtect = old;
+            g_fovGuardArmed = true;
+        } else {
+            DllLog("[WARNING] ArmFovGuard failed page 0x%llX err %u", page, GetLastError());
+        }
+    }
+
+    static bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out);
+    static void RemoveFovHook() {
+        if (!g_fovHookActive.load()) {
+            g_fovPendingRIP.store(0);
+            return;
+        }
+        g_fovHookPatch.Restore();
+        Sleep(50);
+        if (g_fovTrampoline) {
+            VirtualFree(g_fovTrampoline, 0, MEM_RELEASE);
+            g_fovTrampoline = nullptr;
+        }
+        g_fovHookActive.store(false);
+        g_fovPendingRIP.store(0);
+        DllLog("[INFO] FOV hook removed");
+    }
+
+    static bool SetupFovHook(uintptr_t rip) {
+        if (g_fovHookActive.load()) return true;
+        if (rip == 0) return false;
+        uint8_t tmp[16] = {};
+        for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(rip + i, b); tmp[i] = b; }
+        size_t sz = DetectWriteInstructionSize(tmp);
+        if (sz == 0 || sz > 15) {
+            DllLog("[WARNING] FOV hook size 0 at 0x%llX bytes %02X %02X %02X %02X — fallback 7", rip, tmp[0], tmp[1], tmp[2], tmp[3]);
+            sz = 7;
+        }
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (!VirtualQuery((LPCVOID)rip, &mbi, sizeof(mbi))) return false;
+        if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return false;
+        g_fovHookPatch.address = rip;
+        g_fovHookPatch.size = sz;
+        if (!g_fovHookPatch.Backup()) return false;
+        g_fovTrampoline = AllocateWithin2GB(rip, 64);
+        if (!g_fovTrampoline) {
+            g_fovHookPatch.Restore();
+            return false;
+        }
+        uint8_t code[64] = {};
+        size_t idx = 0;
+        code[idx++] = 0x9C; // pushf
+        code[idx++] = 0x50; // push rax
+        code[idx++] = 0x51; // push rcx
+        // mov rcx, &g_fovWriteCount
+        code[idx++] = 0x48; code[idx++] = 0xB9;
+        uintptr_t cntAddr = (uintptr_t)&g_fovWriteCount;
+        memcpy(&code[idx], &cntAddr, 8); idx += 8;
+        // lock inc qword ptr [rcx]
+        code[idx++] = 0xF0; code[idx++] = 0x48; code[idx++] = 0xFF; code[idx++] = 0x01;
+        code[idx++] = 0x59; // pop rcx
+        code[idx++] = 0x58; // pop rax
+        code[idx++] = 0x9D; // popf
+        // original instruction
+        memcpy(&code[idx], (void*)rip, sz); idx += sz;
+        // jmp [rip+0]
+        code[idx++] = 0xFF; code[idx++] = 0x25; code[idx++] = 0x00; code[idx++] = 0x00; code[idx++] = 0x00; code[idx++] = 0x00;
+        uintptr_t retAddr = rip + sz;
+        memcpy(&code[idx], &retAddr, 8); idx += 8;
+        memcpy(g_fovTrampoline, code, idx);
+        std::vector<uint8_t> patchBytes(sz, 0x90);
+        patchBytes[0] = 0xE9;
+        intptr_t diff = (intptr_t)g_fovTrampoline - (intptr_t)(rip + 5);
+        *(int32_t*)(&patchBytes[1]) = (int32_t)diff;
+        if (!g_fovHookPatch.ApplyBytes(patchBytes.data(), sz)) {
+            VirtualFree(g_fovTrampoline, 0, MEM_RELEASE);
+            g_fovTrampoline = nullptr;
+            return false;
+        }
+        g_fovHookActive.store(true);
+        DllLog("[SUCCESS] FOV hook installed at 0x%llX size %zu", rip, sz);
+        return true;
+    }
+
+    static void SetFovHwBreakpoint(uintptr_t addr) {
+        g_fovHwAddr = addr;
+        g_fovHwActive.store(true);
+        DWORD currentTid = GetCurrentThreadId();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            DWORD pid = GetCurrentProcessId();
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                        if (hThread) {
+                            SuspendThread(hThread);
+                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(hThread, &ctx)) {
+                                ctx.Dr0 = addr;
+                                ctx.Dr7 &= ~0xF0001ULL;
+                                ctx.Dr7 |= 0x1ULL; // L0
+                                ctx.Dr7 |= (0x1ULL << 16); // type 01 = write
+                                ctx.Dr7 |= (0x3ULL << 18); // len 11 = 4 bytes
+                                ctx.Dr6 = 0;
+                                SetThreadContext(hThread, &ctx);
+                            }
+                            ResumeThread(hThread);
+                            CloseHandle(hThread);
+                        }
+                    }
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+        // Current thread — don't suspend self
+        {
+            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            // GetThreadContext on pseudo handle works without suspend for current thread
+            HANDLE hSelf = GetCurrentThread();
+            if (GetThreadContext(hSelf, &ctx)) {
+                ctx.Dr0 = addr;
+                ctx.Dr7 &= ~0xF0001ULL;
+                ctx.Dr7 |= 0x1ULL;
+                ctx.Dr7 |= (0x1ULL << 16);
+                ctx.Dr7 |= (0x3ULL << 18);
+                ctx.Dr6 = 0;
+                SetThreadContext(hSelf, &ctx);
+            }
+        }
+        DllLog("[INFO] DR0 set for FOV 0x%llX", addr);
+    }
+    static void ClearFovHwBreakpoint() {
+        if (!g_fovHwActive.load() && g_fovHwAddr == 0) return;
+        g_fovHwActive.store(false);
+        g_fovHwAddr = 0;
+        DWORD currentTid = GetCurrentThreadId();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            DWORD pid = GetCurrentProcessId();
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                        if (hThread) {
+                            SuspendThread(hThread);
+                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(hThread, &ctx)) {
+                                ctx.Dr0 = 0;
+                                ctx.Dr7 &= ~0xF0001ULL;
+                                ctx.Dr6 = 0;
+                                SetThreadContext(hThread, &ctx);
+                            }
+                            ResumeThread(hThread);
+                            CloseHandle(hThread);
+                        }
+                    }
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+        {
+            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            HANDLE hSelf = GetCurrentThread();
+            if (GetThreadContext(hSelf, &ctx)) {
+                ctx.Dr0 = 0;
+                ctx.Dr7 &= ~0xF0001ULL;
+                ctx.Dr6 = 0;
+                SetThreadContext(hSelf, &ctx);
+            }
+        }
+        DllLog("[INFO] DR0 cleared");
+    }
+
     static thread_local bool t_isSingleStepping = false;
+    static thread_local bool t_lastFovWasWrite = false;
 
     static inline bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out) {
         __try { out = *(const uint8_t*)addr; return true; } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -1711,6 +1949,24 @@ namespace Mod {
             if (p == rip + patchSize - 1) out += "] ";
         }
         return out;
+    }
+
+    static uintptr_t FindFovWriterFromHwRip(uintptr_t nextRip) {
+        // Like Cheat Engine F6: DR0 fires at nextRip — the writer is the instruction that ends at nextRip, prefer longest (with REX)
+        uintptr_t best = 0;
+        size_t bestSize = 0;
+        for (int back = 1; back <= 15; ++back) {
+            uintptr_t cand = nextRip - back;
+            uint8_t tmp[16] = {};
+            for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(cand + i, b); tmp[i] = b; }
+            size_t sz = DetectWriteInstructionSize(tmp);
+            if (sz == 0 || sz > 15) continue;
+            if (cand + sz == nextRip) {
+                if (sz > bestSize) { best = cand; bestSize = sz; }
+            }
+        }
+        if (best != 0) return best;
+        return nextRip;
     }
 
     static bool IsWriterBlacklisted(uintptr_t rip) {
@@ -1742,12 +1998,34 @@ namespace Mod {
 
     static LONG NTAPI CameraWriterVehHandler(PEXCEPTION_POINTERS ep) {
         if (ep->ExceptionRecord->ExceptionCode == STATUS_SINGLE_STEP) {
+            // DR0 hardware breakpoint for FOV (write-only) — must be checked before software single-step
+            if ((ep->ContextRecord->Dr6 & 0x1) && g_fovHwActive.load()) {
+                uintptr_t nextRip = (uintptr_t)ep->ContextRecord->Rip;
+                uintptr_t writer = FindFovWriterFromHwRip(nextRip);
+                if (g_fovHuntActive.load()) {
+                    if (TryEnterCriticalSection(&g_fovHuntCS)) {
+                        bool already = false;
+                        for (auto r : g_fovHuntRips) if (r == writer) already = true;
+                        if (!already) g_fovHuntRips.push_back(writer);
+                        LeaveCriticalSection(&g_fovHuntCS);
+                    }
+                } else {
+                    // Stall counting via DR0 — no hook, just count writes
+                    g_fovWriteCount.fetch_add(1);
+                    g_lastFovWriteTick.store(GetTickCount64());
+                }
+                ep->ContextRecord->Dr6 = 0;
+                ep->ContextRecord->EFlags &= ~0x100ULL;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
             if (t_isSingleStepping) {
                 t_isSingleStepping = false;
                 if (g_huntFramesLeft.load() > 0) {
                     uintptr_t base = g_addrGameRomCamera.load();
                     if (base != 0) ArmPageGuard(base + 0x550);
                 }
+                // FOV hunter per-frame only — single-step re-arm crashes on this page
+                t_lastFovWasWrite = false;
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
             return EXCEPTION_CONTINUE_SEARCH;
@@ -1755,14 +2033,62 @@ namespace Mod {
         if (ep->ExceptionRecord->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION)
             return EXCEPTION_CONTINUE_SEARCH;
         uintptr_t faultAddr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
-        if (faultAddr < g_guardPage || faultAddr >= g_guardPage + 0x1000)
+        bool isFovPage = g_fovGuardArmed.load() && faultAddr >= g_fovGuardPage && faultAddr < g_fovGuardPage + 0x1000;
+        bool isHunterPage = g_guardArmed.load() && faultAddr >= g_guardPage && faultAddr < g_guardPage + 0x1000;
+        if (!isFovPage && !isHunterPage)
             return EXCEPTION_CONTINUE_SEARCH;
-        g_guardArmed = false;
+        // Windows clears PAGE_GUARD on fault — mark both as disarmed if they share page
+        if (isHunterPage) g_guardArmed = false;
+        if (isFovPage) g_fovGuardArmed = false;
+        if (isFovPage && isHunterPage && g_fovGuardPage == g_guardPage) {
+            // Shared page — both cleared
+            g_guardArmed = false;
+            g_fovGuardArmed = false;
+        }
         bool isWrite = (ep->ExceptionRecord->ExceptionInformation[0] == 1);
         uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
+        t_lastFovWasWrite = false;
+        // FOV hunter — collect writer RIP for a few frames after GameRomCamera found (no hook, just log)
+        // FOV shares page with XYZ (0x550) so hunter guard also traps FOV writes — check either guard
+        // Diagnostic: log any guard fault while FOV hunt active (even not FOV) to see if guard fires
+        if (g_fovHuntActive.load() && (isFovPage || isHunterPage)) {
+            static uint64_t lastAnyDbg = 0;
+            uint64_t nowAny = GetTickCount64();
+            if (nowAny - lastAnyDbg > 1000) {
+                lastAnyDbg = nowAny;
+                DllLog("[INFO] FOV hunt guard fault RIP 0x%llX fault 0x%llX isWrite %d isFovPage %d isHunterPage %d base 0x%llX", rip, faultAddr, isWrite?1:0, isFovPage?1:0, isHunterPage?1:0, g_addrGameRomCamera.load());
+            }
+        }
+        if (isWrite && (isFovPage || isHunterPage)) {
+            uintptr_t baseFov = g_addrGameRomCamera.load();
+            if (baseFov != 0 && faultAddr == baseFov + 0x68C) {
+                t_lastFovWasWrite = true;
+                if (g_fovHuntActive.load()) {
+                    // Use TryEnter to avoid blocking game thread if CameraControl holds CS
+                    if (TryEnterCriticalSection(&g_fovHuntCS)) {
+                        bool already = false;
+                        for (auto r : g_fovHuntRips) if (r == rip) already = true;
+                        if (!already) {
+                            g_fovHuntRips.push_back(rip);
+                        }
+                        LeaveCriticalSection(&g_fovHuntCS);
+                    }
+                }
+#ifdef _DEBUG
+                else {
+                    static uint64_t lastFovDbg = 0;
+                    uint64_t nowFov = GetTickCount64();
+                    if (nowFov - lastFovDbg > 1000) {
+                        lastFovDbg = nowFov;
+                        DllLog("[DEBUG] FOV write RIP 0x%llX fault 0x%llX (no hunt)", rip, faultAddr);
+                    }
+                }
+#endif
+            }
+        }
         // Log every guard fault for diagnostics (even if not collected)
         bool shouldCollect = false;
-        if (isWrite && g_writerHuntActive.load()) {
+        if (isWrite && g_writerHuntActive.load() && isHunterPage) {
             uintptr_t base = g_addrGameRomCamera.load();
             if (base != 0 && (faultAddr == base + 0x550 || faultAddr == base + 0x554 || faultAddr == base + 0x558)) {
                 MEMORY_BASIC_INFORMATION mbi = {};
@@ -1776,7 +2102,9 @@ namespace Mod {
                     uint64_t nowDbg = GetTickCount64();
                     if (nowDbg - lastLogMs > 500) {
                         lastLogMs = nowDbg;
+#ifdef _DEBUG
                         DllLog("[DEBUG] Guard fault RIP 0x%llX fault 0x%llX Type %u Protect 0x%X — not JIT, single-step", rip, faultAddr, mbi.Type, mbi.Protect);
+#endif
                     }
                 } else {
                     shouldCollect = true;
@@ -1784,9 +2112,11 @@ namespace Mod {
             } else {
                 // Not XYZ — page guard hit for other var on same 4KB page, just single-step, no log to avoid flood
             }
-        } else if (g_writerHuntActive.load() && isWrite) {
-            // Write fault outside our XYZ — still log
+        } else if (g_writerHuntActive.load() && isWrite && isHunterPage) {
+#ifdef _DEBUG
+            // Write fault outside our XYZ — still log (debug only)
             DllLog("[DEBUG] Guard write fault RIP 0x%llX fault 0x%llX not XYZ or not huntActive", rip, faultAddr);
+#endif
         }
         if (shouldCollect) {
             EnterCriticalSection(&g_writerCS);
@@ -1795,11 +2125,15 @@ namespace Mod {
             for (auto &wr : g_discoveredWriters) if (wr.rip == rip) alreadyDiscovered = true;
             if (!alreadyPending && !alreadyDiscovered) {
                 g_pendingRips.push_back(rip);
-                DllLog("[INFO] Collected writer RIP 0x%llX (fault 0x%llX) pending %zu (accumulating 10 frames)", rip, faultAddr, g_pendingRips.size());
+#ifdef _DEBUG
+                DllLog("[DEBUG] Collected writer RIP 0x%llX (fault 0x%llX) pending %zu (accumulating 10 frames)", rip, faultAddr, g_pendingRips.size());
+#endif
                 if (g_pendingRips.size() >= 3) {
                     // Got X/Y/Z — stop immediately, don't wait full 10 frames
                     g_huntFramesLeft.store(1);
-                    DllLog("[INFO] Got 3 writers — arming shortened to process immediately");
+#ifdef _DEBUG
+                    DllLog("[DEBUG] Got 3 writers — arming shortened to process immediately");
+#endif
                 }
             }
             LeaveCriticalSection(&g_writerCS);
@@ -1869,7 +2203,9 @@ namespace Mod {
                 if (isEnd) combinedAobStr += "] ";
             }
         }
-        DllLog("[INFO] Processing %zu pending writers as ONE AOB [%llX..%llX] len %zu: %s", toProcess.size(), start, end, bufLen, combinedAobStr.c_str());
+#ifdef _DEBUG
+        DllLog("[DEBUG] Processing %zu pending writers as ONE AOB [%llX..%llX] len %zu: %s", toProcess.size(), start, end, bufLen, combinedAobStr.c_str());
+#endif
         // Check this ONE combined AOB vs blacklist — if any blacklist pattern lives inside it, the whole set is blacklisted
         bool blacklisted = false;
         if (!combined.empty() && !g_writerBlacklist.empty()) {
@@ -1902,8 +2238,18 @@ namespace Mod {
             for (auto &wr: g_discoveredWriters) if (wr.rip==rip) alreadyKnown=true;
             if (!alreadyKnown) {
                 WriterRecord rec={};
-                std::string aob = GenerateWriterAob(rip, DetectWriteInstructionSize((uint8_t*)rip));
-                if (NopInstruction(rip, rec)) {
+                size_t sz = 0;
+                // Safe size detect without SEH objects
+                {
+                    uint8_t tmp[16] = {};
+                    for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(rip + i, b); tmp[i] = b; }
+                    sz = DetectWriteInstructionSize(tmp);
+                    if (sz == 0 || sz > 15) sz = 7;
+                }
+                std::string aob = GenerateWriterAob(rip, sz);
+                if (rip == 0 || sz == 0) {
+                    DllLog("[WARNING] Pending writer at 0x%llX invalid — skip", rip);
+                } else if (NopInstruction(rip, rec)) {
                     DllLog("[SUCCESS] Writer NOP'd at 0x%llX size %zu — AOB: %s — total %zu", rip, rec.patchSize, aob.c_str(), g_discoveredWriters.size()+1);
                     g_discoveredWriters.push_back(rec);
                     if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
@@ -2170,6 +2516,14 @@ namespace Mod {
                         g_writerHuntActive.store(false);
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
+                        RemoveFovHook();
+                        ClearFovHwBreakpoint();
+                        DisarmFovGuard();
+                        g_fovWriteCount.store(0);
+                        g_lastFovWriteTick.store(0);
+                        g_fovHuntActive.store(false);
+                        g_fovHuntFramesLeft.store(0);
+                        if (g_fovHuntCSInit) { EnterCriticalSection(&g_fovHuntCS); g_fovHuntRips.clear(); LeaveCriticalSection(&g_fovHuntCS); }
                         EnterCriticalSection(&g_writerCS);
                         for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
                         g_discoveredWriters.clear();
@@ -2182,6 +2536,14 @@ namespace Mod {
                     } else {
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
+                        RemoveFovHook();
+                        ClearFovHwBreakpoint();
+                        DisarmFovGuard();
+                        g_fovWriteCount.store(0);
+                        g_lastFovWriteTick.store(0);
+                        g_fovHuntActive.store(false);
+                        g_fovHuntFramesLeft.store(0);
+                        if (g_fovHuntCSInit) { EnterCriticalSection(&g_fovHuntCS); g_fovHuntRips.clear(); LeaveCriticalSection(&g_fovHuntCS); }
                         EnterCriticalSection(&g_writerCS);
                         for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
                         g_discoveredWriters.clear();
@@ -2422,7 +2784,9 @@ namespace Mod {
                     Pattern pat = ParseAOB(tasks[4].patternStr);
                     std::vector<uintptr_t> rawCandidates;
                     if (ScanProcessAOBAll(pat, rawCandidates)) {
-                        DllLog("[INFO] Found %zu Magne Target Sig candidate(s). Verifying offsets and values...", rawCandidates.size());
+#ifdef _DEBUG
+                        DllLog("[DEBUG] Found %zu Magne Target Sig candidate(s). Verifying offsets and values...", rawCandidates.size());
+#endif
                         uintptr_t bestCandidate = 0;
                         int bestScore = -1;
 
@@ -2431,8 +2795,10 @@ namespace Mod {
                             int score = 0;
                             bool valid = VerifyMagneTargetSig(cand, vCfg, currentExperimental, score);
 
-                            DllLog("[INFO] Magne candidate [%zu/%zu] at 0x%llX: Score=%d -> %s",
+#ifdef _DEBUG
+                            DllLog("[DEBUG] Magne candidate [%zu/%zu] at 0x%llX: Score=%d -> %s",
                                    i + 1, rawCandidates.size(), cand, score, valid ? "VALID" : "REJECTED");
+#endif
 
                             if (valid && score > bestScore) {
                                 bestScore = score;
@@ -2704,6 +3070,7 @@ namespace Mod {
         timeBeginPeriod(1);
 
         bool last_f2_state = false;
+        bool last_f3_state = false;
         
         bool virt_cam_initialized = false;
         float vcam_pos_x = 0.0f, vcam_pos_y = 0.0f, vcam_pos_z = 0.0f;
@@ -2724,7 +3091,7 @@ namespace Mod {
         ScrollMenuType active_menu = ScrollMenuType::None;
         auto menu_hold_timer = std::chrono::steady_clock::now();
 
-        bool last_should_control = false;
+        static bool last_should_control = false;
         auto last_frame_time = std::chrono::steady_clock::now();
 
         // Hunter: 250ms detect, 100ms catch (10 frames @4ms) + 100ms blacklist re-check
@@ -2768,9 +3135,138 @@ namespace Mod {
             }
             static uintptr_t last_gc_addr = 0;
             if (gc_addr != last_gc_addr) {
+                uintptr_t baseForFov = g_addrGameRomCamera.load();
+                if (baseForFov != 0 && gc_addr != 0) {
+                    EnterCriticalSection(&g_fovHuntCS);
+                    g_fovHuntRips.clear();
+                    LeaveCriticalSection(&g_fovHuntCS);
+                    g_fovHuntFramesLeft.store(90);
+                    g_fovHuntActive.store(true);
+                    SetFovHwBreakpoint(baseForFov + 0x68C);
+                    DllLog("[INFO] FOV hunter armed 90 frames base 0x%llX DR0 0x%llX", baseForFov, baseForFov + 0x68C);
+                } else if (gc_addr == 0) {
+                    g_fovHuntActive.store(false);
+                    g_fovHuntFramesLeft.store(0);
+                    ClearFovHwBreakpoint();
+                }
                 last_gc_addr = gc_addr;
             }
+            // FOV hunter DR0 — write-only, no PAGE_GUARD, re-arms if 90 expire empty
+            if (g_fovHuntActive.load()) {
+                // Immediate log for new RIPs (like Cheat Engine F6) — don't wait 90 frames
+                {
+                    static size_t lastLogCount = 0;
+                    if (TryEnterCriticalSection(&g_fovHuntCS)) {
+                        if (g_fovHuntRips.size() > lastLogCount) {
+                            for (size_t i = lastLogCount; i < g_fovHuntRips.size(); ++i) {
+                                uintptr_t r = g_fovHuntRips[i];
+                                DllLog("[INFO] FOV hunter RIP 0x%llX (%zu total)", r, g_fovHuntRips.size());
+                            }
+                            lastLogCount = g_fovHuntRips.size();
+                        }
+                        if (g_fovHuntRips.empty()) lastLogCount = 0;
+                        LeaveCriticalSection(&g_fovHuntCS);
+                    }
+                }
+                if (g_fovHuntFramesLeft.load() > 0) {
+                    static int fovRearmCount = 0;
+                    int prev = g_fovHuntFramesLeft.fetch_sub(1);
+                    if (prev == 1) {
+                        EnterCriticalSection(&g_fovHuntCS);
+                        bool found = !g_fovHuntRips.empty();
+                        LeaveCriticalSection(&g_fovHuntCS);
+                        if (found) {
+                            fovRearmCount = 0;
+                            g_fovHuntActive.store(false);
+                            // Keep DR0 for stall counting — don't clear, don't hook (hook crashes JIT)
+                            EnterCriticalSection(&g_fovHuntCS);
+                            DllLog("[INFO] FOV hunter done — %zu writer(s)", g_fovHuntRips.size());
+                            for (uintptr_t r : g_fovHuntRips) {
+                                DllLog("[INFO] FOV writer RIP 0x%llX", r);
+                            }
+                            LeaveCriticalSection(&g_fovHuntCS);
+                            g_fovWriteCount.store(0);
+                            g_lastFovWriteTick.store(GetTickCount64());
+                            DllLog("[INFO] FOV DR0 keeper for stall/new-addr watch (no hook, hw count)");
+                            // DR0 stays armed — VEH will now count writes via g_fovWriteCount
+                        } else {
+                            fovRearmCount++;
+                            DllLog("[INFO] FOV hunter no writer in 90 frames — re-arming (%d/3)", fovRearmCount);
+                            if (fovRearmCount > 3) {
+                                DllLog("[WARNING] FOV hunter 3x no writer — GameRomCamera invalid, triggering full reset2 (ignore MenuState 1/2)");
+                                fovRearmCount = 0;
+                                g_fovHuntActive.store(false);
+                                ClearFovHwBreakpoint();
+                                if (g_pSharedMemory) {
+                                    g_pSharedMemory->m_reqResetScan = true; // full reset, ignore MenuState 1/2 per lord
+                                    g_pSharedMemory->m_reqResetPreserveMenu = false;
+                                }
+                                g_fovWriteCount.store(0);
+                                g_lastFovWriteTick.store(0);
+                                if (g_fovHuntCSInit) { EnterCriticalSection(&g_fovHuntCS); g_fovHuntRips.clear(); LeaveCriticalSection(&g_fovHuntCS); }
+                            } else {
+                                g_fovHuntFramesLeft.store(90);
+                                if (g_addrGameRomCamera.load() != 0) SetFovHwBreakpoint(g_addrGameRomCamera.load() + 0x68C);
+                            }
+                        }
+                    }
+                } else {
+                    g_fovHuntActive.store(false);
+                    ClearFovHwBreakpoint();
+                }
+            }
 
+            // FOV DR0 watcher — stall 1.5s -> reset2, new-addr via re-hunt after stall
+            if (g_fovHwActive.load() && !g_fovHuntActive.load()) {
+                uint64_t cnt = g_fovWriteCount.load();
+                static uint64_t lastSeenCnt = 0;
+                static uint64_t lastSeenTick = 0;
+                uint64_t now = GetTickCount64();
+                if (cnt != lastSeenCnt) {
+                    lastSeenCnt = cnt;
+                    lastSeenTick = now;
+                    g_lastFovWriteTick.store(now);
+                } else if (cnt > 3 && lastSeenTick != 0 && now - lastSeenTick >= 1500) {
+                    DllLog("[INFO] FOV stall %.1fs (writes %llu) — level change, triggering full reset2 (ignore MenuState 1/2)", (now - lastSeenTick) / 1000.0, cnt);
+                    if (g_mousecamActive) g_fovStallReenablePending.store(true);
+                    if (g_pSharedMemory) {
+                        g_pSharedMemory->m_reqResetScan = true; // full reset, ignore MenuState 1/2 per lord
+                        g_pSharedMemory->m_reqResetPreserveMenu = false;
+                    }
+                    g_fovWriteCount.store(0);
+                    lastSeenCnt = 0;
+                    lastSeenTick = now;
+                    g_lastFovWriteTick.store(now);
+                }
+                // New-addr is handled via stall->reset2->re-hunt DR0
+            }
+            // Auto re-enable mousecam after FOV stall reset — must re-capture mouse even before writers found
+            if (g_fovStallReenablePending.load() && !g_fovHuntActive.load() && g_addrGameRomCamera.load() != 0) {
+                bool isBlacklisted = g_blacklistedMode.load();
+                if (!isBlacklisted) {
+                    if (!g_mousecamActive) {
+                        g_mousecamActive = true;
+                        if (g_pSharedMemory) g_pSharedMemory->m_statusMousecamActive = true;
+                        g_forceShouldControlReset.store(true);
+                        DllLog("[INFO] FOV stall auto re-enable mousecam (auto centering) blacklisted=%d writers=%zu", isBlacklisted?1:0, g_discoveredWriters.size());
+                        HWND fg = GetForegroundWindow();
+                        DWORD pid = 0; GetWindowThreadProcessId(fg, &pid);
+                        if (fg && pid == GetCurrentProcessId() && g_addrGameRomCamera.load() != 0) {
+                            POINT center = GetCemuWindowCenter(fg);
+                            SetCursorPos(center.x, center.y);
+                            DllLog("[INFO] Auto center cursor to %d,%d (forcing should_control)", center.x, center.y);
+                        }
+                    }
+                    // Don't clear pending until writers found and not blacklisted — keep hunting
+                    EnterCriticalSection(&g_writerCS);
+                    bool hasWriters = !g_discoveredWriters.empty();
+                    LeaveCriticalSection(&g_writerCS);
+                    if (hasWriters) g_fovStallReenablePending.store(false);
+                } else {
+                    DllLog("[DEBUG] FOV stall pending but blacklisted — keep waiting");
+                }
+            }
+            // Diagnostic: if mousecam should be active but mouse is free, log why
             HWND hwndFg = GetForegroundWindow();
             DWORD fgPid = 0;
             if (hwndFg != nullptr) {
@@ -2816,6 +3312,22 @@ namespace Mod {
                 }
             }
 
+            // F3 — full scanner reset (same as UI Reset button)
+            bool f3_pressed = (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
+            bool f3_triggered = f3_pressed && !last_f3_state;
+            last_f3_state = f3_pressed;
+            static auto last_f3_time = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
+            auto now_f3 = std::chrono::steady_clock::now();
+            auto elapsed_f3_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now_f3 - last_f3_time).count();
+            if (f3_triggered && elapsed_f3_ms >= 200) {
+                last_f3_time = now_f3;
+                if (g_pSharedMemory) {
+                    g_pSharedMemory->m_reqResetScan = true;
+                    g_pSharedMemory->m_reqResetPreserveMenu = false;
+                }
+                DllLog("[INFO] Reset requested via F3 — full scanner reset.");
+            }
+
             if (g_pSharedMemory) {
                 g_pSharedMemory->m_statusMousecamActive = g_mousecamActive.load();
             }
@@ -2835,9 +3347,6 @@ namespace Mod {
             bool scanShortcutMenu = g_pSharedMemory ? g_pSharedMemory->m_cfgScanShortcutMenu : true;
 
             bool menu_active = false;
-            static int32_t prevMenuStateVal = INT32_MIN;
-            static bool reset2Pending = false;
-            static std::chrono::steady_clock::time_point reset2PendingTime{};
             if (scanMenuState && g_addrMenuState != 0) {
                 int32_t val = ReadInt32BE(g_addrMenuState);
                 g_liveMenuState = val;
@@ -2845,34 +3354,12 @@ namespace Mod {
                     g_pSharedMemory->m_teleLiveMenuState = static_cast<uint8_t>(val);
                 }
                 menu_active = (val == 6 || val == 10);
-
-                // reset2 on falling edge 2 -> X, with 1s delay after the change
-                if (prevMenuStateVal == 2 && val != 2 && !reset2Pending) {
-                    reset2Pending = true;
-                    reset2PendingTime = std::chrono::steady_clock::now();
-                    DllLog("[INFO] MenuState left 2 -> %d — arming reset2 in 1s...", val);
-                }
-                if (reset2Pending) {
-                    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - reset2PendingTime).count();
-                    if (elapsedMs >= 1000) {
-                        reset2Pending = false;
-                        DllLog("[INFO] MenuState was 2 — 1s since leaving 2, triggering reset2 (preserve MenuState).");
-                        if (g_pSharedMemory) {
-                            g_pSharedMemory->m_reqResetPreserveMenu = true;
-                            g_pSharedMemory->m_reqResetScan = false;
-                        }
-                    }
-                }
-                prevMenuStateVal = val;
             } else {
                 menu_active = false;
                 g_liveMenuState = 3;
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_teleLiveMenuState = 3;
                 }
-                prevMenuStateVal = INT32_MIN;
-                reset2Pending = false;
             }
 
             bool is_shortcut_open = false;
@@ -2968,6 +3455,7 @@ namespace Mod {
                 LeaveCriticalSection(&g_patchCS);
             }
 
+            if (g_forceShouldControlReset.exchange(false)) last_should_control = false;
             bool should_control = g_mousecamActive && (!magnesis_mode || fps_magne_active) && !menu_active && !is_shortcut_open;
             if (should_control != last_should_control) {
                 last_should_control = should_control;
@@ -3058,7 +3546,8 @@ namespace Mod {
                 g_pSharedMemory->m_cfgMagnesisEnabled = magnesis_mode;
             }
 
-            // Diagnostic: log hunter state every second when mousecam on
+            // Diagnostic: log hunter state every second when mousecam on — debug only
+#ifdef _DEBUG
             {
                 static uint64_t lastDbgMs = 0;
                 uint64_t nowDbg = GetTickCount64();
@@ -3067,6 +3556,7 @@ namespace Mod {
                     DllLog("[DEBUG] should_ctrl %d blacklisted %d huntActive %d huntFrames %d hasWritten %d mouseMoved %d gc %llX", should_control, g_blacklistedMode.load(), g_writerHuntActive.load(), g_huntFramesLeft.load(), hunter_hasWritten, hunter_mouseMovedSinceLastCheck, gc_addr);
                 }
             }
+#endif
 
             if (gc_addr != 0) {
                 g_liveCamPosX = ReadFloatBE(gc_addr + 0);
@@ -3075,7 +3565,7 @@ namespace Mod {
                 g_liveCamFocX = ReadFloatBE(gc_addr + 0xC);
                 g_liveCamFocY = ReadFloatBE(gc_addr + 0x10);
                 g_liveCamFocZ = ReadFloatBE(gc_addr + 0x14);
-                g_liveCamFOV = ReadFloatBE(gc_addr + 0x24);
+                g_liveCamFOV = ReadFloatBE(g_addrGameRomCamera + 0x68C); // new FOV for display (was gc+0x24 = 0x654)
 
                 if (g_pSharedMemory) {
                     g_pSharedMemory->m_teleLiveCamPosX = g_liveCamPosX;
@@ -3085,37 +3575,6 @@ namespace Mod {
                     g_pSharedMemory->m_teleLiveCamFocY = g_liveCamFocY;
                     g_pSharedMemory->m_teleLiveCamFocZ = g_liveCamFocZ;
                     g_pSharedMemory->m_teleLiveCamFOV = g_liveCamFOV;
-                }
-
-                // New feature: if any 4 of 7 cam coords/FOV are ~0 at same time, do reset2.
-                // Debounced: must hold for ~100ms (25 frames @4ms) to avoid single-frame
-                // false positives near world origin / shrine interiors that spike companion.
-                {
-                    static bool wasZeroTriggered = false;
-                    static int zeroStreak = 0;
-                    int zeroCount = 0;
-                    if (fabsf(g_liveCamPosX.load()) < 0.001f) zeroCount++;
-                    if (fabsf(g_liveCamPosY.load()) < 0.001f) zeroCount++;
-                    if (fabsf(g_liveCamPosZ.load()) < 0.001f) zeroCount++;
-                    if (fabsf(g_liveCamFocX.load()) < 0.001f) zeroCount++;
-                    if (fabsf(g_liveCamFocY.load()) < 0.001f) zeroCount++;
-                    if (fabsf(g_liveCamFocZ.load()) < 0.001f) zeroCount++;
-                    if (fabsf(g_liveCamFOV.load()) < 0.001f) zeroCount++;
-                    bool isZero = (zeroCount >= 4);
-                    if (isZero) {
-                        if (zeroStreak < 1000) zeroStreak++;
-                        if (zeroStreak >= 25 && !wasZeroTriggered) {
-                            wasZeroTriggered = true;
-                            DllLog("[INFO] Cam 4/7 is 0.0 for %d frames (Pos [%.2f,%.2f,%.2f] Foc [%.2f,%.2f,%.2f] FOV %.2f count %d) — triggering reset2", zeroStreak, g_liveCamPosX.load(), g_liveCamPosY.load(), g_liveCamPosZ.load(), g_liveCamFocX.load(), g_liveCamFocY.load(), g_liveCamFocZ.load(), g_liveCamFOV.load(), zeroCount);
-                            if (g_pSharedMemory) {
-                                g_pSharedMemory->m_reqResetPreserveMenu = true;
-                                g_pSharedMemory->m_reqResetScan = false;
-                            }
-                        }
-                    } else {
-                        zeroStreak = 0;
-                        wasZeroTriggered = false;
-                    }
                 }
 
                 if (scanShortcutMenu && g_addrShortcutMenu != 0) {
@@ -3630,7 +4089,9 @@ namespace Mod {
                                 float curY = ReadFloatBE(g_addrGameRomCamera + 0x554);
                                 float curZ = ReadFloatBE(g_addrGameRomCamera + 0x558);
                                 if (curX != hunter_lastWrittenX || curY != hunter_lastWrittenY || curZ != hunter_lastWrittenZ) {
-                                    DllLog("[INFO] Overwrite detected (wrote [%.2f,%.2f,%.2f] -> cur [%.2f,%.2f,%.2f]) — arming guard 10 frames", hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
+#ifdef _DEBUG
+                                    DllLog("[DEBUG] Overwrite detected (wrote [%.2f,%.2f,%.2f] -> cur [%.2f,%.2f,%.2f]) — arming guard 10 frames", hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
+#endif
                                     g_huntFramesLeft.store(10); // 10 frames
                                     if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
                                 }
@@ -3645,7 +4106,9 @@ namespace Mod {
                                 if (g_addrGameRomCamera.load() != 0) {
                                     g_huntFramesLeft.store(10);
                                     ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
-                                    DllLog("[INFO] Blacklisted — re-checking writers (100ms)");
+#ifdef _DEBUG
+                                    DllLog("[DEBUG] Blacklisted — re-checking writers (100ms)");
+#endif
                                 }
                             }
                             // Auto-clear after 2s to avoid permanent stall requiring F2 (level change still loading at first collect)
@@ -3803,6 +4266,8 @@ namespace Mod {
         InitializeCriticalSection(&g_patchCS);
         InitializeCriticalSection(&g_writerCS);
         InitializeCriticalSection(&g_menuCandidateCS);
+        InitializeCriticalSection(&g_fovHuntCS);
+        g_fovHuntCSInit = true;
 
         if (g_sharedMemory.Create(L"Local\\BotwMousecamSharedMemory")) {
             if (g_pSharedMemory) {
@@ -3825,6 +4290,9 @@ namespace Mod {
                 g_pSharedMemory->m_reqShutdown = false;
             }
         }
+
+        // Install VEH for FOV + hunter page guards (level-change + writer hunt)
+        if (!g_vehHandle) g_vehHandle = AddVectoredExceptionHandler(1, CameraWriterVehHandler);
 
         // Start scanning thread
         g_scanning = true;
@@ -3862,6 +4330,10 @@ namespace Mod {
         g_writerHuntActive.store(false);
         g_huntFramesLeft.store(0);
         DisarmPageGuard();
+        RemoveFovHook();
+        DisarmFovGuard();
+        g_fovWriteCount.store(0);
+        g_lastFovWriteTick.store(0);
         EnterCriticalSection(&g_writerCS);
         for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
         g_discoveredWriters.clear();
@@ -3875,6 +4347,7 @@ namespace Mod {
         DeleteCriticalSection(&g_patchCS);
         DeleteCriticalSection(&g_writerCS);
         DeleteCriticalSection(&g_menuCandidateCS);
+        if (g_fovHuntCSInit) DeleteCriticalSection(&g_fovHuntCS);
 
         g_sharedMemory.Close();
     }

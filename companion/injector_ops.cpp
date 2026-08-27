@@ -195,6 +195,16 @@ void UpdateUiState() {
         }
     }
     wasF2Pressed = isF2Pressed;
+    static bool wasF3Pressed = false;
+    bool isF3Pressed = (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
+    if (isCompanionFocused && isF3Pressed && !wasF3Pressed) {
+        if (g_pSharedMemory) {
+            g_pSharedMemory->m_reqResetScan = true;
+            g_pSharedMemory->m_reqResetPreserveMenu = false;
+            LogToConsole(L"[INFO] Reset requested via F3 — full scanner reset.");
+        }
+    }
+    wasF3Pressed = isF3Pressed;
 
 #ifdef _DEBUG
     static bool wasF5Pressed = false;

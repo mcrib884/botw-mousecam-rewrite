@@ -17,7 +17,7 @@ extern float g_animInject, g_animReinject, g_animReset, g_animToggleCam;
 extern float g_animDarkBtn, g_animLightBtn, g_animPath, g_animPathReset;
 extern float g_animScrollHelper, g_animOrbitCam, g_animIndepSens, g_animCemuExperimental;
 extern float g_animToggleMagneTarget, g_animToggleShortcutMenu, g_animToggleMenuState;
-extern float g_animSensH, g_animSensV, g_animClearLog, g_animMagneSens, g_animMagnePullSens;
+extern float g_animSensH, g_animSensV, g_animClearLog, g_animLogToFile, g_animMagneSens, g_animMagnePullSens;
 extern float g_animMagneSpeedBtn[3];
 extern float g_animFpsMagnesis, g_animFpsMagneEyeHeight, g_animFpsMagneOffsetForward, g_animFpsMagneOffsetSide;
 extern float g_animDrop[5];
@@ -30,6 +30,7 @@ void PaintWindow(HWND hWnd) {
     GetClientRect(hWnd, &rc);
     int w = rc.right;
     int h = rc.bottom;
+    if (w <= 0 || h <= 0) { EndPaint(hWnd, &ps); return; }
     float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
     if (dpiScale <= 0) dpiScale = 1.0f;
     int logicalW = (int)(w / dpiScale);
@@ -323,11 +324,13 @@ void PaintWindow(HWND hWnd) {
     if (!g_collapsedLog) {
         SolidBrush mutedText(g_theme.textMuted);
 #ifdef _DEBUG
-        const wchar_t* shortcutsText = L"F2: Toggle Camera | F5: AOB Dump";
+        const wchar_t* shortcutsText = L"F2: Toggle Camera | F3: Reset | F5: AOB Dump";
 #else
-        const wchar_t* shortcutsText = L"F2: Toggle Camera";
+        const wchar_t* shortcutsText = L"F2: Toggle Camera | F3: Reset";
 #endif
         g.DrawString(shortcutsText, -1, &smallFont, PointF((REAL)(pad + 10), (REAL)(ui.rLog.Y + 26)), &mutedText);
+        // Log to file toggle
+        DrawToggle(g, ui.rLogToFile.X, ui.rLogToFile.Y, g_animLogToFile, L"Log to file", ff, false);
         {
             Color clearNormal = g_theme.border;
             Color clearHover = g_config.use_light_theme ? Color(255, 200, 200, 200) : Color(255, 80, 80, 90);

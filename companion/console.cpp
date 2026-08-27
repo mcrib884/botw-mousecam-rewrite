@@ -10,12 +10,28 @@
 #include "console.h"
 #include "theme.h"      // g_theme for LogToConsole colors
 #include "ui_layout.h"  // CalculateUIRects + g_collapsedLog for UpdateConsoleEditPosition
+#include "config.h"
+#include "string_utils.h"
+#include <fstream>
 
 HWND g_hConsoleEdit = nullptr;
 std::wstring g_statusText = L"Ready.";
 HWND g_hTooltip = nullptr;
 const wchar_t* g_tooltipText = nullptr;
 bool g_tooltipActive = false;
+
+static std::string GetLogFilePath() {
+    wchar_t path[MAX_PATH];
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    std::wstring wpath(path);
+    size_t last_slash = wpath.find_last_of(L"\\/");
+    if (last_slash != std::wstring::npos) {
+        wpath = wpath.substr(0, last_slash + 1) + L"mousecam.log";
+    } else {
+        wpath = L"mousecam.log";
+    }
+    return WstrToUtf8(wpath);
+}
 
 void ShowTooltip(HWND hWnd, const wchar_t* text, int x, int y) {
     if (!g_hTooltip) return;
@@ -57,9 +73,14 @@ void SetStatus(const wchar_t* msg) {
     if (g_hWnd) InvalidateRect(g_hWnd, nullptr, FALSE);
 }
 
-void LogToConsole(const wchar_t* format, ...) {
-    if (!g_hConsoleEdit) return;
+void ClearLogFile() {
+    std::string logPath = GetLogFilePath();
+    // Truncate file (clear) — ignore errors (file may be locked by viewer)
+    std::ofstream lf(logPath, std::ios::trunc);
+    if (lf.is_open()) lf.close();
+}
 
+void LogToConsole(const wchar_t* format, ...) {
     wchar_t msg[512];
     va_list args;
     va_start(args, format);
@@ -83,6 +104,21 @@ void LogToConsole(const wchar_t* format, ...) {
     GetLocalTime(&st);
     wchar_t buf[768];
     swprintf_s(buf, L"%02d:%02d:%02d %s\n", st.wHour, st.wMinute, st.wSecond, msg_content);
+
+    // Log to file if toggle enabled — do this even if console not yet created
+    // so early startup logs are captured and shrine crash diagnostics survive
+    if (g_config.log_to_file) {
+        std::string logPath = GetLogFilePath();
+        std::ofstream lf(logPath, std::ios::app);
+        if (lf.is_open()) {
+            std::wstring wbuf(buf);
+            std::string ubuf = WstrToUtf8(wbuf);
+            lf << ubuf;
+            lf.close();
+        }
+    }
+
+    if (!g_hConsoleEdit) return;
 
     // Smart auto-scroll check: only scroll to bottom if scrollbar is already at or near bottom
     SCROLLINFO si = { sizeof(SCROLLINFO), SIF_ALL };
