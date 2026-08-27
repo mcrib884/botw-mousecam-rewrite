@@ -3226,11 +3226,11 @@ namespace Mod {
                     lastSeenCnt = cnt;
                     lastSeenTick = now;
                     g_lastFovWriteTick.store(now);
-                } else if (cnt > 3 && lastSeenTick != 0 && now - lastSeenTick >= 1500) {
+                } else if (cnt > 3 && lastSeenTick != 0 && now - lastSeenTick >= 3000) {
                     DllLog("[INFO] FOV stall %.1fs (writes %llu) — level change, triggering full reset2 (ignore MenuState 1/2)", (now - lastSeenTick) / 1000.0, cnt);
                     if (g_mousecamActive) g_fovStallReenablePending.store(true);
                     if (g_pSharedMemory) {
-                        g_pSharedMemory->m_reqResetScan = true; // full reset, ignore MenuState 1/2 per lord
+                        g_pSharedMemory->m_reqResetScan = true;
                         g_pSharedMemory->m_reqResetPreserveMenu = false;
                     }
                     g_fovWriteCount.store(0);
