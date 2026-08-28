@@ -2397,7 +2397,7 @@ namespace Mod {
                 size_t szH = DetectWriteInstructionSize(tmpH);
                 if (szH == 0 || szH > 15) szH = 7;
                 std::string aobH = GenerateWriterAob(held[0], szH);
-                DllLog("[INFO] Writers BLACKLISTED — holding %zu (first at 0x%llX: %s), %zu clean writer(s) in set NOP'd — mouse suppressed until held writers go quiet",
+                DllLog("[INFO] Writers BLACKLISTED — holding %zu (first at 0x%llX: %s), %zu clean writer(s) also in set (XYZ-trio set rule applies), mouse suppressed until held writers go quiet",
                        held.size(), (unsigned long long)held[0], aobH.c_str(), clean.size());
             }
         }
@@ -2406,8 +2406,69 @@ namespace Mod {
         if (held.empty() && g_blacklistedMode.load()) {
             g_blacklistedMode.store(false);
         }
-        // NOP every clean writer (whether or not the set also held blacklisted ones)
-        for (uintptr_t rip : clean) {
+        // ---- XYZ TRIO SET RULE ----
+        // Never patch anything that is not a complete X/Y/Z writer set in this collection.
+        // Every camera position block in this game is a triple of identical encodings
+        // ("45 0F 38 F1 74 <sib> <disp>") with disp8 = 0x00, 0x04, 0x08. Cutscene blocks ALSO
+        // carry sibling stores at disp 0x0C (4th field) — no stored blacklist pattern contains
+        // them, so lone 0C orphans were being classified clean and NOP'd, half-patching the
+        // blacklisted function (20:58:41: held the 05-trio, NOP'd 74 35 0C at 0x2DE89981344).
+        // A writer is NOP-eligible ONLY if its full trio {00,04,08} (same 6-byte prefix, same
+        // address cluster) is present in this round. Anything else — orphans, partial trios,
+        // non-conforming encodings — is ignored (and simply re-collected next window).
+        std::vector<uintptr_t> toNop;
+        {
+            struct MW { uintptr_t rip; uint8_t pre[6]; uint8_t disp; bool trioFormed; };
+            std::vector<MW> mws;
+            for (uintptr_t rip : clean) {
+                MW m{}; m.rip = rip; m.trioFormed = false;
+                uint8_t b[7] = {};
+                bool ok = true;
+                for (int i = 0; i < 7; ++i) { uint8_t v = 0; if (!SafeReadU8_SEH(rip + i, v)) { ok = false; break; } b[i] = v; }
+                if (ok && b[0] == 0x45 && b[1] == 0x0F && b[2] == 0x38 && b[3] == 0xF1 && b[4] == 0x74 &&
+                    (b[6] == 0x00 || b[6] == 0x04 || b[6] == 0x08)) {
+                    memcpy(m.pre, b, 6); m.disp = b[6];
+                } else {
+                    continue; // not an X/Y/Z member (orphan 0C/7C/unknown shape) — ignore, never NOP
+                }
+                mws.push_back(m);
+            }
+            std::sort(mws.begin(), mws.end(), [](const MW& a, const MW& b2) {
+                int c = memcmp(a.pre, b2.pre, 6);
+                return c != 0 ? c < 0 : a.rip < b2.rip;
+            });
+            size_t i = 0;
+            while (i < mws.size()) {
+                size_t j = i;
+                while (j < mws.size() && memcmp(mws[j].pre, mws[i].pre, 6) == 0) ++j;
+                // same-prefix members [i,j): split into address clusters (gap > 4096 = new block)
+                size_t k = i;
+                while (k < j) {
+                    size_t e = k + 1;
+                    while (e < j && (mws[e].rip - mws[e - 1].rip) <= 4096) ++e;
+                    bool has00 = false, has04 = false, has08 = false;
+                    for (size_t t = k; t < e; ++t) {
+                        if (mws[t].disp == 0x00) has00 = true;
+                        else if (mws[t].disp == 0x04) has04 = true;
+                        else if (mws[t].disp == 0x08) has08 = true;
+                    }
+                    if (has00 && has04 && has08) {
+                        for (size_t t = k; t < e; ++t) toNop.push_back(mws[t].rip);
+                    } else if (g_verboseCamDiag) {
+                        DllLog("[DIAG] set rule: INCOMPLETE trio (prefix %02X %02X, disp %s%s%s) — ignoring %zu writer(s)",
+                               mws[k].pre[4], mws[k].pre[5], has00 ? "00 " : "", has04 ? "04 " : "", has08 ? "08" : "", e - k);
+                    }
+                    k = e;
+                }
+                i = j;
+            }
+        }
+        size_t setRuleDropped = clean.size() - toNop.size();
+        if (setRuleDropped > 0) {
+            DllLog("[INFO] Set rule — %zu writer(s) not part of a complete XYZ trio, ignored (no NOP)", setRuleDropped);
+        }
+        // NOP only the writers that form complete XYZ trios
+        for (uintptr_t rip : toNop) {
             EnterCriticalSection(&g_writerCS);
             bool alreadyKnown=false;
             for (auto &wr: g_discoveredWriters) if (wr.rip==rip) alreadyKnown=true;
