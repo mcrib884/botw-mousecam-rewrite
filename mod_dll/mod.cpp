@@ -3244,24 +3244,24 @@ namespace Mod {
             if (g_fovStallReenablePending.load() && !g_fovHuntActive.load() && g_addrGameRomCamera.load() != 0) {
                 bool isBlacklisted = g_blacklistedMode.load();
                 if (!isBlacklisted) {
-                    if (!g_mousecamActive) {
+                    bool wasInactive = !g_mousecamActive.load();
+                    if (wasInactive) {
                         g_mousecamActive = true;
                         if (g_pSharedMemory) g_pSharedMemory->m_statusMousecamActive = true;
-                        g_forceShouldControlReset.store(true);
-                        DllLog("[INFO] FOV stall auto re-enable mousecam (auto centering) blacklisted=%d writers=%zu", isBlacklisted?1:0, g_discoveredWriters.size());
-                        HWND fg = GetForegroundWindow();
-                        DWORD pid = 0; GetWindowThreadProcessId(fg, &pid);
-                        if (fg && pid == GetCurrentProcessId() && g_addrGameRomCamera.load() != 0) {
-                            POINT center = GetCemuWindowCenter(fg);
-                            SetCursorPos(center.x, center.y);
-                            DllLog("[INFO] Auto center cursor to %d,%d (forcing should_control)", center.x, center.y);
-                        }
                     }
-                    // Don't clear pending until writers found and not blacklisted — keep hunting
-                    EnterCriticalSection(&g_writerCS);
-                    bool hasWriters = !g_discoveredWriters.empty();
-                    LeaveCriticalSection(&g_writerCS);
-                    if (hasWriters) g_fovStallReenablePending.store(false);
+                    // Always force recapture even if already active — fixes death reset2 visible mouse (guard was motherfucker)
+                    g_forceShouldControlReset.store(true);
+                    g_originalCursorsRestored = true; // force next hide to re-apply
+                    DllLog("[INFO] FOV stall auto re-enable mousecam %s (forcing should_control) blacklisted=%d writers=%zu", wasInactive?"":"already active", isBlacklisted?1:0, g_discoveredWriters.size());
+                    HWND fg = GetForegroundWindow();
+                    DWORD pid = 0; GetWindowThreadProcessId(fg, &pid);
+                    if (fg && pid == GetCurrentProcessId() && g_addrGameRomCamera.load() != 0) {
+                        POINT center = GetCemuWindowCenter(fg);
+                        SetCursorPos(center.x, center.y);
+                        DllLog("[INFO] Auto center cursor to %d,%d (forcing should_control)", center.x, center.y);
+                    }
+                    // Clear pending immediately — don't wait for writers (writers hunt has 2.5s delay, but capture must be immediate like F2)
+                    g_fovStallReenablePending.store(false);
                 } else {
                     DllLog("[DEBUG] FOV stall pending but blacklisted — keep waiting");
                 }
@@ -3509,10 +3509,11 @@ namespace Mod {
             // Explicit reset atomic: restart writer hunt after GameRomCamera re-found (reset2) — delayed to let level load finish
             if (g_hunterResetPending.load() && gc_addr != 0) {
                 if (g_hunterResetPending.exchange(false)) {
-                    DllLog("[INFO] Writer hunt explicit reset — new GameRomCamera 0x%llX, restarting detect window (delayed 2.5s for load)", g_addrGameRomCamera.load());
+                    bool isFovStall = g_fovStallReenablePending.load();
+                    DllLog("[INFO] Writer hunt explicit reset — new GameRomCamera 0x%llX, restarting detect window (%s)", g_addrGameRomCamera.load(), isFovStall ? "250ms FOV stall fast" : "delayed 2.5s for load");
                     hunter_hasWritten = false;
                     hunter_mouseMovedSinceLastCheck = false;
-                    hunter_lastCheckMs = GetTickCount64() + 2500; // delay first overwrite check 2.5s to avoid collecting loading writers
+                    hunter_lastCheckMs = GetTickCount64() + (isFovStall ? 250 : 2500); // FOV stall must be fast like F2, not 2.5s
                     hunter_lastWrittenX = hunter_lastWrittenY = hunter_lastWrittenZ = 0.0f;
                     g_huntFramesLeft.store(0);
                     DisarmPageGuard();
@@ -3521,17 +3522,17 @@ namespace Mod {
                     LeaveCriticalSection(&g_writerCS);
                     g_blacklistedMode.store(false);
                     g_lastBlacklistedWriteTime.store(0);
-                    hunter_blacklistRecheckMs = GetTickCount64() + 2500;
+                    hunter_blacklistRecheckMs = GetTickCount64() + (isFovStall ? 250 : 2500);
                     if (should_control) {
                         if (!g_writerHuntActive.load()) {
                             StartWriterHunt();
                         } else {
                             if (!g_vehHandle) g_vehHandle = AddVectoredExceptionHandler(1, CameraWriterVehHandler);
-                            DllLog("[INFO] Writer hunt explicit reset — hunt already active, fresh window armed (delayed 2.5s)");
+                            DllLog("[INFO] Writer hunt explicit reset — hunt already active, fresh window armed (%s)", isFovStall ? "250ms FOV stall fast" : "delayed 2.5s");
                         }
                         hunter_hasWritten = false;
                         hunter_mouseMovedSinceLastCheck = false;
-                        hunter_lastCheckMs = GetTickCount64() + 2500;
+                        hunter_lastCheckMs = GetTickCount64() + (isFovStall ? 250 : 2500);
                         g_huntFramesLeft.store(0);
                     } else {
                         if (g_writerHuntActive.load()) StopWriterHunt();
