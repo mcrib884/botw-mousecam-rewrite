@@ -982,6 +982,9 @@ namespace Mod {
         }
 
         MEMORY_BASIC_INFORMATION mbi;
+        // Heartbeat: a full walk takes ~10s when no camera is valid yet (e.g. right after the
+        // zombie rejection on death). Emit one line per second so the log shows progress.
+        uint64_t lastBeatMs = GetTickCount64();
         while (current < end) {
             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
             if (IsResetRequested()) return;
@@ -1002,6 +1005,13 @@ namespace Mod {
                 for (size_t offset = 0; offset < regionSize; offset += (chunkSize > overlap ? chunkSize - overlap : chunkSize)) {
                     if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
                     if (IsResetRequested()) return;
+                    {
+                        uint64_t nowBeat = GetTickCount64();
+                        if (nowBeat - lastBeatMs >= 1000) {
+                            lastBeatMs = nowBeat;
+                            DllLog("[INFO] Still scanning for GameRomCamera... (%zu pattern match(es) checked)", outTotal);
+                        }
+                    }
                     PollHooksAndSyncSharedMemory();
                     size_t toRead = (std::min)(chunkSize, regionSize - offset);
                     __try {
@@ -2594,10 +2604,17 @@ namespace Mod {
                     if (delayMs > 0) {
                         DllLog("[INFO] Waiting %dms for the load to finish before scanning...", delayMs);
                         uint64_t deadline = GetTickCount64() + (uint64_t)delayMs;
+                        uint64_t lastWaitBeat = GetTickCount64();
                         while (g_scanning && GetTickCount64() < deadline) {
                             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
                             if (IsResetRequested()) break; // newer reset wins — handle next pass
                             Sleep(100);
+                            uint64_t nowBeat = GetTickCount64();
+                            if (nowBeat - lastWaitBeat >= 1000) {
+                                lastWaitBeat = nowBeat;
+                                uint64_t left = (deadline > nowBeat) ? (deadline - nowBeat) / 1000 : 0;
+                                DllLog("[INFO] Waiting for load to finish... %llu s left", (unsigned long long)left);
+                            }
                         }
                         if (g_pSharedMemory) g_pSharedMemory->m_statusScanning = true;
                     }

@@ -46,17 +46,53 @@ bool g_trackingMouse = false;
 int g_hoverDrop = -1;
 int g_hoverDropMenuRow = -1;
 
+// Scrollable dropdown popup: the 18-row list is clamped to the monitor work area at creation
+// and the remainder is reached with the mouse wheel. g_dropScroll = first visible row index.
+static int g_dropScroll = 0;
+static const int DROP_TOTAL_ROWS = 18;
+static const int DROP_ROW_H = 18;
+
+static int DropVisibleRows(HWND hWnd) {
+    float dpiScale = GetDpiForWindow(hWnd) / 96.0f;
+    if (dpiScale <= 0) dpiScale = 1.0f;
+    RECT rc;
+    GetClientRect(hWnd, &rc);
+    int vr = (int)((rc.bottom / dpiScale) / DROP_ROW_H);
+    if (vr < 1) vr = 1;
+    if (vr > DROP_TOTAL_ROWS) vr = DROP_TOTAL_ROWS;
+    return vr;
+}
+
+static void DropClampScroll(HWND hWnd) {
+    int maxScroll = DROP_TOTAL_ROWS - DropVisibleRows(hWnd);
+    if (maxScroll < 0) maxScroll = 0;
+    if (g_dropScroll > maxScroll) g_dropScroll = maxScroll;
+    if (g_dropScroll < 0) g_dropScroll = 0;
+}
+
 LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
         CREATESTRUCTW* cs = (CREATESTRUCTW*)lParam;
         SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         g_hoverDropMenuRow = -1;
+        g_dropScroll = 0;
+        DropClampScroll(hWnd);
         return 0;
     }
     case WM_ACTIVATE:
         if (WA_INACTIVE == LOWORD(wParam)) DestroyWindow(hWnd);
         return 0;
+    case WM_MOUSEWHEEL: {
+        int notches = ((int)(short)HIWORD(wParam)) / WHEEL_DELTA;
+        if (notches != 0) {
+            g_dropScroll -= notches * 3; // 3 rows per wheel notch
+            DropClampScroll(hWnd);
+            g_hoverDropMenuRow = -1;
+            InvalidateRect(hWnd, nullptr, FALSE);
+        }
+        return 0;
+    }
     case WM_MOUSEMOVE: {
         int x = (int)(short)LOWORD(lParam);
         int y = (int)(short)HIWORD(lParam);
@@ -64,8 +100,8 @@ LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LP
         if (dpiScale <= 0) dpiScale = 1.0f;
         x = (int)(x / dpiScale);
         y = (int)(y / dpiScale);
-        int row = y / 18;
-        if (row >= 0 && row < 18) g_hoverDropMenuRow = row;
+        int visRow = y / DROP_ROW_H;
+        if (visRow >= 0 && visRow < DropVisibleRows(hWnd)) g_hoverDropMenuRow = g_dropScroll + visRow;
         else g_hoverDropMenuRow = -1;
         InvalidateRect(hWnd, nullptr, FALSE);
         return 0;
@@ -77,14 +113,17 @@ LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LP
         if (dpiScale <= 0) dpiScale = 1.0f;
         x = (int)(x / dpiScale);
         y = (int)(y / dpiScale);
-        int row = y / 18;
-        if (row >= 0 && row < 18) {
-            int dropdownIdx = (int)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
-            ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
-            g_config.mouse_bindings[dropdownIdx] = buttons[row].val;
-            g_ki.mouse_bindings[dropdownIdx] = buttons[row].val;
-            SaveConfig();
-            WriteConfigToSharedMemory();
+        int visRow = y / DROP_ROW_H;
+        if (visRow >= 0 && visRow < DropVisibleRows(hWnd)) {
+            int row = g_dropScroll + visRow;
+            if (row >= 0 && row < DROP_TOTAL_ROWS) {
+                int dropdownIdx = (int)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+                ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
+                g_config.mouse_bindings[dropdownIdx] = buttons[row].val;
+                g_ki.mouse_bindings[dropdownIdx] = buttons[row].val;
+                SaveConfig();
+                WriteConfigToSharedMemory();
+            }
         }
         DestroyWindow(hWnd);
         return 0;
@@ -118,13 +157,29 @@ LRESULT CALLBACK DropdownPopupWndProc(HWND hWnd, UINT message, WPARAM wParam, LP
         Font font(&ff, 12, FontStyleRegular, UnitPixel);
         SolidBrush textBrush(g_theme.text);
         ButtonItem* buttons = g_ki.is_gamepad ? GAMEPAD_BUTTONS : PRO_BUTTONS;
-        for (int i = 0; i < 18; i++) {
+        DropClampScroll(hWnd);
+        int visible = DropVisibleRows(hWnd);
+        for (int v = 0; v < visible; v++) {
+            int i = g_dropScroll + v;
+            if (i >= DROP_TOTAL_ROWS) break;
             if (g_hoverDropMenuRow == i) {
                 SolidBrush hoverBrush(Color(255, 30, 30, 40));
-                g.FillRectangle(&hoverBrush, 0, i * 18, logicalW, 18);
+                g.FillRectangle(&hoverBrush, 0, v * DROP_ROW_H, logicalW, DROP_ROW_H);
             }
             std::wstring name = std::wstring(buttons[i].name, buttons[i].name + strlen(buttons[i].name));
-            g.DrawString(name.c_str(), -1, &font, PointF(5.0f, (REAL)(i * 18)), &textBrush);
+            g.DrawString(name.c_str(), -1, &font, PointF(5.0f, (REAL)(v * DROP_ROW_H)), &textBrush);
+        }
+        // Slim scrollbar when rows are hidden
+        if (visible < DROP_TOTAL_ROWS) {
+            int trackH = visible * DROP_ROW_H;
+            int thumbH = (trackH * visible) / DROP_TOTAL_ROWS;
+            if (thumbH < 14) thumbH = 14;
+            int maxScroll = DROP_TOTAL_ROWS - visible;
+            int thumbY = maxScroll > 0 ? ((trackH - thumbH) * g_dropScroll) / maxScroll : 0;
+            SolidBrush trackBrush(Color(60, 255, 255, 255));
+            g.FillRectangle(&trackBrush, logicalW - 5, 0, 4, trackH);
+            SolidBrush thumbBrush(Color(200, 255, 255, 255));
+            g.FillRectangle(&thumbBrush, logicalW - 5, thumbY, 4, thumbH);
         }
 
         BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
@@ -422,6 +477,20 @@ LRESULT HandleLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam) {
             if (dpiScale <= 0) dpiScale = 1.0f;
             int popupW = (int)(ui.rDropMenu.Width * dpiScale);
             int popupH = (int)(ui.rDropMenu.Height * dpiScale);
+            // Fit the list to the screen: clamp to the monitor work area (min 3 rows);
+            // hidden rows are reachable via mouse wheel in the popup.
+            {
+                MONITORINFO mi = { sizeof(mi) };
+                if (GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mi)) {
+                    int availPx = mi.rcWork.bottom - pt.y;
+                    if (popupH > availPx) {
+                        int minH = (int)(3 * DROP_ROW_H * dpiScale);
+                        popupH = (availPx > minH) ? availPx : minH;
+                    }
+                    int availW = mi.rcWork.right - pt.x;
+                    if (popupW > availW) popupW = availW;
+                }
+            }
             HWND hPopup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, L"DropdownPopupClass", L"",
                 WS_POPUP | WS_VISIBLE, pt.x, pt.y, popupW, popupH,
                 hWnd, nullptr, GetModuleHandle(nullptr), (LPVOID)(INT_PTR)i);
