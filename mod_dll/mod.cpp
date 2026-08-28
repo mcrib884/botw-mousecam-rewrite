@@ -1066,6 +1066,12 @@ namespace Mod {
         }
     }
 
+    // Forward so CodePatch methods can use the patch lock / suspension helpers defined below
+    static CRITICAL_SECTION g_patchCS;
+    static std::vector<HANDLE> SuspendAllOtherThreads();
+    static void ResumeAllOtherThreads(std::vector<HANDLE>&);
+    static void WaitForHunterQuiesce(int timeoutMs = 500);
+
     // -------------------------------------------------------------------------
     // CodePatch: used for magnesis detour only. Camera writers are now handled
     // dynamically via the VEH page-guard system below.
@@ -1078,59 +1084,72 @@ namespace Mod {
 
         bool Backup() {
             if (address == 0 || size == 0) return false;
+            EnterCriticalSection(&g_patchCS);
             g_originalBytes.resize(size);
             memcpy(g_originalBytes.data(), (const void*)address, size);
+            LeaveCriticalSection(&g_patchCS);
             return true;
         }
 
         bool Restore() {
             if (address == 0 || size == 0 || g_originalBytes.empty()) return false;
-            DWORD oldProtect;
+            EnterCriticalSection(&g_patchCS);
+            auto suspended = SuspendAllOtherThreads();
+            DWORD oldProtect = 0;
+            bool ok = false;
             if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                 memcpy((LPVOID)address, g_originalBytes.data(), size);
-                VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
                 FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, size);
-                active = false;
-                return true;
+                VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+                ok = true;
             }
-            return false;
+            ResumeAllOtherThreads(suspended);
+            LeaveCriticalSection(&g_patchCS);
+            if (ok) active = false;
+            return ok;
         }
 
         bool ApplyNop() {
             if (address == 0 || size == 0 || g_originalBytes.empty()) return false;
+            EnterCriticalSection(&g_patchCS);
+            auto suspended = SuspendAllOtherThreads();
             std::vector<uint8_t> nops(size, 0x90);
-            DWORD oldProtect;
+            DWORD oldProtect = 0;
+            bool ok = false;
             if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                 memcpy((LPVOID)address, nops.data(), size);
-                VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
                 FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, size);
-                active = true;
-                return true;
+                VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+                ok = true;
             }
-            return false;
+            ResumeAllOtherThreads(suspended);
+            LeaveCriticalSection(&g_patchCS);
+            if (ok) active = true;
+            return ok;
         }
 
         bool ApplyBytes(const uint8_t* bytes, size_t len) {
             if (address == 0 || size == 0 || g_originalBytes.empty() || len != size) return false;
-            DWORD oldProtect;
+            EnterCriticalSection(&g_patchCS);
+            auto suspended = SuspendAllOtherThreads();
+            DWORD oldProtect = 0;
+            bool ok = false;
             if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                 if (len >= 14 && bytes[0] == 0xFF && bytes[1] == 0x25 && bytes[2] == 0x00 && bytes[3] == 0x00 && bytes[4] == 0x00 && bytes[5] == 0x00) {
-                    // Atomic detour write to prevent race conditions:
-                    // 1. Write the target address at offset 6 (and NOPs) first
                     memcpy((LPVOID)(address + 6), bytes + 6, len - 6);
-                    // 2. Perform atomic 64-bit write of the first 8 bytes
-                    uint64_t first8;
-                    memcpy(&first8, bytes, 8);
+                    uint64_t first8; memcpy(&first8, bytes, 8);
                     InterlockedExchange64((LONG64*)address, (LONG64)first8);
                 } else {
                     memcpy((LPVOID)address, bytes, len);
                 }
-                VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
                 FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, len);
-                active = true;
-                return true;
+                VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
+                ok = true;
             }
-            return false;
+            ResumeAllOtherThreads(suspended);
+            LeaveCriticalSection(&g_patchCS);
+            if (ok) active = true;
+            return ok;
         }
 
         bool InjectDetour(uintptr_t targetFunction) {
@@ -1148,7 +1167,45 @@ namespace Mod {
 
     };
 
-    static CRITICAL_SECTION g_patchCS;
+    // --- Patch serialization + safe suspension (fixes trampoline vs writer vs level-change races) ---
+    // All executable-memory mutation (VirtualProtect+memcpy) must be serialized through g_patchCS
+    // and must suspend game threads while the bytes are torn. The previous design left
+    // SetupShortcutHook / SetupMenuStateHook unsynchronized and used plain memcpy for 7/10B
+    // E9 patches — a torn read during a level reload or a concurrent writer NOP crashed Cemu.
+    static std::vector<HANDLE> SuspendAllOtherThreads() {
+        std::vector<HANDLE> suspended;
+        DWORD currentTid = GetCurrentThreadId();
+        DWORD pid = GetCurrentProcessId();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE) return suspended;
+        THREADENTRY32 te; te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te)) {
+            do {
+                if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                    HANDLE h = OpenThread(THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                    if (h) {
+                        if (SuspendThread(h) != (DWORD)-1) suspended.push_back(h);
+                        else CloseHandle(h);
+                    }
+                }
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+        return suspended;
+    }
+    static void ResumeAllOtherThreads(std::vector<HANDLE>& handles) {
+        for (HANDLE h : handles) { ResumeThread(h); CloseHandle(h); }
+        handles.clear();
+    }
+    struct PatchSuspendGuard {
+        std::vector<HANDLE> handles;
+        PatchSuspendGuard() { EnterCriticalSection(&g_patchCS); handles = SuspendAllOtherThreads(); }
+        ~PatchSuspendGuard() { ResumeAllOtherThreads(handles); LeaveCriticalSection(&g_patchCS); }
+    };
+    struct PatchLockGuard {
+        PatchLockGuard() { EnterCriticalSection(&g_patchCS); }
+        ~PatchLockGuard() { LeaveCriticalSection(&g_patchCS); }
+    };
 
     static CodePatch g_magneDetourPatch = {};
     static CodePatch g_magneXPatch = {};
@@ -1182,6 +1239,7 @@ namespace Mod {
     static CRITICAL_SECTION g_menuCandidateCS;
 
     static LPVOID AllocateWithin2GB(uintptr_t targetAddr, size_t size) {
+        PatchLockGuard _allocLock;
         SYSTEM_INFO si;
         GetSystemInfo(&si);
 
@@ -1711,35 +1769,46 @@ namespace Mod {
         return 0;
     }
 
+    static bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out);
     static bool NopInstruction(uintptr_t rip, WriterRecord& rec) {
         uint8_t buf[16] = {};
-        __try { memcpy(buf, (const void*)rip, 16); } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+        for (int i = 0; i < 16; ++i) { uint8_t b = 0; if (!SafeReadU8_SEH(rip + i, b)) return false; buf[i] = b; }
         size_t sz = DetectWriteInstructionSize(buf);
         if (sz == 0 || sz > 15) {
-            // Fallback: many JIT stores are 5-7 bytes; try 7 with warning
             DllLog("[WARNING] Detect size 0 for RIP 0x%llX bytes %02X %02X %02X %02X — fallback to 7", rip, buf[0], buf[1], buf[2], buf[3]);
             sz = 7;
         }
+        EnterCriticalSection(&g_patchCS);
+        auto suspended = SuspendAllOtherThreads();
         DWORD old = 0;
-        if (!VirtualProtect((LPVOID)rip, sz, PAGE_EXECUTE_READWRITE, &old)) return false;
-        memcpy(rec.origBytes, buf, sz);
-        rec.rip = rip;
-        rec.patchSize = sz;
-        rec.nopActive = true;
-        memset((void*)rip, 0x90, sz);
-        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rip, sz);
-        VirtualProtect((LPVOID)rip, sz, old, &old);
-        return true;
+        bool ok = false;
+        if (VirtualProtect((LPVOID)rip, sz, PAGE_EXECUTE_READWRITE, &old)) {
+            memcpy(rec.origBytes, buf, sz);
+            rec.rip = rip;
+            rec.patchSize = sz;
+            rec.nopActive = true;
+            memset((void*)rip, 0x90, sz);
+            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rip, sz);
+            VirtualProtect((LPVOID)rip, sz, old, &old);
+            ok = true;
+        }
+        ResumeAllOtherThreads(suspended);
+        LeaveCriticalSection(&g_patchCS);
+        return ok;
     }
 
     static void RestoreInstruction(WriterRecord& rec) {
         if (!rec.nopActive || rec.patchSize == 0) return;
+        EnterCriticalSection(&g_patchCS);
+        auto suspended = SuspendAllOtherThreads();
         DWORD old = 0;
         if (VirtualProtect((LPVOID)rec.rip, rec.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
             memcpy((void*)rec.rip, rec.origBytes, rec.patchSize);
             FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rec.rip, rec.patchSize);
             VirtualProtect((LPVOID)rec.rip, rec.patchSize, old, &old);
         }
+        ResumeAllOtherThreads(suspended);
+        LeaveCriticalSection(&g_patchCS);
         rec.nopActive = false;
     }
 
@@ -2094,6 +2163,17 @@ namespace Mod {
 
     static inline bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out) {
         __try { out = *(const uint8_t*)addr; return true; } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+
+    static void WaitForHunterQuiesce(int timeoutMs) {
+        uint64_t deadline = GetTickCount64() + (uint64_t)timeoutMs;
+        while (GetTickCount64() < deadline) {
+            bool active = g_writerHuntActive.load() || g_fovHuntActive.load();
+            bool frames = g_huntFramesLeft.load() != 0 || g_fovHuntFramesLeft.load() != 0;
+            bool guards = g_guardArmed.load() || g_fovGuardArmed.load() || g_xyzHwActive.load() || g_fovHwActive.load();
+            if (!active && !frames && !guards) break;
+            Sleep(10);
+        }
     }
 
     static std::string GenerateWriterAob(uintptr_t rip, size_t patchSize) {
@@ -2749,8 +2829,14 @@ namespace Mod {
                     g_pSharedMemory->m_statusShortcutHookReady = false;
 
                     // Hunter: Reset forgets (full), Reset2 keeps (preserve)
+                    // Level-change barrier: make trampoline setup and writer NOPs wait for each other.
+                    // The previous design had no ordering — a level reload could free the JIT region
+                    // while SetupMenuStateHook was mid-patch (7B torn E9) or while the hunter was
+                    // in a VEH single-step, crashing Cemu.
                     if (!preserveMenu) {
                         g_writerHuntActive.store(false);
+                        g_fovHuntActive.store(false);
+                        WaitForHunterQuiesce(800);
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
                         ClearXyzHwWatch();
@@ -2760,7 +2846,6 @@ namespace Mod {
                         DisarmFovGuard();
                         g_fovWriteCount.store(0);
                         g_lastFovWriteTick.store(0);
-                        g_fovHuntActive.store(false);
                         g_fovHuntFramesLeft.store(0);
                         if (g_fovHuntCSInit) { EnterCriticalSection(&g_fovHuntCS); g_fovHuntRips.clear(); LeaveCriticalSection(&g_fovHuntCS); }
                         EnterCriticalSection(&g_writerCS);
@@ -2771,8 +2856,12 @@ namespace Mod {
                         LeaveCriticalSection(&g_writerCS);
                         g_blacklistedMode.store(false);
                         g_lastBlacklistedWriteTime.store(0);
+                        g_blLiveHasSample = false;
                         DllLog("[INFO] Hunter reset — all writer NOPs cleared, blacklist cleared");
                     } else {
+                        g_writerHuntActive.store(false);
+                        g_fovHuntActive.store(false);
+                        WaitForHunterQuiesce(500);
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
                         ClearXyzHwWatch();
@@ -2782,7 +2871,6 @@ namespace Mod {
                         DisarmFovGuard();
                         g_fovWriteCount.store(0);
                         g_lastFovWriteTick.store(0);
-                        g_fovHuntActive.store(false);
                         g_fovHuntFramesLeft.store(0);
                         if (g_fovHuntCSInit) { EnterCriticalSection(&g_fovHuntCS); g_fovHuntRips.clear(); LeaveCriticalSection(&g_fovHuntCS); }
                         EnterCriticalSection(&g_writerCS);
@@ -2793,6 +2881,7 @@ namespace Mod {
                         LeaveCriticalSection(&g_writerCS);
                         g_blacklistedMode.store(false);
                         g_lastBlacklistedWriteTime.store(0);
+                        g_blLiveHasSample = false;
                         DllLog("[INFO] Hunter preserve — all writer NOPs cleared (reset2 forgets per your report)");
                     }
                     g_hunterResetPending.store(true);
