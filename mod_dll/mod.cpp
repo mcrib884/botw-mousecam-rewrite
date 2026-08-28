@@ -3260,8 +3260,7 @@ namespace Mod {
                         SetCursorPos(center.x, center.y);
                         DllLog("[INFO] Auto center cursor to %d,%d (forcing should_control)", center.x, center.y);
                     }
-                    // Clear pending immediately — don't wait for writers (writers hunt has 2.5s delay, but capture must be immediate like F2)
-                    g_fovStallReenablePending.store(false);
+                    // Keep pending until hunter explicit reset consumes it for 250ms fast path — don't clear here
                 } else {
                     DllLog("[DEBUG] FOV stall pending but blacklisted — keep waiting");
                 }
@@ -3540,6 +3539,7 @@ namespace Mod {
                         hunter_mouseMovedSinceLastCheck = false;
                     }
                     virt_cam_initialized = false;
+                    if (isFovStall) g_fovStallReenablePending.store(false);
                 }
             }
 
