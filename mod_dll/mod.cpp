@@ -163,6 +163,10 @@ namespace Mod {
     #define g_pSharedMemory (g_sharedMemory.GetLayout())
 
     static void DllLog(const char* format, ...) {
+        // Clean test: suppress DIAG spam at source (both Debug/Release) — INFO still passes
+        if (format[0] == '[' && format[1] == 'D' && format[2] == 'I' && format[3] == 'A' && format[4] == 'G') {
+            return;
+        }
         if (!g_pSharedMemory) return;
 #ifndef _DEBUG
         // In Release, suppress [DEBUG] spam at the source — no queue slot wasted
@@ -181,6 +185,12 @@ namespace Mod {
         memcpy(g_pSharedMemory->m_logQueue[idx], msg, sizeof(g_pSharedMemory->m_logQueue[idx]));
         g_pSharedMemory->m_logWriteIdx++;
     }
+
+    // Master switch for non-essential per-candidate / per-frame camera diagnostics. The deployed
+    // build is Debug config, so #ifdef _DEBUG guards do NOT keep spam out of the log. Flip this
+    // to true ONLY while hunting a camera-flow bug; all gated sites emit as [DIAG] which DllLog
+    // suppresses at source in every build. Zombie-camera recovery lines stay plain INFO.
+    static constexpr bool g_verboseCamDiag = false;
 
     static std::atomic<int> g_runningThreads{0};
 
@@ -528,6 +538,22 @@ namespace Mod {
 
     static uintptr_t g_emulatedRamBase = 0;
     static size_t g_emulatedRamSize = 0;
+
+    // Lost-camera rejection (death/level-change zombie bug): the game creates a fresh camera struct
+    // each load and the previous block stays allocated — its bytes remain readable, plausible, and
+    // it still scores 110 in VerifyGameRomCamera, but it is no longer what the renderer reads, so
+    // writes land on a corpse. When a loss is detected (FOV stall, hunter 3x-no-writer, or the
+    // scanner's marker-verify failure) we reject that exact address on the next GameRomCamera scan
+    // and wait out the load before scanning at all. DLL-process atomics: camera thread arms,
+    // scanner thread consumes. Declared here so ScanGameRomCameraImmediate can see them.
+    static std::atomic<uintptr_t>    g_rejectCamAddr{0};
+    static std::atomic<int>          g_resetDelayMs{0};
+    // Decisive = the marker-verify failure proves the block died. Stall- and hunter-armed rejections
+    // are non-decisive: cutscenes and title screens freeze FOV writes on the LIVE camera too, and
+    // permanently rejecting it would loop "candidates rejected" forever. Non-decisive rejections
+    // expire after 2 consecutive passes in which the rejected address was the only valid candidate.
+    static std::atomic<bool>         g_camDefinitivelyLost{false};
+    static std::atomic<int>          g_rejectEmptyPasses{0};
 
     static int32_t ReadInt32BE(uintptr_t address);
 
@@ -926,11 +952,12 @@ namespace Mod {
     // Separated into its own function to keep __try out of ScanAobThread
     // (which owns std::vector tasks and would trigger C2712).
     // -------------------------------------------------------------------------
-    static void ScanGameRomCameraImmediate(const Pattern& pat, uintptr_t& outBest, int& outBestScore, uintptr_t& outFallback, size_t& outTotal) {
+    static void ScanGameRomCameraImmediate(const Pattern& pat, uintptr_t& outBest, int& outBestScore, uintptr_t& outFallback, size_t& outTotal, int& outRejectedWasValid) {
         outBest = 0;
         outBestScore = -1;
         outFallback = 0;
         outTotal = 0;
+        outRejectedWasValid = 0;
 
         if (pat.bytes.empty()) return;
 
@@ -985,20 +1012,28 @@ namespace Mod {
                                 uintptr_t rawAddr = regionAddress + offset + searchPos + matchOffset;
                                 uintptr_t cand = rawAddr - 0x10;
                                 outTotal++;
+                                uintptr_t rej = g_rejectCamAddr.load();
+                                if (rej != 0 && cand == rej) {
+                                    int rejScore = 0;
+                                    if (VerifyGameRomCamera(cand, rejScore)) outRejectedWasValid = 1;
+                                    DllLog("[INFO] Skipping rejected zombie camera 0x%llX (score would be %d)", (unsigned long long)cand, rejScore);
+                                    searchPos += matchOffset + 1;
+                                    continue;
+                                }
                                 if (outFallback == 0) outFallback = cand;
                                 int score = 0;
                                 bool valid = VerifyGameRomCamera(cand, score);
-#ifdef _DEBUG
-                                float fov = ReadFloatBE(cand + 0x654);
-                                float posX = ReadFloatBE(cand + 0x550);
-                                float posY = ReadFloatBE(cand + 0x554);
-                                float posZ = ReadFloatBE(cand + 0x558);
-                                float focX = ReadFloatBE(cand + 0x63C);
-                                float focY = ReadFloatBE(cand + 0x640);
-                                float focZ = ReadFloatBE(cand + 0x644);
-                                DllLog("[DEBUG] Match [%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
-                                       outTotal, cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
-#endif
+                                if (g_verboseCamDiag) {
+                                    float fov = ReadFloatBE(cand + 0x654);
+                                    float posX = ReadFloatBE(cand + 0x550);
+                                    float posY = ReadFloatBE(cand + 0x554);
+                                    float posZ = ReadFloatBE(cand + 0x558);
+                                    float focX = ReadFloatBE(cand + 0x63C);
+                                    float focY = ReadFloatBE(cand + 0x640);
+                                    float focZ = ReadFloatBE(cand + 0x644);
+                                    DllLog("[DIAG] Match [%zu] at 0x%llX: Score=%d (FOV=%.2f, Pos=[%.1f, %.1f, %.1f], Foc=[%.1f, %.1f, %.1f]) -> %s",
+                                           outTotal, cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
+                                }
                                 if (valid) {
                                     if (score > outBestScore) {
                                         outBestScore = score;
@@ -1715,12 +1750,10 @@ namespace Mod {
             g_guardPage = page;
             g_guardOldProtect = old;
             g_guardArmed = true;
-            // Only log when hunting to avoid spam — debug only
-#ifdef _DEBUG
-            if (g_huntFramesLeft.load() > 0) {
-                DllLog("[DEBUG] ArmPageGuard page 0x%llX huntFrames %d", page, g_huntFramesLeft.load());
+            // Per-frame guard churn — spam unrelated to camera recovery; gated by verbose switch
+            if (g_verboseCamDiag && g_huntFramesLeft.load() > 0) {
+                DllLog("[DIAG] ArmPageGuard page 0x%llX huntFrames %d", page, g_huntFramesLeft.load());
             }
-#endif
         } else {
             DllLog("[WARNING] ArmPageGuard failed page 0x%llX err %u", page, GetLastError());
         }
@@ -2074,16 +2107,14 @@ namespace Mod {
                         LeaveCriticalSection(&g_fovHuntCS);
                     }
                 }
-#ifdef _DEBUG
-                else {
+                else if (g_verboseCamDiag) {
                     static uint64_t lastFovDbg = 0;
                     uint64_t nowFov = GetTickCount64();
                     if (nowFov - lastFovDbg > 1000) {
                         lastFovDbg = nowFov;
-                        DllLog("[DEBUG] FOV write RIP 0x%llX fault 0x%llX (no hunt)", rip, faultAddr);
+                        DllLog("[DIAG] FOV write RIP 0x%llX fault 0x%llX (no hunt)", rip, faultAddr);
                     }
                 }
-#endif
             }
         }
         // Log every guard fault for diagnostics (even if not collected)
@@ -2100,11 +2131,9 @@ namespace Mod {
                     // Don't log MEM_IMAGE faults at high frequency to avoid spam, but log once per burst
                     static uint64_t lastLogMs = 0;
                     uint64_t nowDbg = GetTickCount64();
-                    if (nowDbg - lastLogMs > 500) {
+                    if (g_verboseCamDiag && nowDbg - lastLogMs > 500) {
                         lastLogMs = nowDbg;
-#ifdef _DEBUG
-                        DllLog("[DEBUG] Guard fault RIP 0x%llX fault 0x%llX Type %u Protect 0x%X — not JIT, single-step", rip, faultAddr, mbi.Type, mbi.Protect);
-#endif
+                        DllLog("[DIAG] Guard fault RIP 0x%llX fault 0x%llX Type %u Protect 0x%X — not JIT, single-step", rip, faultAddr, mbi.Type, mbi.Protect);
                     }
                 } else {
                     shouldCollect = true;
@@ -2113,10 +2142,10 @@ namespace Mod {
                 // Not XYZ — page guard hit for other var on same 4KB page, just single-step, no log to avoid flood
             }
         } else if (g_writerHuntActive.load() && isWrite && isHunterPage) {
-#ifdef _DEBUG
-            // Write fault outside our XYZ — still log (debug only)
-            DllLog("[DEBUG] Guard write fault RIP 0x%llX fault 0x%llX not XYZ or not huntActive", rip, faultAddr);
-#endif
+            // Write fault outside our XYZ — single-step, no log unless verbose
+            if (g_verboseCamDiag) {
+                DllLog("[DIAG] Guard write fault RIP 0x%llX fault 0x%llX not XYZ or not huntActive", rip, faultAddr);
+            }
         }
         if (shouldCollect) {
             EnterCriticalSection(&g_writerCS);
@@ -2125,15 +2154,12 @@ namespace Mod {
             for (auto &wr : g_discoveredWriters) if (wr.rip == rip) alreadyDiscovered = true;
             if (!alreadyPending && !alreadyDiscovered) {
                 g_pendingRips.push_back(rip);
-#ifdef _DEBUG
-                DllLog("[DEBUG] Collected writer RIP 0x%llX (fault 0x%llX) pending %zu (accumulating 10 frames)", rip, faultAddr, g_pendingRips.size());
-#endif
+                if (g_verboseCamDiag) {
+                    DllLog("[DIAG] Collected writer RIP 0x%llX (fault 0x%llX) pending %zu (accumulating 10 frames)", rip, faultAddr, g_pendingRips.size());
+                }
                 if (g_pendingRips.size() >= 3) {
                     // Got X/Y/Z — stop immediately, don't wait full 10 frames
                     g_huntFramesLeft.store(1);
-#ifdef _DEBUG
-                    DllLog("[DEBUG] Got 3 writers — arming shortened to process immediately");
-#endif
                 }
             }
             LeaveCriticalSection(&g_writerCS);
@@ -2185,10 +2211,24 @@ namespace Mod {
             // Also for toProcess pending writers, ensure their original bytes are used (they are not yet NOP'd, but use live bytes which are original)
             LeaveCriticalSection(&g_writerCS);
         }
-        // Generate hex string for logging like F5 (with [ ] markers)
+        // Check this ONE combined AOB vs blacklist — if any blacklist pattern lives inside it, the whole set is blacklisted
+        bool blacklisted = false;
+        if (!combined.empty() && !g_writerBlacklist.empty()) {
+            for (const auto& pat : g_writerBlacklist) {
+                size_t patLen = pat.bytes.size();
+                if (patLen==0 || patLen > combined.size()) continue;
+                for (size_t off=0; off+patLen <= combined.size(); ++off) {
+                    bool match=true;
+                    for (size_t j=0;j<patLen;++j) if (!pat.isWildcard[j] && combined[off+j] != pat.bytes[j]) { match=false; break; }
+                    if (match) { blacklisted=true; break; }
+                }
+                if (blacklisted) break;
+            }
+        }
+        // Hex string is for logging only (and expensive: per-byte re-read + size detect). Build it
+        // only when we will actually print: on a blacklist event (always) or under the verbose switch.
         std::string combinedAobStr;
-        if (bufLen) {
-            char hb[8];
+        if (bufLen && (blacklisted || g_verboseCamDiag)) {
             for (uintptr_t p=start; p<end; ++p) {
                 bool isStart=false,isEnd=false;
                 for (auto r: toProcess) {
@@ -2203,22 +2243,8 @@ namespace Mod {
                 if (isEnd) combinedAobStr += "] ";
             }
         }
-#ifdef _DEBUG
-        DllLog("[DEBUG] Processing %zu pending writers as ONE AOB [%llX..%llX] len %zu: %s", toProcess.size(), start, end, bufLen, combinedAobStr.c_str());
-#endif
-        // Check this ONE combined AOB vs blacklist — if any blacklist pattern lives inside it, the whole set is blacklisted
-        bool blacklisted = false;
-        if (!combined.empty() && !g_writerBlacklist.empty()) {
-            for (const auto& pat : g_writerBlacklist) {
-                size_t patLen = pat.bytes.size();
-                if (patLen==0 || patLen > combined.size()) continue;
-                for (size_t off=0; off+patLen <= combined.size(); ++off) {
-                    bool match=true;
-                    for (size_t j=0;j<patLen;++j) if (!pat.isWildcard[j] && combined[off+j] != pat.bytes[j]) { match=false; break; }
-                    if (match) { blacklisted=true; break; }
-                }
-                if (blacklisted) break;
-            }
+        if (g_verboseCamDiag) {
+            DllLog("[DIAG] Processing %zu pending writers as ONE AOB [%llX..%llX] len %zu: %s", toProcess.size(), start, end, bufLen, combinedAobStr.c_str());
         }
         if (blacklisted) {
             g_lastBlacklistedWriteTime.store(GetTickCount64());
@@ -2560,6 +2586,21 @@ namespace Mod {
                     ResetScannerState();
                     allOtherFound = false;
                     nextIdx = 1;
+
+                    // Load-out delay: loss detectors arm this so we don't race the level load and
+                    // lock onto the previous camera block. g_rejectCamAddr stays armed (the reset
+                    // itself must not forget which address just died).
+                    int delayMs = g_resetDelayMs.exchange(0);
+                    if (delayMs > 0) {
+                        DllLog("[INFO] Waiting %dms for the load to finish before scanning...", delayMs);
+                        uint64_t deadline = GetTickCount64() + (uint64_t)delayMs;
+                        while (g_scanning && GetTickCount64() < deadline) {
+                            if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
+                            if (IsResetRequested()) break; // newer reset wins — handle next pass
+                            Sleep(100);
+                        }
+                        if (g_pSharedMemory) g_pSharedMemory->m_statusScanning = true;
+                    }
                 }
             }
 
@@ -2574,6 +2615,15 @@ namespace Mod {
 
                 if (!verifySuccess) {
                     DllLog("[WARNING] GameRomCamera lost — triggering full scanner reset.");
+                    uintptr_t deadCam = g_addrGameRomCamera.load();
+                    if (deadCam != 0) {
+                        g_rejectCamAddr = deadCam;
+                        g_camDefinitivelyLost.store(true);
+                        g_rejectEmptyPasses.store(0);
+                        DllLog("[INFO] Zombie watch (decisive): camera 0x%llX rejected forever until a different address is found",
+                               (unsigned long long)deadCam);
+                    }
+                    g_resetDelayMs.store(3000);
                     if (g_pSharedMemory) {
                         g_pSharedMemory->m_reqResetScan = true;
                         g_pSharedMemory->m_reqResetPreserveMenu = false;
@@ -2598,9 +2648,25 @@ namespace Mod {
                 int bestScore = -1;
                 uintptr_t fallbackCandidate = 0;
                 size_t totalCandidates = 0;
+                int rejectedWasValid = 0;
 
-                ScanGameRomCameraImmediate(pat, bestCandidate, bestScore, fallbackCandidate, totalCandidates);
+                ScanGameRomCameraImmediate(pat, bestCandidate, bestScore, fallbackCandidate, totalCandidates, rejectedWasValid);
                 if (IsResetRequested()) continue;
+
+                // Escape hatch: a rejection that keeps matching the ONLY valid pass after pass was
+                // likely a cutscene FOV freeze on the live camera (stall-armed) or heap recycle of
+                // the rejected address (decisive). Release before it starves us forever.
+                if (bestCandidate == 0 && rejectedWasValid) {
+                    int strikes = g_rejectEmptyPasses.fetch_add(1) + 1;
+                    int threshold = g_camDefinitivelyLost.load() ? 5 : 2;
+                    if (strikes >= threshold) {
+                        DllLog("[WARNING] Rejected camera 0x%llX was the only valid candidate %d passes in a row — releasing rejection",
+                               (unsigned long long)g_rejectCamAddr.load(), strikes);
+                        g_rejectCamAddr = 0;
+                        g_rejectEmptyPasses.store(0);
+                        g_camDefinitivelyLost.store(false);
+                    }
+                }
 
                 if (bestCandidate != 0) {
                     tasks[0].found = true;
@@ -2610,6 +2676,11 @@ namespace Mod {
                         g_pSharedMemory->m_statusAddrGameRomCamera = bestCandidate;
                     }
                     DllLog("[SUCCESS] Verified active GameRomCamera at 0x%llX (Score: %d) [%zu candidates scanned]", bestCandidate, bestScore, totalCandidates);
+                    // A different live camera was accepted — the game may recycle the rejected
+                    // address later, so stop rejecting it.
+                    g_rejectCamAddr = 0;
+                    g_rejectEmptyPasses.store(0);
+                    g_camDefinitivelyLost.store(false);
                 } else if (fallbackCandidate != 0) {
                     // Fallback: only if fallback looks sane (FOV 0.1-0.99, not 1.0, marker readable)
                     // Prevents picking a fake like [1.9,4.8,1.8]/Foc[1,1,1]/FOV 1.00 and later corrupting game memory
@@ -2633,6 +2704,9 @@ namespace Mod {
                             g_pSharedMemory->m_statusAddrGameRomCamera = fallbackCandidate;
                         }
                         DllLog("[INFO] Selected initial GameRomCamera at 0x%llX (will re-verify on gameplay) [%zu candidates scanned]", fallbackCandidate, totalCandidates);
+                        g_rejectCamAddr = 0;
+                        g_rejectEmptyPasses.store(0);
+                        g_camDefinitivelyLost.store(false);
                     } else {
                         DllLog("[WARNING] Fallback candidate at 0x%llX rejected (FOV=%.2f markerOk=%d hasOne=%d) — rescanning in 500ms...", fallbackCandidate, fbFov, fbMarkerOk?1:0, fbHasOne?1:0);
                     }
@@ -2784,9 +2858,9 @@ namespace Mod {
                     Pattern pat = ParseAOB(tasks[4].patternStr);
                     std::vector<uintptr_t> rawCandidates;
                     if (ScanProcessAOBAll(pat, rawCandidates)) {
-#ifdef _DEBUG
-                        DllLog("[DEBUG] Found %zu Magne Target Sig candidate(s). Verifying offsets and values...", rawCandidates.size());
-#endif
+                        if (g_verboseCamDiag) {
+                            DllLog("[DIAG] Found %zu Magne Target Sig candidate(s). Verifying offsets and values...", rawCandidates.size());
+                        }
                         uintptr_t bestCandidate = 0;
                         int bestScore = -1;
 
@@ -2795,10 +2869,10 @@ namespace Mod {
                             int score = 0;
                             bool valid = VerifyMagneTargetSig(cand, vCfg, currentExperimental, score);
 
-#ifdef _DEBUG
-                            DllLog("[DEBUG] Magne candidate [%zu/%zu] at 0x%llX: Score=%d -> %s",
-                                   i + 1, rawCandidates.size(), cand, score, valid ? "VALID" : "REJECTED");
-#endif
+                            if (g_verboseCamDiag) {
+                                DllLog("[DIAG] Magne candidate [%zu/%zu] at 0x%llX: Score=%d -> %s",
+                                       i + 1, rawCandidates.size(), cand, score, valid ? "VALID" : "REJECTED");
+                            }
 
                             if (valid && score > bestScore) {
                                 bestScore = score;
@@ -3197,6 +3271,12 @@ namespace Mod {
                                 fovRearmCount = 0;
                                 g_fovHuntActive.store(false);
                                 ClearFovHwBreakpoint();
+                                g_rejectCamAddr = g_addrGameRomCamera.load();
+                                g_resetDelayMs.store(3000);
+                                g_camDefinitivelyLost.store(false); // static live scenes also write no FOV — allow escape hatch
+                                g_rejectEmptyPasses.store(0);
+                                DllLog("[INFO] Zombie watch (hunter 3x): camera 0x%llX rejected, 3s load delay armed",
+                                       (unsigned long long)g_rejectCamAddr.load());
                                 if (g_pSharedMemory) {
                                     g_pSharedMemory->m_reqResetScan = true; // full reset, ignore MenuState 1/2 per lord
                                     g_pSharedMemory->m_reqResetPreserveMenu = false;
@@ -3229,6 +3309,14 @@ namespace Mod {
                 } else if (cnt > 3 && lastSeenTick != 0 && now - lastSeenTick >= 3000) {
                     DllLog("[INFO] FOV stall %.1fs (writes %llu) — level change, triggering full reset2 (ignore MenuState 1/2)", (now - lastSeenTick) / 1000.0, cnt);
                     if (g_mousecamActive) g_fovStallReenablePending.store(true);
+                    uintptr_t stallCam = g_addrGameRomCamera.load();
+                    if (stallCam != 0) {
+                        g_rejectCamAddr = stallCam;
+                        g_camDefinitivelyLost.store(false); // cutscenes stall FOV on LIVE cameras too — allow escape hatch
+                        g_rejectEmptyPasses.store(0);
+                        DllLog("[INFO] Zombie watch (stall): camera 0x%llX rejected for next scan, 3s load delay armed",
+                               (unsigned long long)stallCam);
+                    }
                     if (g_pSharedMemory) {
                         g_pSharedMemory->m_reqResetScan = true;
                         g_pSharedMemory->m_reqResetPreserveMenu = false;
@@ -3241,28 +3329,35 @@ namespace Mod {
                 // New-addr is handled via stall->reset2->re-hunt DR0
             }
             // Auto re-enable mousecam after FOV stall reset — must re-capture mouse even before writers found
-            if (g_fovStallReenablePending.load() && !g_fovHuntActive.load() && g_addrGameRomCamera.load() != 0) {
-                bool isBlacklisted = g_blacklistedMode.load();
-                if (!isBlacklisted) {
-                    bool wasInactive = !g_mousecamActive.load();
-                    if (wasInactive) {
-                        g_mousecamActive = true;
-                        if (g_pSharedMemory) g_pSharedMemory->m_statusMousecamActive = true;
+            // FIX thrash: was firing every 4ms while pending, causing SHOULD_CTRL thrash (14:40:02 spam)
+            {
+                static bool s_fovStallForceSent = false;
+                if (g_fovStallReenablePending.load() && !g_fovHuntActive.load() && g_addrGameRomCamera.load() != 0) {
+                    bool isBlacklisted = g_blacklistedMode.load();
+                    if (!isBlacklisted) {
+                        if (!s_fovStallForceSent) {
+                            bool wasInactive = !g_mousecamActive.load();
+                            if (wasInactive) {
+                                g_mousecamActive = true;
+                                if (g_pSharedMemory) g_pSharedMemory->m_statusMousecamActive = true;
+                            }
+                            g_forceShouldControlReset.store(true);
+                            g_originalCursorsRestored = true;
+                            s_fovStallForceSent = true;
+                            DllLog("[INFO] FOV stall auto re-enable mousecam %s (forcing should_control) blacklisted=%d writers=%zu", wasInactive?"":"already active", isBlacklisted?1:0, g_discoveredWriters.size());
+                            HWND fg = GetForegroundWindow();
+                            DWORD pid = 0; GetWindowThreadProcessId(fg, &pid);
+                            if (fg && pid == GetCurrentProcessId() && g_addrGameRomCamera.load() != 0) {
+                                POINT center = GetCemuWindowCenter(fg);
+                                SetCursorPos(center.x, center.y);
+                                DllLog("[INFO] Auto center cursor to %d,%d (forcing should_control)", center.x, center.y);
+                            }
+                        }
+                    } else if (g_verboseCamDiag) {
+                        DllLog("[DIAG] FOV stall pending but blacklisted — keep waiting");
                     }
-                    // Always force recapture even if already active — fixes death reset2 visible mouse (guard was motherfucker)
-                    g_forceShouldControlReset.store(true);
-                    g_originalCursorsRestored = true; // force next hide to re-apply
-                    DllLog("[INFO] FOV stall auto re-enable mousecam %s (forcing should_control) blacklisted=%d writers=%zu", wasInactive?"":"already active", isBlacklisted?1:0, g_discoveredWriters.size());
-                    HWND fg = GetForegroundWindow();
-                    DWORD pid = 0; GetWindowThreadProcessId(fg, &pid);
-                    if (fg && pid == GetCurrentProcessId() && g_addrGameRomCamera.load() != 0) {
-                        POINT center = GetCemuWindowCenter(fg);
-                        SetCursorPos(center.x, center.y);
-                        DllLog("[INFO] Auto center cursor to %d,%d (forcing should_control)", center.x, center.y);
-                    }
-                    // Keep pending until hunter explicit reset consumes it for 250ms fast path — don't clear here
-                } else {
-                    DllLog("[DEBUG] FOV stall pending but blacklisted — keep waiting");
+                } else if (!g_fovStallReenablePending.load()) {
+                    s_fovStallForceSent = false;
                 }
             }
             // Diagnostic: if mousecam should be active but mouse is free, log why
@@ -3512,7 +3607,7 @@ namespace Mod {
                     DllLog("[INFO] Writer hunt explicit reset — new GameRomCamera 0x%llX, restarting detect window (%s)", g_addrGameRomCamera.load(), isFovStall ? "250ms FOV stall fast" : "delayed 2.5s for load");
                     hunter_hasWritten = false;
                     hunter_mouseMovedSinceLastCheck = false;
-                    hunter_lastCheckMs = GetTickCount64() + (isFovStall ? 250 : 2500); // FOV stall must be fast like F2, not 2.5s
+                    hunter_lastCheckMs = GetTickCount64();
                     hunter_lastWrittenX = hunter_lastWrittenY = hunter_lastWrittenZ = 0.0f;
                     g_huntFramesLeft.store(0);
                     DisarmPageGuard();
@@ -3521,25 +3616,60 @@ namespace Mod {
                     LeaveCriticalSection(&g_writerCS);
                     g_blacklistedMode.store(false);
                     g_lastBlacklistedWriteTime.store(0);
-                    hunter_blacklistRecheckMs = GetTickCount64() + (isFovStall ? 250 : 2500);
+                    hunter_blacklistRecheckMs = GetTickCount64();
+                    // FIX: mimic F2 exactly — Stop then Start, like SHOULD_CTRL 0->1 transition, not keep-alive
                     if (should_control) {
-                        if (!g_writerHuntActive.load()) {
-                            StartWriterHunt();
-                        } else {
-                            if (!g_vehHandle) g_vehHandle = AddVectoredExceptionHandler(1, CameraWriterVehHandler);
-                            DllLog("[INFO] Writer hunt explicit reset — hunt already active, fresh window armed (%s)", isFovStall ? "250ms FOV stall fast" : "delayed 2.5s");
-                        }
+                        if (g_writerHuntActive.load()) StopWriterHunt();
+                        StartWriterHunt();
                         hunter_hasWritten = false;
                         hunter_mouseMovedSinceLastCheck = false;
-                        hunter_lastCheckMs = GetTickCount64() + (isFovStall ? 250 : 2500);
+                        hunter_lastCheckMs = GetTickCount64();
                         g_huntFramesLeft.store(0);
+                        if (gc_addr != 0) {
+                            float gc_pos_x = ReadFloatBE(gc_addr + 0);
+                            float gc_pos_y = ReadFloatBE(gc_addr + 4);
+                            float gc_pos_z = ReadFloatBE(gc_addr + 8);
+                            float gc_focus_x = ReadFloatBE(gc_addr + 0xC);
+                            float gc_focus_y = ReadFloatBE(gc_addr + 0x10);
+                            float gc_focus_z = ReadFloatBE(gc_addr + 0x14);
+                            vcam_pos_x = gc_pos_x;
+                            vcam_pos_y = gc_pos_y;
+                            vcam_pos_z = gc_pos_z;
+                            float d_x = gc_pos_x - gc_focus_x;
+                            float d_y = gc_pos_y - gc_focus_y;
+                            float d_z = gc_pos_z - gc_focus_z;
+                            orbit_radius = sqrt(d_x*d_x + d_y*d_y + d_z*d_z);
+                            orbit_angle = atan2(d_x, d_z);
+                            orbit_pitch = asin(d_y / orbit_radius);
+                            if (orbit_radius < 5.0f) orbit_radius = 20.0f;
+                            current_orbit_angle = orbit_angle;
+                            current_orbit_pitch = orbit_pitch;
+                            virt_cam_initialized = true;
+                            if (is_foreground) {
+                                POINT center = GetCemuWindowCenter(hwndFg);
+                                SetCursorPos(center.x, center.y);
+                            }
+                        } else {
+                            virt_cam_initialized = false;
+                        }
                     } else {
                         if (g_writerHuntActive.load()) StopWriterHunt();
                         hunter_hasWritten = false;
                         hunter_mouseMovedSinceLastCheck = false;
+                        virt_cam_initialized = false;
                     }
-                    virt_cam_initialized = false;
+                    if (should_control && gc_addr != 0 && g_addrGameRomCamera.load() != 0) {
+                        uintptr_t baseForFov = g_addrGameRomCamera.load();
+                        EnterCriticalSection(&g_fovHuntCS);
+                        g_fovHuntRips.clear();
+                        LeaveCriticalSection(&g_fovHuntCS);
+                        g_fovHuntFramesLeft.store(90);
+                        g_fovHuntActive.store(true);
+                        SetFovHwBreakpoint(baseForFov + 0x68C);
+                        last_gc_addr = gc_addr;
+                    }
                     if (isFovStall) g_fovStallReenablePending.store(false);
+                    if (g_fovStallReenablePending.load()) g_fovStallReenablePending.store(false);
                 }
             }
 
@@ -3547,17 +3677,15 @@ namespace Mod {
                 g_pSharedMemory->m_cfgMagnesisEnabled = magnesis_mode;
             }
 
-            // Diagnostic: log hunter state every second when mousecam on — debug only
-#ifdef _DEBUG
-            {
+            // Diagnostic: hunter state every second when mousecam on — verbose switch only
+            if (g_verboseCamDiag) {
                 static uint64_t lastDbgMs = 0;
                 uint64_t nowDbg = GetTickCount64();
                 if (nowDbg - lastDbgMs >= 1000 && g_mousecamActive) {
                     lastDbgMs = nowDbg;
-                    DllLog("[DEBUG] should_ctrl %d blacklisted %d huntActive %d huntFrames %d hasWritten %d mouseMoved %d gc %llX", should_control, g_blacklistedMode.load(), g_writerHuntActive.load(), g_huntFramesLeft.load(), hunter_hasWritten, hunter_mouseMovedSinceLastCheck, gc_addr);
+                    DllLog("[DIAG] should_ctrl %d blacklisted %d huntActive %d huntFrames %d hasWritten %d mouseMoved %d gc %llX", should_control, g_blacklistedMode.load(), g_writerHuntActive.load(), g_huntFramesLeft.load(), hunter_hasWritten, hunter_mouseMovedSinceLastCheck, gc_addr);
                 }
             }
-#endif
 
             if (gc_addr != 0) {
                 g_liveCamPosX = ReadFloatBE(gc_addr + 0);
@@ -3609,8 +3737,62 @@ namespace Mod {
                 }
 
                 if (g_blacklistedMode.load()) {
-                        // Blacklisted — mouse dead
-                    } else if (g_mousecamActive) {
+                    // Blacklisted — mouse dead AND writes suppressed.
+                    //
+                    // This branch must be self-sufficient: the recovery machinery below lives inside
+                    // `else if (g_mousecamActive)`, and a true blacklist skips that entire branch — so the
+                    // old 100ms re-check and auto-clear here were dead code. Symptom: a blacklisted write
+                    // caught during the death cinematic (no menu opens, so no StopWriterHunt anywhere) latched
+                    // the mouse dead until F2. Level changes never showed it because the load menu opens and
+                    // the should_control transition runs StopWriterHunt, which clears the flag.
+                    uint64_t nowBl = GetTickCount64();
+                    uint64_t blTimer = g_lastBlacklistedWriteTime.load();
+                    if (blTimer == 0) {
+                        // mode==true without a timestamp (scanner-thread reset raced ProcessPendingWriters)
+                        DllLog("[INFO] Blacklist stale (timer=0) — releasing and re-hunting");
+                        g_blacklistedMode.store(false);
+                        hunter_hasWritten = false;
+                        hunter_mouseMovedSinceLastCheck = false;
+                        virt_cam_initialized = false; // re-capture orbit from the game camera on resume
+                        g_huntFramesLeft.store(0);
+                        DisarmPageGuard();
+                        EnterCriticalSection(&g_writerCS);
+                        g_pendingRips.clear();
+                        LeaveCriticalSection(&g_writerCS);
+                    } else if (nowBl - blTimer >= 2500) {
+                        DllLog("[INFO] Blacklist held %llums with no fresh blacklisted write — releasing and re-hunting",
+                               (unsigned long long)(nowBl - blTimer));
+                        g_blacklistedMode.store(false);
+                        g_lastBlacklistedWriteTime.store(0);
+                        hunter_hasWritten = false;
+                        hunter_mouseMovedSinceLastCheck = false;
+                        hunter_lastCheckMs = nowBl;
+                        hunter_blacklistRecheckMs = nowBl;
+                        virt_cam_initialized = false; // re-capture orbit from the game camera on resume
+                        g_huntFramesLeft.store(0);
+                        DisarmPageGuard();
+                        EnterCriticalSection(&g_writerCS);
+                        g_pendingRips.clear();
+                        LeaveCriticalSection(&g_writerCS);
+                    } else if (g_writerHuntActive.load()) {
+                        // Flawless suppression: re-check the current writers every 100ms. If they are no
+                        // longer blacklisted (cutscene over), ProcessPendingWriters clears the flag itself.
+                        if (nowBl >= hunter_blacklistRecheckMs && nowBl - hunter_blacklistRecheckMs >= 100) {
+                            hunter_blacklistRecheckMs = nowBl;
+                            uintptr_t baseBl = g_addrGameRomCamera.load();
+                            if (baseBl != 0) {
+                                g_huntFramesLeft.store(10);
+                                ArmPageGuard(baseBl + 0x550);
+                            }
+                        }
+                        if (g_huntFramesLeft.load() > 0) {
+                            uintptr_t baseBl2 = g_addrGameRomCamera.load();
+                            if (baseBl2 != 0) ArmPageGuard(baseBl2 + 0x550);
+                            int prevBl = g_huntFramesLeft.fetch_sub(1);
+                            if (prevBl == 1) ProcessPendingWriters();
+                        }
+                    }
+                } else if (g_mousecamActive) {
                         float sensitivity_x = 1.0f;
                     float sensitivity_y = 1.0f;
                     if (g_pSharedMemory) {
@@ -4059,30 +4241,14 @@ namespace Mod {
                         }
                     }
 
-                    // Global blacklist auto-recovery — runs even when menu/magnesis blocks hunt, so level-change stall recovers without F2
-                    if (g_blacklistedMode.load() && g_lastBlacklistedWriteTime.load() != 0) {
-                        uint64_t nowBl = GetTickCount64();
-                        uint64_t blAge = nowBl - g_lastBlacklistedWriteTime.load();
-                        if (blAge >= 2500) {
-                            DllLog("[INFO] Blacklist auto-cleared after %llums timeout (global) — retrying hunt", blAge);
-                            g_blacklistedMode.store(false);
-                            g_lastBlacklistedWriteTime.store(0);
-                            hunter_hasWritten = false;
-                            hunter_mouseMovedSinceLastCheck = false;
-                            hunter_lastCheckMs = nowBl;
-                            hunter_blacklistRecheckMs = nowBl;
-                            g_huntFramesLeft.store(0);
-                            DisarmPageGuard();
-                            EnterCriticalSection(&g_writerCS);
-                            g_pendingRips.clear();
-                            LeaveCriticalSection(&g_writerCS);
-                        }
-                    }
+                    // Blacklist auto-recovery lives in the g_blacklistedMode branch near the dx/dy
+                    // capture — it cannot run here, because reaching this line already proves the
+                    // blacklist is clear (blacklisted frames skip the whole else-if below).
 
                     if ((!magnesis_mode || fps_magne_active) && !menu_active) {
-                        // 250ms overwrite check, 100ms catch window (25 frames @4ms)
+                        // 250ms overwrite check — FIX wrap guard
                         uint64_t nowMs = GetTickCount64();
-                        bool shouldCheck = hunter_hasWritten && g_writerHuntActive.load() && (nowMs - hunter_lastCheckMs >= 250);
+                        bool shouldCheck = hunter_hasWritten && g_writerHuntActive.load() && nowMs >= hunter_lastCheckMs && (nowMs - hunter_lastCheckMs >= 250);
                         if (shouldCheck) {
                             hunter_lastCheckMs = nowMs;
                             if (hunter_mouseMovedSinceLastCheck) {
@@ -4090,51 +4256,24 @@ namespace Mod {
                                 float curY = ReadFloatBE(g_addrGameRomCamera + 0x554);
                                 float curZ = ReadFloatBE(g_addrGameRomCamera + 0x558);
                                 if (curX != hunter_lastWrittenX || curY != hunter_lastWrittenY || curZ != hunter_lastWrittenZ) {
-#ifdef _DEBUG
-                                    DllLog("[DEBUG] Overwrite detected (wrote [%.2f,%.2f,%.2f] -> cur [%.2f,%.2f,%.2f]) — arming guard 10 frames", hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
-#endif
+                                    if (g_verboseCamDiag) {
+                                        DllLog("[DIAG] Overwrite detected (wrote [%.2f,%.2f,%.2f] -> cur [%.2f,%.2f,%.2f]) — arming guard 10 frames", hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
+                                    }
                                     g_huntFramesLeft.store(10); // 10 frames
                                     if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
                                 }
                                 hunter_mouseMovedSinceLastCheck = false;
                             }
                         }
-                        if (g_blacklistedMode.load()) {
-                            // Blacklisted — flawless: not one frame of mouse leaks. Re-check every 100ms
-                            uint64_t nowMs2 = GetTickCount64();
-                            if (nowMs2 - hunter_blacklistRecheckMs >= 100) {
-                                hunter_blacklistRecheckMs = nowMs2;
-                                if (g_addrGameRomCamera.load() != 0) {
-                                    g_huntFramesLeft.store(10);
-                                    ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
-#ifdef _DEBUG
-                                    DllLog("[DEBUG] Blacklisted — re-checking writers (100ms)");
-#endif
-                                }
-                            }
-                            // Auto-clear after 2s to avoid permanent stall requiring F2 (level change still loading at first collect)
-                            uint64_t blAge = nowMs2 - g_lastBlacklistedWriteTime.load();
-                            if (g_lastBlacklistedWriteTime.load() != 0 && blAge >= 2000) {
-                                DllLog("[INFO] Blacklist auto-cleared after %llums timeout — retrying hunt", blAge);
-                                g_blacklistedMode.store(false);
-                                g_lastBlacklistedWriteTime.store(0);
-                                hunter_hasWritten = false;
-                                hunter_mouseMovedSinceLastCheck = false;
-                                hunter_lastCheckMs = nowMs2;
-                                hunter_blacklistRecheckMs = nowMs2;
-                            } else {
-                                virt_cam_initialized = false;
-                                hunter_hasWritten = false;
-                            }
-                        } else {
-                            WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
-                            WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
-                            WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
-                            hunter_lastWrittenX = vcam_pos_x;
-                            hunter_lastWrittenY = vcam_pos_y;
-                            hunter_lastWrittenZ = vcam_pos_z;
-                            hunter_hasWritten = true;
-                        }
+                        // Reaching here proves the blacklist is clear — the blacklisted state is handled
+                        // (suppression + recovery) in its own branch above the dx/dy capture.
+                        WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
+                        WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
+                        WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
+                        hunter_lastWrittenX = vcam_pos_x;
+                        hunter_lastWrittenY = vcam_pos_y;
+                        hunter_lastWrittenZ = vcam_pos_z;
+                        hunter_hasWritten = true;
                         if (g_writerHuntActive.load() && g_huntFramesLeft.load() > 0) {
                             if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
                             int prev = g_huntFramesLeft.fetch_sub(1);
