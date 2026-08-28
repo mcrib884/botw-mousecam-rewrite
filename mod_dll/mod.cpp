@@ -1606,6 +1606,12 @@ namespace Mod {
 
     static std::vector<WriterRecord> g_discoveredWriters; // protected by g_writerCS
     static std::vector<uintptr_t>    g_pendingRips; // accumulated during 10-frame window, protected by g_writerCS
+    // Blacklist liveness probe (camera-thread only, no lock needed): a blacklisted writer's bytes
+    // do NOT change after the cutscene — its calls just stop. The release signal is therefore
+    // "camera stopped moving", sampled as position delta + FOV DR0 keeper count delta per 100ms.
+    static float  g_blLiveX = 0, g_blLiveY = 0, g_blLiveZ = 0;
+    static uint64_t g_blLiveFovCount = 0;
+    static bool   g_blLiveHasSample = false;
     static CRITICAL_SECTION          g_writerCS;
     static PVOID                     g_vehHandle = nullptr;
     static std::atomic<bool>         g_guardArmed{false};
@@ -1974,6 +1980,118 @@ namespace Mod {
     static thread_local bool t_isSingleStepping = false;
     static thread_local bool t_lastFovWasWrite = false;
 
+    // ---- XYZ hardware write watch (DR1/DR2): guard-free writer collection for blacklist recovery ----
+    // The page guard CANNOT be armed while a blacklisted cutscene writer is running: every camera-page
+    // access (game writes XYZ+FOV each frame, renderer threads READ the same page each frame) faults,
+    // and between Windows clearing the guard on fault and our single-step handler re-arming it, another
+    // thread's fault finds isHunterPage=false and is passed to Cemu's own handler as an unhandled
+    // guard-page violation -> crash. A DR write watch only fires on WRITES to the watched bytes, needs
+    // no per-frame re-arm, and never traps the readers. DR1: 8B @ base+0x550 (X,Y). DR2: 4B @ base+0x558 (Z).
+    static std::atomic<bool>         g_xyzHwActive{false};
+    static uintptr_t                 g_xyzHwBase = 0;
+
+    static void ApplyXyzHwWatch(CONTEXT& ctx, uintptr_t base) {
+        ctx.Dr7 &= ~((1ULL << 2) | (1ULL << 4) | (0xFULL << 20) | (0xFULL << 24)); // clear L1/L2 + type/len fields
+        if (base != 0) {
+            ctx.Dr1 = base + 0x550;
+            ctx.Dr7 |= (1ULL << 2);         // L1 local
+            ctx.Dr7 |= (0x1ULL << 20);      // DR1 type = write
+            ctx.Dr7 |= (0x3ULL << 22);      // DR1 len = 8 (0x550..0x557, 8-byte aligned)
+            ctx.Dr2 = base + 0x558;
+            ctx.Dr7 |= (1ULL << 4);         // L2 local
+            ctx.Dr7 |= (0x1ULL << 24);      // DR2 type = write
+            ctx.Dr7 |= (0x2ULL << 26);      // DR2 len = 4
+        } else {
+            ctx.Dr1 = 0;
+            ctx.Dr2 = 0;
+        }
+    }
+
+    static void SetXyzHwWatch(uintptr_t base) {
+        if (base == 0) return;
+        if (g_xyzHwActive.load() && g_xyzHwBase == base) return;
+        g_xyzHwBase = base;
+        g_xyzHwActive.store(true);
+        DWORD currentTid = GetCurrentThreadId();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            DWORD pid = GetCurrentProcessId();
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                        if (hThread) {
+                            SuspendThread(hThread);
+                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(hThread, &ctx)) {
+                                ApplyXyzHwWatch(ctx, base);
+                                ctx.Dr6 = 0;
+                                SetThreadContext(hThread, &ctx);
+                            }
+                            ResumeThread(hThread);
+                            CloseHandle(hThread);
+                        }
+                    }
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+        {
+            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            HANDLE hSelf = GetCurrentThread();
+            if (GetThreadContext(hSelf, &ctx)) {
+                ApplyXyzHwWatch(ctx, base);
+                ctx.Dr6 = 0;
+                SetThreadContext(hSelf, &ctx);
+            }
+        }
+    }
+
+    static void ClearXyzHwWatch() {
+        if (!g_xyzHwActive.load()) return;
+        g_xyzHwActive.store(false);
+        g_xyzHwBase = 0;
+        DWORD currentTid = GetCurrentThreadId();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            DWORD pid = GetCurrentProcessId();
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                        if (hThread) {
+                            SuspendThread(hThread);
+                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(hThread, &ctx)) {
+                                ApplyXyzHwWatch(ctx, 0);
+                                ctx.Dr6 = 0;
+                                SetThreadContext(hThread, &ctx);
+                            }
+                            ResumeThread(hThread);
+                            CloseHandle(hThread);
+                        }
+                    }
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+        {
+            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            HANDLE hSelf = GetCurrentThread();
+            if (GetThreadContext(hSelf, &ctx)) {
+                ApplyXyzHwWatch(ctx, 0);
+                ctx.Dr6 = 0;
+                SetThreadContext(hSelf, &ctx);
+            }
+        }
+    }
+
     static inline bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out) {
         __try { out = *(const uint8_t*)addr; return true; } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
@@ -2012,19 +2130,31 @@ namespace Mod {
         return nextRip;
     }
 
-    static bool IsWriterBlacklisted(uintptr_t rip) {
+    static bool IsWriterBlacklisted(uintptr_t rip, size_t margin = 32) {
         if (g_writerBlacklist.empty()) return false;
-        // Generate writer AOB like F5 does (RIP-32 .. RIP+size+32), then see if any blacklist pattern lives inside that AOB
+        // Generate writer AOB like F5 does (RIP-margin .. RIP+size+margin), then see if any blacklist
+        // pattern lives inside that AOB. margin=224 is used for per-writer containment so that a
+        // multi-writer block pattern (≈190B captured with its inter-writer gaps) is found even when
+        // only ONE writer of the block was collected this round.
         uint8_t tmp[16] = {};
         for (int i = 0; i < 16; ++i) { uint8_t b = 0; if (!SafeReadU8_SEH(rip + i, b)) break; tmp[i] = b; }
         size_t patchSize = DetectWriteInstructionSize(tmp);
         if (patchSize == 0 || patchSize > 15) patchSize = 7;
-        uintptr_t start = rip >= 32 ? rip - 32 : 0;
-        uintptr_t end = rip + patchSize + 32;
+        uintptr_t start = rip >= margin ? rip - margin : 0;
+        uintptr_t end = rip + patchSize + margin;
         size_t bufLen = (size_t)(end - start);
-        if (bufLen == 0 || bufLen > 512) return false;
+        if (bufLen == 0 || bufLen > 2 * margin + 32) return false;
         std::vector<uint8_t> buf(bufLen);
         for (size_t i = 0; i < bufLen; ++i) { uint8_t b = 0; SafeReadU8_SEH(start + i, b); buf[i] = b; }
+        // Un-NOP writers we already patched (in-window) so the stored block pattern can match
+        // even when parts of the block are currently replaced by 0x90.
+        EnterCriticalSection(&g_writerCS);
+        for (auto& wr : g_discoveredWriters) {
+            if (wr.rip >= start && wr.rip + wr.patchSize <= end) {
+                for (size_t k = 0; k < wr.patchSize; ++k) buf[wr.rip - start + k] = wr.origBytes[k];
+            }
+        }
+        LeaveCriticalSection(&g_writerCS);
         for (const auto& pat : g_writerBlacklist) {
             size_t patLen = pat.bytes.size();
             if (patLen == 0 || patLen > bufLen) continue;
@@ -2042,20 +2172,55 @@ namespace Mod {
     static LONG NTAPI CameraWriterVehHandler(PEXCEPTION_POINTERS ep) {
         if (ep->ExceptionRecord->ExceptionCode == STATUS_SINGLE_STEP) {
             // DR0 hardware breakpoint for FOV (write-only) — must be checked before software single-step
-            if ((ep->ContextRecord->Dr6 & 0x1) && g_fovHwActive.load()) {
-                uintptr_t nextRip = (uintptr_t)ep->ContextRecord->Rip;
-                uintptr_t writer = FindFovWriterFromHwRip(nextRip);
-                if (g_fovHuntActive.load()) {
-                    if (TryEnterCriticalSection(&g_fovHuntCS)) {
-                        bool already = false;
-                        for (auto r : g_fovHuntRips) if (r == writer) already = true;
-                        if (!already) g_fovHuntRips.push_back(writer);
-                        LeaveCriticalSection(&g_fovHuntCS);
+            if (ep->ContextRecord->Dr6 & 0x1) {
+                if (g_fovHwActive.load()) {
+                    uintptr_t nextRip = (uintptr_t)ep->ContextRecord->Rip;
+                    uintptr_t writer = FindFovWriterFromHwRip(nextRip);
+                    if (g_fovHuntActive.load()) {
+                        if (TryEnterCriticalSection(&g_fovHuntCS)) {
+                            bool already = false;
+                            for (auto r : g_fovHuntRips) if (r == writer) already = true;
+                            if (!already) g_fovHuntRips.push_back(writer);
+                            LeaveCriticalSection(&g_fovHuntCS);
+                        }
+                    } else {
+                        // Stall counting via DR0 — no hook, just count writes
+                        g_fovWriteCount.fetch_add(1);
+                        g_lastFovWriteTick.store(GetTickCount64());
                     }
-                } else {
-                    // Stall counting via DR0 — no hook, just count writes
-                    g_fovWriteCount.fetch_add(1);
-                    g_lastFovWriteTick.store(GetTickCount64());
+                }
+                // B0 events are ours whether or not the keeper is active — an inactive-but-stale
+                // B0 #DB passed to CONTINUE_SEARCH would crash the process the same way B1/B2 does.
+                ep->ContextRecord->Dr6 = 0;
+                ep->ContextRecord->EFlags &= ~0x100ULL;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            // DR1/DR2 XYZ write watch: claim a #DB ONLY when its B1/B2 status bits are genuinely
+            // set — those bits are raised exactly by our watchpoint firing, and nothing else in this
+            // process owns DR1/DR2. Passing such an event down CONTINUE_SEARCH would hand an
+            // unhandled STATUS_SINGLE_STEP to Cemu's SEH chain and kill the process. We must NOT
+            // claim on Dr6==0: that also matches legitimate TF/CPU single-steps (the page-guard hunt
+            // sets EFLAGS.TF), and swallowing those breaks the guard machinery and can crash Cemu.
+            if (ep->ContextRecord->Dr6 & (0x2 | 0x4)) {
+                uintptr_t writer = FindFovWriterFromHwRip((uintptr_t)ep->ContextRecord->Rip);
+                if (g_xyzHwActive.load() && g_writerHuntActive.load()) {
+                    MEMORY_BASIC_INFORMATION mbi = {};
+                    if (VirtualQuery((LPCVOID)writer, &mbi, sizeof(mbi))) {
+                        bool isExec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+                        bool isJit = (mbi.Type == MEM_PRIVATE) && isExec;
+                        if (isJit) {
+                            if (TryEnterCriticalSection(&g_writerCS)) {
+                                bool alreadyPending = false, alreadyDiscovered = false;
+                                for (auto r : g_pendingRips) if (r == writer) alreadyPending = true;
+                                for (auto& wr : g_discoveredWriters) if (wr.rip == writer) alreadyDiscovered = true;
+                                if (!alreadyPending && !alreadyDiscovered) {
+                                    g_pendingRips.push_back(writer);
+                                    if (g_pendingRips.size() >= 3) g_huntFramesLeft.store(1);
+                                }
+                                LeaveCriticalSection(&g_writerCS);
+                            }
+                        }
+                    }
                 }
                 ep->ContextRecord->Dr6 = 0;
                 ep->ContextRecord->EFlags &= ~0x100ULL;
@@ -2179,96 +2344,70 @@ namespace Mod {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
-    // Called after 10-frame window closes — build ONE combined AOB like F5 (minRip-32 .. maxRip+size+32) and compare that single AOB vs blacklist
+    // Called after 10-frame window closes — classify each pending writer PER-WRITER vs the blacklist
+    // (full block pattern must be resident within ±224B of the writer), NOP the clean ones, hold the
+    // blacklisted ones (never patched) and latch blacklistedMode until they go quiet.
     static void ProcessPendingWriters() {
         std::vector<uintptr_t> toProcess;
         EnterCriticalSection(&g_writerCS);
         if (g_pendingRips.empty()) {
-            bool wasBlacklisted = g_blacklistedMode.load();
             LeaveCriticalSection(&g_writerCS);
-            if (wasBlacklisted) {
-                DllLog("[INFO] Blacklist re-check: no writers — re-enabling mouse");
-                g_blacklistedMode.store(false);
-            }
+            // No release-on-emptiness here: while blacklisted the pending set is deliberately
+            // empty (writes are no longer being faulted/collected). The camera-thread liveness
+            // probe owns the release, keyed on "is the camera still being moved".
             return;
         }
         toProcess.swap(g_pendingRips);
         LeaveCriticalSection(&g_writerCS);
-        // Sort to find earliest/latest like F5 does
         std::sort(toProcess.begin(), toProcess.end());
-        // Build combined AOB buffer like F5 dump does (min-32 .. max+size+32)
-        uintptr_t minRip = toProcess.front();
-        uintptr_t maxRip = toProcess.back();
-        // Need max patch size — compute for maxRip
-        uint8_t tmpMax[16] = {}; for (int i=0;i<16;++i){ uint8_t b=0; SafeReadU8_SEH(maxRip+i,b); tmpMax[i]=b; }
-        size_t maxPatch = DetectWriteInstructionSize(tmpMax);
-        if (maxPatch==0||maxPatch>15) maxPatch=7;
-        uintptr_t start = minRip >= 32 ? minRip - 32 : 0;
-        uintptr_t end = maxRip + maxPatch + 32;
-        size_t bufLen = (size_t)(end - start);
-        if (bufLen==0 || bufLen>2048) bufLen = 0;
-        std::vector<uint8_t> combined;
-        if (bufLen) {
-            combined.resize(bufLen);
-            for (size_t i=0;i<bufLen;++i){ uint8_t b=0; SafeReadU8_SEH(start+i,b); combined[i]=b; }
-            // Restore original bytes for inside-writer regions like F5 does (so blacklist wildcards still match)
-            EnterCriticalSection(&g_writerCS);
-            for (auto &wr : g_discoveredWriters) {
-                if (wr.rip >= start && wr.rip + wr.patchSize <= end) {
-                    for (size_t k=0;k<wr.patchSize;++k) combined[wr.rip - start + k] = wr.origBytes[k];
-                }
-            }
-            // Also for toProcess pending writers, ensure their original bytes are used (they are not yet NOP'd, but use live bytes which are original)
-            LeaveCriticalSection(&g_writerCS);
-        }
-        // Check this ONE combined AOB vs blacklist — if any blacklist pattern lives inside it, the whole set is blacklisted
-        bool blacklisted = false;
-        if (!combined.empty() && !g_writerBlacklist.empty()) {
-            for (const auto& pat : g_writerBlacklist) {
-                size_t patLen = pat.bytes.size();
-                if (patLen==0 || patLen > combined.size()) continue;
-                for (size_t off=0; off+patLen <= combined.size(); ++off) {
-                    bool match=true;
-                    for (size_t j=0;j<patLen;++j) if (!pat.isWildcard[j] && combined[off+j] != pat.bytes[j]) { match=false; break; }
-                    if (match) { blacklisted=true; break; }
-                }
-                if (blacklisted) break;
-            }
-        }
-        // Hex string is for logging only (and expensive: per-byte re-read + size detect). Build it
-        // only when we will actually print: on a blacklist event (always) or under the verbose switch.
-        std::string combinedAobStr;
-        if (bufLen && (blacklisted || g_verboseCamDiag)) {
-            for (uintptr_t p=start; p<end; ++p) {
-                bool isStart=false,isEnd=false;
-                for (auto r: toProcess) {
-                    uint8_t tm2[16]={}; for(int i=0;i<16;++i){uint8_t b=0; SafeReadU8_SEH(r+i,b); tm2[i]=b;}
-                    size_t sz2 = DetectWriteInstructionSize(tm2); if(sz2==0||sz2>15) sz2=7;
-                    if (r==p) isStart=true;
-                    if (r+sz2-1==p) isEnd=true;
-                }
-                uint8_t b = combined[p - start];
-                if (isStart) combinedAobStr += "[ ";
-                char bb[4]; snprintf(bb,sizeof(bb),"%02X ", b); combinedAobStr += bb;
-                if (isEnd) combinedAobStr += "] ";
-            }
+        // PER-WRITER blacklist containment. The stored patterns are whole multi-writer cutscene
+        // blocks (~190B, including the inter-writer gap bytes). The old check matched one combined
+        // window of whatever happened to be collected — a single-writer or differently-shaped set
+        // missed the block and the blacklisted writer got NOP'd (see 17:38:05/17:40:45 crash logs:
+        // NOP'd cutscene writers corrupt the game's camera state at the next cinematic). Now each
+        // writer is judged alone: if a full block pattern is resident anywhere within ±224B of it,
+        // that writer is HELD (never patched), everything else is still NOP'd normally.
+        std::vector<uintptr_t> held, clean;
+        for (uintptr_t rip : toProcess) {
+            if (IsWriterBlacklisted(rip, 224)) held.push_back(rip);
+            else clean.push_back(rip);
         }
         if (g_verboseCamDiag) {
-            DllLog("[DIAG] Processing %zu pending writers as ONE AOB [%llX..%llX] len %zu: %s", toProcess.size(), start, end, bufLen, combinedAobStr.c_str());
+            DllLog("[DIAG] ProcessPendingWriters: %zu held, %zu clean (of %zu)", held.size(), clean.size(), toProcess.size());
         }
-        if (blacklisted) {
+        if (!held.empty()) {
+            bool was = g_blacklistedMode.exchange(true);
             g_lastBlacklistedWriteTime.store(GetTickCount64());
-            g_blacklistedMode.store(true);
-            DllLog("[INFO] Pending set BLACKLISTED — AOB: %s — mouse/render DISABLED, re-check every 100ms", combinedAobStr.c_str());
-            return;
+            // Go QUIET: disarm the guard and drop pending so the game thread stops faulting.
+            // The old design re-armed the guard every 100ms, re-faulting, re-collecting the SAME
+            // rips and re-logging the full AOB at ~10Hz — a guard-fault + single-step storm on
+            // the game thread that crashed Cemu. Release is decided on the camera thread: path A
+            // liveness (camera frozen 2.5s) or path B gameplay re-hunt via the guard-free XYZ write
+            // watch. NOT byte changes: a dead cutscene writer's bytes stay in the JIT block untouched.
+            EnterCriticalSection(&g_writerCS);
+            g_pendingRips.clear();
+            LeaveCriticalSection(&g_writerCS);
+            g_huntFramesLeft.store(0);
+            DisarmPageGuard();
+            ClearXyzHwWatch();
+            g_blLiveHasSample = false; // force a fresh sample for the liveness probe
+            if (!was) {
+                uint8_t tmpH[16] = {};
+                for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(held[0] + i, b); tmpH[i] = b; }
+                size_t szH = DetectWriteInstructionSize(tmpH);
+                if (szH == 0 || szH > 15) szH = 7;
+                std::string aobH = GenerateWriterAob(held[0], szH);
+                DllLog("[INFO] Writers BLACKLISTED — holding %zu (first at 0x%llX: %s), %zu clean writer(s) in set NOP'd — mouse suppressed until held writers go quiet",
+                       held.size(), (unsigned long long)held[0], aobH.c_str(), clean.size());
+            }
         }
-        // Not blacklisted — if we were blacklisted, re-enable
-        if (g_blacklistedMode.load()) {
-            DllLog("[INFO] Blacklist no longer active — re-enabling mouse");
+        // Release edge only when NOTHING is held anymore — the camera thread's release branch
+        // logs the resume and re-captures the orbit; just clear the flag here.
+        if (held.empty() && g_blacklistedMode.load()) {
             g_blacklistedMode.store(false);
         }
-        // Not blacklisted — NOP all pending at once
-        for (uintptr_t rip : toProcess) {
+        // NOP every clean writer (whether or not the set also held blacklisted ones)
+        for (uintptr_t rip : clean) {
             EnterCriticalSection(&g_writerCS);
             bool alreadyKnown=false;
             for (auto &wr: g_discoveredWriters) if (wr.rip==rip) alreadyKnown=true;
@@ -2331,6 +2470,7 @@ namespace Mod {
         g_writerHuntActive = false;
         g_huntFramesLeft.store(0);
         DisarmPageGuard();
+        ClearXyzHwWatch();
         RestoreAllWriterNops();
         EnterCriticalSection(&g_writerCS);
         g_pendingRips.clear();
@@ -2552,8 +2692,10 @@ namespace Mod {
                         g_writerHuntActive.store(false);
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
+                        ClearXyzHwWatch();
                         RemoveFovHook();
                         ClearFovHwBreakpoint();
+                        ClearXyzHwWatch();
                         DisarmFovGuard();
                         g_fovWriteCount.store(0);
                         g_lastFovWriteTick.store(0);
@@ -2572,8 +2714,10 @@ namespace Mod {
                     } else {
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
+                        ClearXyzHwWatch();
                         RemoveFovHook();
                         ClearFovHwBreakpoint();
+                        ClearXyzHwWatch();
                         DisarmFovGuard();
                         g_fovWriteCount.store(0);
                         g_lastFovWriteTick.store(0);
@@ -3191,6 +3335,12 @@ namespace Mod {
         bool  hunter_mouseMovedSinceLastCheck = false;
         uint64_t hunter_lastCheckMs = 0;
         uint64_t hunter_blacklistRecheckMs = 0;
+        // Blacklist gameplay-rehunt state: re-collect writers when real gameplay resumes;
+        // a fresh clean set releases the blacklist (ProcessPendingWriters edge), a set that
+        // still contains the cutscene writer re-latches it silently.
+        bool hunter_blWasLatched = false;
+        uint64_t hunter_blLastRehuntMs = 0;
+        bool hunter_blRehuntAnnounced = false;
         int   hunter_aobDumpCountdown = 0;
 
         bool ki_enabled = true;
@@ -3239,6 +3389,7 @@ namespace Mod {
                     g_fovHuntActive.store(false);
                     g_fovHuntFramesLeft.store(0);
                     ClearFovHwBreakpoint();
+                    ClearXyzHwWatch();
                 }
                 last_gc_addr = gc_addr;
             }
@@ -3288,6 +3439,7 @@ namespace Mod {
                                 fovRearmCount = 0;
                                 g_fovHuntActive.store(false);
                                 ClearFovHwBreakpoint();
+                                ClearXyzHwWatch();
                                 g_rejectCamAddr = g_addrGameRomCamera.load();
                                 g_resetDelayMs.store(3000);
                                 g_camDefinitivelyLost.store(false); // static live scenes also write no FOV — allow escape hatch
@@ -3310,6 +3462,7 @@ namespace Mod {
                 } else {
                     g_fovHuntActive.store(false);
                     ClearFovHwBreakpoint();
+                    ClearXyzHwWatch();
                 }
             }
 
@@ -3628,6 +3781,7 @@ namespace Mod {
                     hunter_lastWrittenX = hunter_lastWrittenY = hunter_lastWrittenZ = 0.0f;
                     g_huntFramesLeft.store(0);
                     DisarmPageGuard();
+                    ClearXyzHwWatch();
                     EnterCriticalSection(&g_writerCS);
                     g_pendingRips.clear();
                     LeaveCriticalSection(&g_writerCS);
@@ -3754,60 +3908,118 @@ namespace Mod {
                 }
 
                 if (g_blacklistedMode.load()) {
-                    // Blacklisted — mouse dead AND writes suppressed.
+                    hunter_blWasLatched = true;
+                    // Blacklisted — mouse dead AND our writes fully suppressed (this branch replaces
+                    // the whole g_mousecamActive block below, so camera movement here comes ONLY from
+                    // the game's own writers.
                     //
-                    // This branch must be self-sufficient: the recovery machinery below lives inside
-                    // `else if (g_mousecamActive)`, and a true blacklist skips that entire branch — so the
-                    // old 100ms re-check and auto-clear here were dead code. Symptom: a blacklisted write
-                    // caught during the death cinematic (no menu opens, so no StopWriterHunt anywhere) latched
-                    // the mouse dead until F2. Level changes never showed it because the load menu opens and
-                    // the should_control transition runs StopWriterHunt, which clears the flag.
+                    // Two independent release paths, neither touching the page guard while the game
+                    // is mid-cutscene:
+                    //  A) Liveness (100ms sample): camera position + FOV keeper counter frozen for
+                    //     2500ms → the writer stopped CALLING (its bytes never change — dead JIT
+                    //     blocks stay mapped). Fires during loads where all writers pause.
+                    //  B) Gameplay re-hunt (rate-limited 2500ms): menu/shortcut closed and control
+                    //     wanted but camera still moving → re-open ONE 10-frame collection window.
+                    //     A fresh pending set WITHOUT the blacklisted writer releases the mode
+                    //     inside ProcessPendingWriters and NOPs the real writers; a set that still
+                    //     contains it re-latches silently (edge-logged only, never a second line).
+                    //     This is the manual-F2-recover path automated — without it a blacklisted
+                    //     cutscene writer that keeps animating the camera (menu/title screens) pins
+                    //     path A open forever.
                     uint64_t nowBl = GetTickCount64();
                     uint64_t blTimer = g_lastBlacklistedWriteTime.load();
+                    bool releaseNow = false;
                     if (blTimer == 0) {
                         // mode==true without a timestamp (scanner-thread reset raced ProcessPendingWriters)
                         DllLog("[INFO] Blacklist stale (timer=0) — releasing and re-hunting");
-                        g_blacklistedMode.store(false);
-                        hunter_hasWritten = false;
-                        hunter_mouseMovedSinceLastCheck = false;
-                        virt_cam_initialized = false; // re-capture orbit from the game camera on resume
-                        g_huntFramesLeft.store(0);
-                        DisarmPageGuard();
-                        EnterCriticalSection(&g_writerCS);
-                        g_pendingRips.clear();
-                        LeaveCriticalSection(&g_writerCS);
-                    } else if (nowBl - blTimer >= 2500) {
-                        DllLog("[INFO] Blacklist held %llums with no fresh blacklisted write — releasing and re-hunting",
-                               (unsigned long long)(nowBl - blTimer));
-                        g_blacklistedMode.store(false);
-                        g_lastBlacklistedWriteTime.store(0);
-                        hunter_hasWritten = false;
-                        hunter_mouseMovedSinceLastCheck = false;
-                        hunter_lastCheckMs = nowBl;
+                        releaseNow = true;
+                    } else if (nowBl >= hunter_blacklistRecheckMs && nowBl - hunter_blacklistRecheckMs >= 100) {
                         hunter_blacklistRecheckMs = nowBl;
-                        virt_cam_initialized = false; // re-capture orbit from the game camera on resume
-                        g_huntFramesLeft.store(0);
-                        DisarmPageGuard();
-                        EnterCriticalSection(&g_writerCS);
-                        g_pendingRips.clear();
-                        LeaveCriticalSection(&g_writerCS);
-                    } else if (g_writerHuntActive.load()) {
-                        // Flawless suppression: re-check the current writers every 100ms. If they are no
-                        // longer blacklisted (cutscene over), ProcessPendingWriters clears the flag itself.
-                        if (nowBl >= hunter_blacklistRecheckMs && nowBl - hunter_blacklistRecheckMs >= 100) {
-                            hunter_blacklistRecheckMs = nowBl;
-                            uintptr_t baseBl = g_addrGameRomCamera.load();
-                            if (baseBl != 0) {
-                                g_huntFramesLeft.store(10);
-                                ArmPageGuard(baseBl + 0x550);
+                        bool writerAlive = false;
+                        uintptr_t camBl = g_addrGameRomCamera.load();
+                        if (camBl != 0) {
+                            float px = ReadFloatBE(camBl + 0x550);
+                            float py = ReadFloatBE(camBl + 0x554);
+                            float pz = ReadFloatBE(camBl + 0x558);
+                            uint64_t fovCnt = g_fovWriteCount.load();
+                            if (g_blLiveHasSample &&
+                                (px != g_blLiveX || py != g_blLiveY || pz != g_blLiveZ || fovCnt != g_blLiveFovCount)) {
+                                writerAlive = true;
+                            }
+                            g_blLiveX = px; g_blLiveY = py; g_blLiveZ = pz;
+                            g_blLiveFovCount = fovCnt;
+                            g_blLiveHasSample = true;
+                        }
+                        if (writerAlive) {
+                            g_lastBlacklistedWriteTime.store(nowBl);
+                        } else {
+                            uint64_t quietMs = nowBl - g_lastBlacklistedWriteTime.load();
+                            if (quietMs >= 2500) {
+                                DllLog("[INFO] Blacklist — camera writes stopped for %llums (writer idle) — releasing and re-hunting",
+                                       (unsigned long long)quietMs);
+                                releaseNow = true;
                             }
                         }
-                        if (g_huntFramesLeft.load() > 0) {
-                            uintptr_t baseBl2 = g_addrGameRomCamera.load();
-                            if (baseBl2 != 0) ArmPageGuard(baseBl2 + 0x550);
-                            int prevBl = g_huntFramesLeft.fetch_sub(1);
-                            if (prevBl == 1) ProcessPendingWriters();
+                        // Path B: gameplay resumed but path A says writers are still moving the camera.
+                        // Re-hunt with the DR1/DR2 XYZ write watch — NOT the page guard. Arming the
+                        // guard while the blacklisted writer is hot crashes Cemu: between Windows
+                        // clearing the guard on fault and our re-arm, a renderer-thread READ of the
+                        // camera page faults, fails the isHunterPage check, and is passed on as an
+                        // unhandled guard-page violation.
+                        if (!releaseNow && should_control && !menu_active && !is_shortcut_open &&
+                            g_writerHuntActive.load() &&
+                            nowBl - hunter_blLastRehuntMs >= 2500) {
+                            hunter_blLastRehuntMs = nowBl;
+                            if (!hunter_blRehuntAnnounced) {
+                                hunter_blRehuntAnnounced = true;
+                                DllLog("[INFO] Blacklist during gameplay — re-hunting writers via XYZ write-watch (one window per 2.5s until the blacklisted writer is gone)");
+                            }
+                            EnterCriticalSection(&g_writerCS);
+                            g_pendingRips.clear();
+                            LeaveCriticalSection(&g_writerCS);
+                            g_huntFramesLeft.store(10);
+                            uintptr_t rb = g_addrGameRomCamera.load();
+                            if (rb != 0) SetXyzHwWatch(rb);
                         }
+                    }
+                    // Count down the path-B collection window (no guard involved; the watch stays
+                    // armed on every thread until the window closes or the mode releases).
+                    if (g_huntFramesLeft.load() > 0 && !releaseNow) {
+                        int prevB = g_huntFramesLeft.fetch_sub(1);
+                        if (prevB == 1) {
+                            ProcessPendingWriters();
+                            ClearXyzHwWatch();
+                        }
+                    }
+                    if (releaseNow) {
+                        g_blacklistedMode.store(false);
+                        g_lastBlacklistedWriteTime.store(0);
+                        g_blLiveHasSample = false;
+                        hunter_hasWritten = false;
+                        hunter_mouseMovedSinceLastCheck = false;
+                        hunter_lastCheckMs = GetTickCount64();
+                        hunter_blacklistRecheckMs = GetTickCount64();
+                        virt_cam_initialized = false; // re-capture orbit from the game camera on resume
+                        g_huntFramesLeft.store(0);
+                        DisarmPageGuard();
+                        ClearXyzHwWatch();
+                        EnterCriticalSection(&g_writerCS);
+                        g_pendingRips.clear();
+                        LeaveCriticalSection(&g_writerCS);
+                    }
+                } else if (hunter_blWasLatched) {
+                    // Blacklist released by ProcessPendingWriters (clean re-hunt set) while we were latched:
+                    // resume flags the release path can't reach from another call site.
+                    hunter_blWasLatched = false;
+                    hunter_blRehuntAnnounced = false;
+                    hunter_blLastRehuntMs = GetTickCount64();
+                    hunter_hasWritten = false;
+                    hunter_mouseMovedSinceLastCheck = false;
+                    hunter_lastCheckMs = GetTickCount64();
+                    virt_cam_initialized = false; // re-capture orbit from the game camera
+                    g_blLiveHasSample = false;
+                    if (g_mousecamActive) {
+                        DllLog("[INFO] Blacklist released after clean re-hunt — mouse resumed, orbit re-captured");
                     }
                 } else if (g_mousecamActive) {
                         float sensitivity_x = 1.0f;
@@ -4487,6 +4699,7 @@ namespace Mod {
         g_writerHuntActive.store(false);
         g_huntFramesLeft.store(0);
         DisarmPageGuard();
+        ClearXyzHwWatch();
         RemoveFovHook();
         DisarmFovGuard();
         g_fovWriteCount.store(0);
