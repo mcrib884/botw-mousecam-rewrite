@@ -3723,6 +3723,17 @@ namespace Mod {
 
             auto loop_now = std::chrono::steady_clock::now();
             float dt = std::chrono::duration<float>(loop_now - last_frame_time).count();
+            if (dt > 0.5f) {
+                // Stall witness: the camera thread itself is not getting CPU (or is
+                // blocked) — every gate, window and countdown below stretches with it.
+                // Distinguishes "thread starved" from "gate logic blind".
+                static uint64_t lastStallLogMs = 0;
+                uint64_t nowStallMs = GetTickCount64();
+                if (nowStallMs - lastStallLogMs >= 5000) {
+                    lastStallLogMs = nowStallMs;
+                    DllLog("[INFO] Camera: control loop stalled %.1fs between iterations.", dt);
+                }
+            }
             if (dt > 0.1f) dt = 0.1f;
             last_frame_time = loop_now;
 
