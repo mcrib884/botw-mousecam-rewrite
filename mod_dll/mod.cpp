@@ -2613,6 +2613,14 @@ namespace Mod {
             // No release-on-emptiness here: while blacklisted the pending set is deliberately
             // empty (writes are no longer being faulted/collected). The camera-thread liveness
             // probe owns the release, keyed on "is the camera still being moved".
+            // Throttled witness: a window ran but the VEH/DR watch delivered nothing —
+            // distinguishes "no window opened" from "window opened, collection starved".
+            static uint64_t lastEmptyWindowLogMs = 0;
+            uint64_t nowEmptyMs = GetTickCount64();
+            if (nowEmptyMs - lastEmptyWindowLogMs >= 5000) {
+                lastEmptyWindowLogMs = nowEmptyMs;
+                DllLog("[INFO] Camera: writer window closed with no writers seen.");
+            }
             return;
         }
         toProcess.swap(g_pendingRips);
@@ -2633,6 +2641,7 @@ namespace Mod {
         if (g_verboseCamDiag) {
             DllLog("[DIAG] Camera: processing writers — %zu held, %zu ready (of %zu total).", held.size(), clean.size(), toProcess.size());
         }
+        DllLog("[INFO] Camera: writer window closed — %zu candidate(s) (%zu held, %zu clean).", toProcess.size(), held.size(), clean.size());
         if (!held.empty()) {
             bool was = g_blacklistedMode.exchange(true);
             g_lastBlacklistedWriteTime.store(GetTickCount64());
@@ -4908,8 +4917,18 @@ namespace Mod {
                                     if (g_verboseCamDiag) {
                                         DllLog("[DIAG] Camera: game overwrote position ([%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]) — watching for writers for 10 frames.", hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
                                     }
+                                    DllLog("[INFO] Camera: game overwrote position — watching for writers (10 frames).");
                                     g_huntFramesLeft.store(10); // 10 frames
                                     if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
+                                } else {
+                                    // Heartbeat: the gate is alive and checking, but the game is not
+                                    // driving the camera right now — distinguishes "gate dead" from
+                                    // "no mismatch to catch" when a later failure is diagnosed.
+                                    static uint64_t lastNoOverwriteLogMs = 0;
+                                    if (nowMs - lastNoOverwriteLogMs >= 5000) {
+                                        lastNoOverwriteLogMs = nowMs;
+                                        DllLog("[INFO] Camera: watching for writers — check ran, no game overwrite seen.");
+                                    }
                                 }
                                 hunter_mouseMovedSinceLastCheck = false;
                             }
