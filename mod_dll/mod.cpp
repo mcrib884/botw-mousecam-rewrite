@@ -1083,6 +1083,7 @@ namespace Mod {
     static std::vector<HANDLE> SuspendAllOtherThreads();
     static void ResumeAllOtherThreads(std::vector<HANDLE>&);
     static void WaitForHunterQuiesce(int timeoutMs = 500);
+    static bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out);
 
     // -------------------------------------------------------------------------
     // CodePatch: used for magnesis detour only. Camera writers are now handled
@@ -1092,6 +1093,7 @@ namespace Mod {
         uintptr_t address;
         size_t size;
         std::vector<uint8_t> g_originalBytes;
+        std::vector<uint8_t> g_patchedBytes; // last bytes we stamped; empty if never applied
         bool active;
 
         bool Backup() {
@@ -1099,6 +1101,7 @@ namespace Mod {
             EnterCriticalSection(&g_patchCS);
             g_originalBytes.resize(size);
             memcpy(g_originalBytes.data(), (const void*)address, size);
+            g_patchedBytes.clear();
             LeaveCriticalSection(&g_patchCS);
             return true;
         }
@@ -1109,15 +1112,36 @@ namespace Mod {
             auto suspended = SuspendAllOtherThreads();
             DWORD oldProtect = 0;
             bool ok = false;
-            if (VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            bool abandoned = false;
+            // Probe AFTER suspend: the JIT recycles blocks at any time. If the live
+            // bytes are neither our patch nor the backed-up originals, this address
+            // now holds unrelated code — writing cached bytes corrupts it. Abandon.
+            // (SEH reads only: no heap, no locks, no logging inside the window.)
+            bool isOurs = g_patchedBytes.size() >= size;
+            if (isOurs) {
+                for (size_t i = 0; i < size; ++i) {
+                    uint8_t b = 0;
+                    if (!SafeReadU8_SEH(address + i, b) || b != g_patchedBytes[i]) { isOurs = false; break; }
+                }
+            }
+            bool isOrig = true;
+            for (size_t i = 0; i < size; ++i) {
+                uint8_t b = 0;
+                if (!SafeReadU8_SEH(address + i, b) || b != g_originalBytes[i]) { isOrig = false; break; }
+            }
+            if (isOrig) {
+                ok = true; // already holds the originals — nothing to write
+            } else if (isOurs && VirtualProtect((LPVOID)address, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                 memcpy((LPVOID)address, g_originalBytes.data(), size);
                 FlushInstructionCache(GetCurrentProcess(), (LPCVOID)address, size);
                 VirtualProtect((LPVOID)address, size, oldProtect, &oldProtect);
                 ok = true;
+            } else if (!isOurs) {
+                abandoned = true;
             }
             ResumeAllOtherThreads(suspended);
             LeaveCriticalSection(&g_patchCS);
-            if (ok) active = false;
+            if (ok || abandoned) active = false;
             return ok;
         }
 
@@ -1125,6 +1149,7 @@ namespace Mod {
             if (address == 0 || size == 0 || g_originalBytes.empty()) return false;
             EnterCriticalSection(&g_patchCS);
             std::vector<uint8_t> nops(size, 0x90); // allocate before the suspend window — heap work while suspended deadlocks
+            g_patchedBytes = nops;
             auto suspended = SuspendAllOtherThreads();
             DWORD oldProtect = 0;
             bool ok = false;
@@ -1143,6 +1168,7 @@ namespace Mod {
         bool ApplyBytes(const uint8_t* bytes, size_t len) {
             if (address == 0 || size == 0 || g_originalBytes.empty() || len != size) return false;
             EnterCriticalSection(&g_patchCS);
+            g_patchedBytes.assign(bytes, bytes + len);
             auto suspended = SuspendAllOtherThreads();
             DWORD oldProtect = 0;
             bool ok = false;
@@ -1821,15 +1847,35 @@ namespace Mod {
 
     // Caller holds g_writerCS. Re-NOP a cached record whose probe shows the original bytes
     // are live again (JIT recompiled the same encoding at the same address).
+    // Suspends like every other executable write: stamping NOPs under a live fetch
+    // tears the instruction stream. Re-probes after suspend — the JIT was still
+    // running between the caller's probe and the suspend; on mismatch the record
+    // is stale, so mark it inactive and let the next probe prune it.
     static bool ReapplyWriterNop(WriterRecord& wr) {
         if (wr.patchSize == 0 || wr.patchSize > 16) return false;
-        DWORD old = 0;
-        if (!VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &old)) return false;
-        memset((void*)wr.rip, 0x90, wr.patchSize);
-        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
-        VirtualProtect((LPVOID)wr.rip, wr.patchSize, old, &old);
-        wr.nopActive = true;
-        return true;
+        EnterCriticalSection(&g_patchCS);
+        auto suspended = SuspendAllOtherThreads();
+        bool stillOrig = true;
+        for (size_t i = 0; i < wr.patchSize; ++i) {
+            uint8_t b = 0;
+            if (!SafeReadU8_SEH(wr.rip + i, b) || b != wr.origBytes[i]) { stillOrig = false; break; }
+        }
+        bool ok = false;
+        if (stillOrig) {
+            DWORD old = 0;
+            if (VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
+                memset((void*)wr.rip, 0x90, wr.patchSize);
+                FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
+                VirtualProtect((LPVOID)wr.rip, wr.patchSize, old, &old);
+                wr.nopActive = true;
+                ok = true;
+            }
+        } else {
+            wr.nopActive = false;
+        }
+        ResumeAllOtherThreads(suspended);
+        LeaveCriticalSection(&g_patchCS);
+        return ok;
     }
 
     static bool NopInstruction(uintptr_t rip, WriterRecord& rec) {
@@ -1873,8 +1919,11 @@ namespace Mod {
         if (probe == 1) { rec.nopActive = false; return; } // page already holds the original bytes
         EnterCriticalSection(&g_patchCS);
         auto suspended = SuspendAllOtherThreads();
+        // Re-probe under suspension: the JIT was still running between the probe
+        // above and the suspend. Restoring cached bytes over recycled code corrupts it.
+        bool stillOurs = (ProbeWriterRecord(rec) == 2);
         DWORD old = 0;
-        if (VirtualProtect((LPVOID)rec.rip, rec.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
+        if (stillOurs && VirtualProtect((LPVOID)rec.rip, rec.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
             memcpy((void*)rec.rip, rec.origBytes, rec.patchSize);
             FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rec.rip, rec.patchSize);
             VirtualProtect((LPVOID)rec.rip, rec.patchSize, old, &old);
@@ -2170,16 +2219,16 @@ namespace Mod {
     static uintptr_t                 g_xyzHwBase = 0;
 
     static void ApplyXyzHwWatch(CONTEXT& ctx, uintptr_t base) {
-        ctx.Dr7 &= ~((1ULL << 2) | (1ULL << 4) | (0xFULL << 20) | (0xFULL << 24)); // clear L1/L2 + type/len fields
+        ctx.Dr7 &= ~((1ULL << 2) | (1ULL << 4) | (0xFULL << 20) | (0xFULL << 24));
         if (base != 0) {
             ctx.Dr1 = base + 0x550;
-            ctx.Dr7 |= (1ULL << 2);         // L1 local
-            ctx.Dr7 |= (0x1ULL << 20);      // DR1 type = write
-            ctx.Dr7 |= (0x3ULL << 22);      // DR1 len = 8 (0x550..0x557, 8-byte aligned)
+            ctx.Dr7 |= (1ULL << 2);
+            ctx.Dr7 |= (0x1ULL << 20);
+            ctx.Dr7 |= (0x2ULL << 22);
             ctx.Dr2 = base + 0x558;
-            ctx.Dr7 |= (1ULL << 4);         // L2 local
-            ctx.Dr7 |= (0x1ULL << 24);      // DR2 type = write
-            ctx.Dr7 |= (0x2ULL << 26);      // DR2 len = 4
+            ctx.Dr7 |= (1ULL << 4);
+            ctx.Dr7 |= (0x1ULL << 24);
+            ctx.Dr7 |= (0x3ULL << 26);
         } else {
             ctx.Dr1 = 0;
             ctx.Dr2 = 0;
@@ -3354,16 +3403,16 @@ namespace Mod {
 
                             EnterCriticalSection(&g_patchCS);
                             if (!g_magnePatchesInitialized) {
-                                g_magneXPatch = { bestCandidate + vCfg.magnesisXOffset, 7, {}, false };
-                                g_magneYPatch = { bestCandidate + vCfg.magnesisYOffset, 7, {}, false };
-                                g_magneZPatch = { bestCandidate + vCfg.magnesisZOffset, 7, {}, false };
+                                g_magneXPatch = { bestCandidate + vCfg.magnesisXOffset, 7, {}, {}, false };
+                                g_magneYPatch = { bestCandidate + vCfg.magnesisYOffset, 7, {}, {}, false };
+                                g_magneZPatch = { bestCandidate + vCfg.magnesisZOffset, 7, {}, {}, false };
 
                                 g_magneXPatch.Backup();
                                 g_magneYPatch.Backup();
                                 g_magneZPatch.Backup();
 
                                 if (vCfg.detourTargetAxis == 'Z') {
-                                    g_magneDetourPatch = { bestCandidate + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, false };
+                                    g_magneDetourPatch = { bestCandidate + vCfg.magnesisZOffset, vCfg.magnesisDetourSize, {}, {}, false };
                                     g_magneDetourPatch.Backup();
                                     g_magnesisZWriterReturn = bestCandidate + vCfg.magnesisZOffset + vCfg.magnesisDetourSize;
                                     if (currentExperimental) {
@@ -3372,7 +3421,7 @@ namespace Mod {
                                         g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisZWriter);
                                     }
                                 } else if (vCfg.detourTargetAxis == 'Y') {
-                                    g_magneDetourPatch = { bestCandidate + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, false };
+                                    g_magneDetourPatch = { bestCandidate + vCfg.magnesisYOffset, vCfg.magnesisDetourSize, {}, {}, false };
                                     g_magneDetourPatch.Backup();
                                     g_magnesisYWriterReturn = bestCandidate + vCfg.magnesisYOffset + vCfg.magnesisDetourSize;
                                     g_magneDetourPatch.InjectDetour((uintptr_t)&AsmMagnesisYWriterExp);
