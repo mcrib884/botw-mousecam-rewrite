@@ -29,6 +29,11 @@
 using namespace Gdiplus;
 #include <commctrl.h>
 #include <shellscalingapi.h>
+#include <TlHelp32.h>
+#include <atomic>
+#include <cstdarg>
+#include <cstdlib>
+#include <exception>
 #include <string>
 #include "resource.h"
 
@@ -56,6 +61,166 @@ static ULONG_PTR g_gdiplusToken = 0;
 
 // Forward decl of WndProc — registered as the main window class's window procedure.
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+
+// Append-only forensic trail that survives session restarts (mousecam.log is
+// truncated at every startup by ClearLogFile). Every fatal handler and every
+// close/exit path appends here, so a vanished companion can be classified from
+// its last line as: crashed, CRT-aborted, or exited cleanly — and a clean exit
+// shows WHICH decision was taken (eject / skip-eject / no pid).
+void CompanionTrace(const char* fmt, ...) {
+    char body[448];
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnprintf_s(body, sizeof(body), _TRUNCATE, fmt, ap);
+    va_end(ap);
+    wchar_t path[MAX_PATH] = {0};
+    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+    wchar_t* slash = wcsrchr(path, L'\\');
+    if (!slash) return;
+    *(slash + 1) = L'\0';
+    wcscat_s(path, L"mousecam_companion_trace.log");
+    HANDLE h = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME st; GetLocalTime(&st);
+    char line[576];
+    int len = snprintf(line, sizeof(line), "%04d-%02d-%02d %02d:%02d:%02d.%03d %s\n",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, body);
+    if (len > 0) {
+        DWORD written;
+        WriteFile(h, line, (DWORD)len, &written, nullptr);
+    }
+    CloseHandle(h);
+}
+
+static void CompanionInvalidParameterHandler(const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) {
+    CompanionTrace("[CRT] invalid-parameter call intercepted (debug-CRT fastfail source) — call failed, process survives");
+}
+
+static void CompanionPureCallHandler() {
+    CompanionTrace("[FATAL] pure virtual call — exiting");
+    ExitProcess(3);
+}
+
+static void CompanionTerminateHandler() {
+    try { throw; }
+    catch (const std::exception& e) { CompanionTrace("[FATAL] uncaught std::exception: %s", e.what()); }
+    catch (...) { CompanionTrace("[FATAL] uncaught non-standard exception"); }
+    abort();
+}
+
+// Hang watchdog: the UI thread has no supervisor. A 1 Hz background thread watches
+// the WM_TIMER heartbeat; a stall longer than 3 s is traced from the watchdog thread
+// itself, so the evidence survives even if the UI thread never recovers and the
+// process is later terminated (termination writes no crash log of its own).
+static std::atomic<uint64_t> g_lastUiTickMs{0};
+static HANDLE g_hWatchdogStop = nullptr;
+static HANDLE g_hWatchdogThread = nullptr;
+
+static DWORD WINAPI WatchdogThreadProc(LPVOID) {
+    bool hungLogged = false;
+    for (;;) {
+        if (WaitForSingleObject(g_hWatchdogStop, 1000) != WAIT_TIMEOUT) break;
+        uint64_t last = g_lastUiTickMs.load(std::memory_order_relaxed);
+        if (last == 0) continue;
+        uint64_t stalled = GetTickCount64() - last;
+        if (stalled > 3000) {
+            if (!hungLogged) {
+                hungLogged = true;
+                CompanionTrace("[HANG] UI loop stalled %llu ms — suspect target-process polling during load",
+                    (unsigned long long)stalled);
+            }
+        } else if (hungLogged) {
+            hungLogged = false;
+            CompanionTrace("[HANG] UI loop recovered after stall");
+        }
+    }
+    return 0;
+}
+
+static void StartWatchdog() {
+    g_hWatchdogStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_hWatchdogStop) return;
+    g_lastUiTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+    g_hWatchdogThread = CreateThread(nullptr, 0, WatchdogThreadProc, nullptr, 0, nullptr);
+    if (!g_hWatchdogThread) { CloseHandle(g_hWatchdogStop); g_hWatchdogStop = nullptr; }
+}
+
+static void StopWatchdog() {
+    if (!g_hWatchdogStop) return;
+    SetEvent(g_hWatchdogStop);
+    if (g_hWatchdogThread) {
+        WaitForSingleObject(g_hWatchdogThread, 2000);
+        CloseHandle(g_hWatchdogThread);
+        g_hWatchdogThread = nullptr;
+    }
+    CloseHandle(g_hWatchdogStop);
+    g_hWatchdogStop = nullptr;
+}
+
+struct SiblingSearch {
+    DWORD pid;
+    HWND hWnd;
+};
+
+static BOOL CALLBACK FindSiblingWindowProc(HWND hWnd, LPARAM lParam) {
+    auto data = reinterpret_cast<SiblingSearch*>(lParam);
+    DWORD wndPid = 0;
+    GetWindowThreadProcessId(hWnd, &wndPid);
+    if (wndPid != data->pid) return TRUE;
+    wchar_t cls[64] = {};
+    GetClassNameW(hWnd, cls, 64);
+    if (wcscmp(cls, L"MousecamClass") == 0) {
+        data->hWnd = hWnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// Returns true when this instance must exit: a responsive sibling already owns the
+// session. A hung or windowless stale instance does not block takeover.
+static bool YieldToResponsiveSibling() {
+    wchar_t selfPath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, selfPath, MAX_PATH);
+    std::wstring selfName(selfPath);
+    size_t pos = selfName.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) selfName = selfName.substr(pos + 1);
+    if (selfName.empty()) return false;
+
+    DWORD selfPid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    DWORD siblingPid = 0;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (pe.th32ProcessID != selfPid && _wcsicmp(pe.szExeFile, selfName.c_str()) == 0) {
+                siblingPid = pe.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    if (siblingPid == 0) return false;
+
+    SiblingSearch search{ siblingPid, nullptr };
+    EnumWindows(FindSiblingWindowProc, reinterpret_cast<LPARAM>(&search));
+    if (search.hWnd) {
+        DWORD_PTR dummy = 0;
+        if (SendMessageTimeoutW(search.hWnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 2000, &dummy) != 0) {
+            CompanionTrace("[EXIT] duplicate launch — responsive sibling (pid %lu) owns session, exiting", siblingPid);
+            SetForegroundWindow(search.hWnd);
+            MessageBoxW(nullptr, L"Mousecam Companion is already running.", L"Mousecam Companion", MB_OK | MB_ICONINFORMATION);
+            return true;
+        }
+        CompanionTrace("[BOOT] stale sibling (pid %lu) unresponsive — taking over session", siblingPid);
+    } else {
+        CompanionTrace("[BOOT] stale sibling (pid %lu) has no window — taking over session", siblingPid);
+    }
+    return false;
+}
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
@@ -85,6 +250,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
         return 0;
     }
     case WM_TIMER: {
+        g_lastUiTickMs.store(GetTickCount64(), std::memory_order_relaxed);
         g_animInject += (g_hoverInject ? 0.05f : -0.05f);
         g_animReinject += (g_hoverReinject ? 0.05f : -0.05f);
         g_animReset += (g_hoverReset ? 0.05f : -0.05f);
@@ -211,10 +377,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
     case WM_GETMINMAXINFO:
         return HandleGetMinMaxInfo(hWnd, wParam, lParam);
     case WM_CLOSE:
+        CompanionTrace("[EXIT] WM_CLOSE received");
         DoEjectOnClose();
         DestroyWindow(hWnd);
         return 0;
     case WM_DESTROY:
+        CompanionTrace("[EXIT] WM_DESTROY — window gone, quitting after eject decision");
         DoEjectOnClose();
         if (g_hTargetProcess) {
             CloseHandle(g_hTargetProcess);
@@ -228,35 +396,24 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM l
 }
 
 static LONG WINAPI CompanionExceptionHandler(PEXCEPTION_POINTERS ep) {
-    // Best-effort crash log — survives even if console is gone
+    // Best-effort crash trace — dedicated append-only file, never truncated by
+    // session restarts, so a death is still readable after the companion reopens.
     // Note: must not use C++ objects with destructors inside __try (C2712)
     __try {
-        wchar_t path[MAX_PATH] = {0};
-        GetModuleFileNameW(nullptr, path, MAX_PATH);
-        wchar_t* slash = wcsrchr(path, L'\\');
-        if (!slash) slash = wcsrchr(path, L'/');
-        if (slash) {
-            *(slash + 1) = L'\0';
-            wcscat_s(path, L"mousecam.log");
-        } else {
-            wcscpy_s(path, L"mousecam.log");
-        }
-        HANDLE hFile = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            char buf[512];
-            DWORD written = 0;
-            SYSTEMTIME st; GetLocalTime(&st);
-            int len = snprintf(buf, sizeof(buf), "%02d:%02d:%02d [CRASH] Exception 0x%08X at 0x%p — companion will exit. Please share mousecam.log\n",
-                st.wHour, st.wMinute, st.wSecond, (unsigned)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
-            if (len > 0) WriteFile(hFile, buf, (DWORD)len, &written, nullptr);
-            CloseHandle(hFile);
-        }
+        CompanionTrace("[CRASH] unhandled exception 0x%08X at 0x%p tid=%lu — companion will exit. Share mousecam_companion_trace.log",
+            (unsigned)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
     } __except(EXCEPTION_EXECUTE_HANDLER) {}
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    SetErrorMode(SEM_FAILCRITICALERRORS);
     SetUnhandledExceptionFilter(CompanionExceptionHandler);
+    _set_invalid_parameter_handler(CompanionInvalidParameterHandler);
+    _set_purecall_handler(CompanionPureCallHandler);
+    std::set_terminate(CompanionTerminateHandler);
+    CompanionTrace("[BOOT] companion starting");
+    if (YieldToResponsiveSibling()) return 0;
     LoadLibraryW(L"msftedit.dll");
 
     GdiplusStartupInput gdiplusStartupInput;
@@ -324,12 +481,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     ShowWindow(g_hWnd, SW_SHOW);
     UpdateWindow(g_hWnd);
 
+    StartWatchdog();
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
+    CompanionTrace("[EXIT] message loop ended (wParam=%lld) — process returning", (long long)msg.wParam);
+    StopWatchdog();
     GdiplusShutdown(g_gdiplusToken);
     return (int)msg.wParam;
 }

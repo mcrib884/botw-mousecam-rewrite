@@ -93,5 +93,12 @@ void DoReinject();
 // Called from WM_CLOSE/WM_DESTROY to eject before the companion exits.
 void DoEjectOnClose();
 
+// True when another process running this same exe exists (stale hung instance).
+// A stale instance must never eject the DLL on close — only the last one out may.
+bool AnotherCompanionInstanceRunning();
+
+// Append-only forensic trail (defined in main.cpp): fatal handlers + close/exit paths.
+void CompanionTrace(const char* fmt, ...);
+
 // Copies telemetry + drains the 8-entry log ring from shared memory into the console.
 void UpdateTelemetryGui();

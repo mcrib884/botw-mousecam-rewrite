@@ -3,6 +3,7 @@
 
 #define NOMINMAX
 #include <Windows.h>
+#include <TlHelp32.h>
 #include <string>
 #include <cstdint>
 #include <cstring>
@@ -96,6 +97,25 @@ POINT GetWindowCenter(HWND hWnd) {
     return pt;
 }
 
+// Cached Cemu window: EnumWindows over every top-level window on every timer tick
+// stalls the UI thread for a value that only changes on target switch or window
+// recreation. Re-enumerate only when the pid changed or the cached handle died or
+// migrated to another process.
+static HWND g_hCachedCemuWnd = nullptr;
+static DWORD g_cachedCemuPid = 0;
+
+static HWND GetCachedTargetWindow(DWORD pid) {
+    if (pid == 0) { g_hCachedCemuWnd = nullptr; g_cachedCemuPid = 0; return nullptr; }
+    if (g_hCachedCemuWnd && pid == g_cachedCemuPid && IsWindow(g_hCachedCemuWnd)) {
+        DWORD wndPid = 0;
+        GetWindowThreadProcessId(g_hCachedCemuWnd, &wndPid);
+        if (wndPid == pid) return g_hCachedCemuWnd;
+    }
+    g_hCachedCemuWnd = GetTargetWindow(pid);
+    g_cachedCemuPid = pid;
+    return g_hCachedCemuWnd;
+}
+
 DWORD FindCemuProcess() {
     if (!g_config.cemu_path_override.empty()) {
         std::wstring exeName = Utf8ToWstr(g_config.cemu_path_override);
@@ -155,35 +175,49 @@ void WriteConfigToSharedMemory() {
             uint32_t gpid = g_config.mouse_bindings[i];
             g_pSharedMemory->m_cfgMouseBindingKeys[i] = (gpid != 0) ? g_ki.GetKeyForGamepadId(gpid) : 0;
         }
-        g_pSharedMemory->m_cfgHCemuWnd = reinterpret_cast<uint64_t>(GetTargetWindow(g_targetPid));
+        g_pSharedMemory->m_cfgHCemuWnd = reinterpret_cast<uint64_t>(GetCachedTargetWindow(g_targetPid));
     }
 }
 
 void UpdateUiState() {
-    static int findTicks = 0, refreshTicks = 0;
+    // Polling budget: the UI thread must never block on target-process queries during
+    // level loads. GetExitCodeProcess is a cheap syscall (every tick); Toolhelp module
+    // snapshots serialize on the target loader lock and stall longest mid-load, so the
+    // IsModuleLoaded re-check is throttled to 2 Hz and the target search to 1 Hz.
+    static uint64_t lastModuleCheckMs = 0;
+    static uint64_t lastFindMs = 0;
 
     if (g_hTargetProcess != nullptr) {
         DWORD exitCode = 0;
         if (!GetExitCodeProcess(g_hTargetProcess, &exitCode) || exitCode != STILL_ACTIVE) {
             CloseHandle(g_hTargetProcess); g_hTargetProcess = nullptr; g_targetPid = 0; g_targetInjected = false;
+            lastModuleCheckMs = 0;
             SystemParametersInfoW(SPI_SETCURSORS, 0, nullptr, 0); ClipCursor(nullptr);
             UnmapSharedMemory();
             SetStatus(L"Target process exited. Waiting...");
         } else {
-            g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
+            uint64_t now = GetTickCount64();
+            if (lastModuleCheckMs == 0 || now - lastModuleCheckMs >= 500) {
+                lastModuleCheckMs = now;
+                g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
+            }
         }
     }
 
     if (g_hTargetProcess == nullptr) {
-        findTicks++;
-        if (findTicks >= 10) {
-            findTicks = 0; g_targetPid = GetSelectedOrTargetPid();
+        uint64_t now = GetTickCount64();
+        if (lastFindMs == 0 || now - lastFindMs >= 1000) {
+            lastFindMs = now;
+            g_targetPid = GetSelectedOrTargetPid();
             if (g_targetPid != 0) {
                 g_hTargetProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, g_targetPid);
-                if (g_hTargetProcess) g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
+                if (g_hTargetProcess) {
+                    g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
+                    lastModuleCheckMs = now;
+                }
             }
         }
-    } else { findTicks = 0; }
+    } else { lastFindMs = 0; }
 
     HWND fg = GetForegroundWindow();
     bool isCompanionFocused = (fg != nullptr && (fg == g_hWnd || IsChild(g_hWnd, fg)));
@@ -222,6 +256,7 @@ void UpdateUiState() {
 }
 
 bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
+    bool shutdownDone = false;
     if (g_pSharedMemory) {
         g_pSharedMemory->m_statusShutdownDone = false;
         g_pSharedMemory->m_reqShutdown = true;
@@ -235,8 +270,12 @@ bool SafeEjectDLL(DWORD pid, const std::wstring& dllPath) {
             }
             Sleep(10);
         }
+        shutdownDone = g_pSharedMemory->m_statusShutdownDone;
     }
-    return Injector::EjectDLL(pid, dllPath);
+    bool ok = Injector::EjectDLL(pid, dllPath);
+    CompanionTrace("SafeEjectDLL: pid=%lu dll-shutdown-acknowledged=%s, FreeLibrary %s",
+                   pid, shutdownDone ? "yes" : "NO (timeout)", ok ? "succeeded" : "failed");
+    return ok;
 }
 
 void DoInjectOrEject() {
@@ -280,13 +319,53 @@ void DoReinject() {
     }
 }
 
+// True when another process running this same exe exists. A stale (hung, windowless)
+// companion must never eject the DLL from under the live session on its way out —
+// only the last instance out may eject.
+bool AnotherCompanionInstanceRunning() {
+    wchar_t selfPath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, selfPath, MAX_PATH);
+    std::wstring selfName(selfPath);
+    size_t pos = selfName.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) selfName = selfName.substr(pos + 1);
+    if (selfName.empty()) return false;
+
+    DWORD selfPid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    bool found = false;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (pe.th32ProcessID != selfPid && _wcsicmp(pe.szExeFile, selfName.c_str()) == 0) {
+                found = true;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return found;
+}
+
 void DoEjectOnClose() {
     DWORD pid = GetSelectedOrTargetPid();
-    if (pid && Injector::IsModuleLoaded(pid, Injector::GetFileName(GetCompanionDllPath()))) {
-        SetStatus(L"Ejecting DLL on close...");
-        UpdateWindow(g_hWnd); // Force immediate redraw to show status
-        SafeEjectDLL(pid, GetCompanionDllPath());
+    if (!pid) {
+        CompanionTrace("DoEjectOnClose: no Cemu process found — exiting with DLL left loaded");
+        return;
     }
+    if (AnotherCompanionInstanceRunning()) {
+        CompanionTrace("DoEjectOnClose: sibling companion process alive — leaving DLL loaded");
+        return;
+    }
+    if (!Injector::IsModuleLoaded(pid, Injector::GetFileName(GetCompanionDllPath()))) {
+        CompanionTrace("DoEjectOnClose: module absent in pid %lu — nothing to eject", pid);
+        return;
+    }
+    CompanionTrace("DoEjectOnClose: ejecting from pid %lu", pid);
+    SetStatus(L"Ejecting DLL on close...");
+    UpdateWindow(g_hWnd); // Force immediate redraw to show status
+    SafeEjectDLL(pid, GetCompanionDllPath());
 }
 
 static uint32_t g_logReadIdx = 0;
