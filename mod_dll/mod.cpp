@@ -2003,6 +2003,52 @@ namespace Mod {
         return nextRip;
     }
 
+    static bool IsWriterBlacklisted(uintptr_t rip, size_t margin = 224) {
+        std::vector<Pattern> blacklist;
+        EnterCriticalSection(&g_blacklistCS);
+        blacklist = g_writerBlacklist;
+        LeaveCriticalSection(&g_blacklistCS);
+        if (blacklist.empty()) return false;
+
+        uintptr_t start = rip >= margin ? rip - margin : 0;
+        uintptr_t end   = rip + 7 + margin;
+        size_t bufLen   = (size_t)(end - start);
+        if (bufLen == 0 || bufLen > 2 * margin + 32) return false;
+
+        std::vector<uint8_t> buf(bufLen, 0);
+        for (size_t i = 0; i < bufLen; ++i) {
+            uint8_t b = 0;
+            SafeReadU8_SEH(start + i, b);
+            buf[i] = b;
+        }
+
+        EnterCriticalSection(&g_writerCS);
+        for (auto& wr : g_discoveredWriters) {
+            if (wr.rip >= start && wr.rip + wr.patchSize <= end) {
+                for (size_t k = 0; k < wr.patchSize; ++k) {
+                    buf[wr.rip - start + k] = wr.origBytes[k];
+                }
+            }
+        }
+        LeaveCriticalSection(&g_writerCS);
+
+        for (const auto& pat : blacklist) {
+            size_t patLen = pat.bytes.size();
+            if (patLen == 0 || patLen > bufLen) continue;
+            for (size_t off = 0; off + patLen <= bufLen; ++off) {
+                bool match = true;
+                for (size_t j = 0; j < patLen; ++j) {
+                    if (!pat.isWildcard[j] && buf[off + j] != pat.bytes[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return true;
+            }
+        }
+        return false;
+    }
+
     static bool ValidateAndNopWriterTrio(uintptr_t wX, uintptr_t wY, uintptr_t wZ) {
         if (wX == 0 || wY == 0 || wZ == 0) return false;
 
@@ -2031,6 +2077,26 @@ namespace Mod {
 
         if (bX[6] != 0x00 || bY[6] != 0x04 || bZ[6] != 0x08) return false;
         if (bX[5] != bY[5] || bY[5] != bZ[5]) return false;
+
+        bool isBlacklisted = IsWriterBlacklisted(wX, 224) ||
+                             IsWriterBlacklisted(wY, 224) ||
+                             IsWriterBlacklisted(wZ, 224);
+
+        if (isBlacklisted) {
+            bool was = g_blacklistedMode.exchange(true);
+            g_lastBlacklistedWriteTime.store(GetTickCount64());
+            if (!was) {
+                std::string aob = GenerateWriterAob(wX, 7);
+                DllLog("[INFO] Camera control paused — game is moving the camera. Holding blacklisted writer at 0x%llX (%s). Will resume when the game releases the camera.",
+                       (unsigned long long)wX, aob.c_str());
+            }
+            return false;
+        }
+
+        if (g_blacklistedMode.load()) {
+            g_blacklistedMode.store(false);
+            g_lastBlacklistedWriteTime.store(0);
+        }
 
         EnterCriticalSection(&g_writerCS);
         for (int i = 0; i < 3; ++i) {
@@ -2159,15 +2225,17 @@ namespace Mod {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    static void ProcessPendingWriters() {
-        if (!g_hwWatchArmed.load()) return;
+    static bool ProcessPendingWriters() {
+        if (!g_hwWatchArmed.load()) return false;
         uintptr_t wX = g_detectedWriterX.load();
         uintptr_t wY = g_detectedWriterY.load();
         uintptr_t wZ = g_detectedWriterZ.load();
         if (wX != 0 && wY != 0 && wZ != 0) {
-            ValidateAndNopWriterTrio(wX, wY, wZ);
+            bool ok = ValidateAndNopWriterTrio(wX, wY, wZ);
             DisarmXyzHwBreakpoints();
+            return ok;
         }
+        return false;
     }
 
     static void ApplyAllWriterNops() {
@@ -3815,10 +3883,20 @@ namespace Mod {
                     // Count down the path-B collection window (no guard involved; the watch stays
                     // armed on every thread until the window closes or the mode releases).
                     if (g_huntFramesLeft.load() > 0 && !releaseNow) {
-                        int prevB = g_huntFramesLeft.fetch_sub(1);
-                        if (prevB == 1) {
-                            ProcessPendingWriters();
-                            ClearXyzHwWatch();
+                        uintptr_t wX = g_detectedWriterX.load();
+                        uintptr_t wY = g_detectedWriterY.load();
+                        uintptr_t wZ = g_detectedWriterZ.load();
+                        if (wX != 0 && wY != 0 && wZ != 0) {
+                            if (ValidateAndNopWriterTrio(wX, wY, wZ)) {
+                                releaseNow = true;
+                            }
+                            DisarmXyzHwBreakpoints();
+                            g_huntFramesLeft.store(0);
+                        } else {
+                            int prevB = g_huntFramesLeft.fetch_sub(1);
+                            if (prevB <= 1) {
+                                DisarmXyzHwBreakpoints();
+                            }
                         }
                     }
                     if (releaseNow) {
@@ -4336,7 +4414,7 @@ namespace Mod {
                             }
                         }
 
-                        if (camAddr != 0) {
+                        if (camAddr != 0 && !g_blacklistedMode.load()) {
                             WriteFloatBE(camAddr + 0x550, vcam_pos_x);
                             WriteFloatBE(camAddr + 0x554, vcam_pos_y);
                             WriteFloatBE(camAddr + 0x558, vcam_pos_z);
@@ -4344,6 +4422,8 @@ namespace Mod {
                             hunter_lastWrittenY = vcam_pos_y;
                             hunter_lastWrittenZ = vcam_pos_z;
                             hunter_hasWritten = true;
+                        } else if (g_blacklistedMode.load()) {
+                            hunter_hasWritten = false;
                         }
                     } else {
                         if (g_hwWatchArmed.load()) {
