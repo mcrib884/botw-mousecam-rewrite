@@ -28,6 +28,7 @@
 #include <gdiplus.h>
 using namespace Gdiplus;
 #include <commctrl.h>
+#include <DbgHelp.h>
 #include <shellscalingapi.h>
 #include <TlHelp32.h>
 #include <atomic>
@@ -400,8 +401,59 @@ static LONG WINAPI CompanionExceptionHandler(PEXCEPTION_POINTERS ep) {
     // session restarts, so a death is still readable after the companion reopens.
     // Note: must not use C++ objects with destructors inside __try (C2712)
     __try {
-        CompanionTrace("[CRASH] unhandled exception 0x%08X at 0x%p tid=%lu — companion will exit. Share mousecam_companion_trace.log",
-            (unsigned)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+        uintptr_t addr = (uintptr_t)ep->ExceptionRecord->ExceptionAddress;
+        HMODULE hMod = nullptr;
+        wchar_t modPath[MAX_PATH] = L"<unknown>";
+        uintptr_t offset = 0;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR)addr, &hMod) && hMod != nullptr) {
+            GetModuleFileNameW(hMod, modPath, MAX_PATH);
+            const wchar_t* p = wcsrchr(modPath, L'\\');
+            if (p) offset = addr - (uintptr_t)hMod;
+        }
+
+        CompanionTrace("[CRASH] unhandled exception 0x%08X at 0x%p (%ls + 0x%llX) tid=%lu — companion will exit. Share mousecam_companion_trace.log",
+            (unsigned)ep->ExceptionRecord->ExceptionCode, (void*)addr, modPath, (unsigned long long)offset, GetCurrentThreadId());
+
+        void* stack[32] = {};
+        WORD frames = CaptureStackBackTrace(0, 32, stack, nullptr);
+        for (WORD i = 0; i < frames; ++i) {
+            HMODULE hFrameMod = nullptr;
+            wchar_t frameModPath[MAX_PATH] = L"<unknown>";
+            uintptr_t frameOffset = 0;
+            uintptr_t faddr = (uintptr_t)stack[i];
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCWSTR)faddr, &hFrameMod) && hFrameMod != nullptr) {
+                GetModuleFileNameW(hFrameMod, frameModPath, MAX_PATH);
+                const wchar_t* p = wcsrchr(frameModPath, L'\\');
+                if (p) frameOffset = faddr - (uintptr_t)hFrameMod;
+            }
+            CompanionTrace("  [STACK #%u] 0x%p (%ls + 0x%llX)", i, (void*)faddr, frameModPath, (unsigned long long)frameOffset);
+        }
+
+        HMODULE hDbgHelp = LoadLibraryW(L"dbghelp.dll");
+        if (hDbgHelp) {
+            typedef BOOL(WINAPI* PFN_DUMP)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION, PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
+            PFN_DUMP pfnDump = (PFN_DUMP)GetProcAddress(hDbgHelp, "MiniDumpWriteDump");
+            if (pfnDump) {
+                wchar_t dumpPath[MAX_PATH] = {};
+                GetModuleFileNameW(nullptr, dumpPath, MAX_PATH);
+                wchar_t* slash = wcsrchr(dumpPath, L'\\');
+                if (slash) *(slash + 1) = L'\0';
+                wcscat_s(dumpPath, L"mousecam_companion_crash.dmp");
+                HANDLE hFile = CreateFileW(dumpPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (hFile != INVALID_HANDLE_VALUE) {
+                    MINIDUMP_EXCEPTION_INFORMATION mei = {};
+                    mei.ThreadId = GetCurrentThreadId();
+                    mei.ExceptionPointers = ep;
+                    mei.ClientPointers = FALSE;
+                    pfnDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &mei, nullptr, nullptr);
+                    CloseHandle(hFile);
+                    CompanionTrace("[CRASH] MiniDump written to %ls", dumpPath);
+                }
+            }
+            FreeLibrary(hDbgHelp);
+        }
     } __except(EXCEPTION_EXECUTE_HANDLER) {}
     return EXCEPTION_EXECUTE_HANDLER;
 }

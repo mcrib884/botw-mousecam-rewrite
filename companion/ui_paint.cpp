@@ -214,7 +214,10 @@ void PaintWindow(HWND hWnd) {
     if (!g_collapsedTele) {
         auto drawVecLine = [&](const wchar_t* label, float vx, float vy, float vz, int yOffset, int numXOffset = 115) {
             g.DrawString(label, -1, &fontBody, PointF((REAL)(pad + 10), (REAL)(ui.rTelePanel.Y + yOffset)), &textBrush);
-            wchar_t xb[32], yb[32], zb[32];
+            if (std::isnan(vx) || std::isinf(vx) || std::fabs(vx) > 1e7f) vx = 0.0f;
+            if (std::isnan(vy) || std::isinf(vy) || std::fabs(vy) > 1e7f) vy = 0.0f;
+            if (std::isnan(vz) || std::isinf(vz) || std::fabs(vz) > 1e7f) vz = 0.0f;
+            wchar_t xb[64], yb[64], zb[64];
             swprintf_s(xb, L"X: %.2f", vx);
             swprintf_s(yb, L"Y: %.2f", vy);
             swprintf_s(zb, L"Z: %.2f", vz);
@@ -225,8 +228,10 @@ void PaintWindow(HWND hWnd) {
         drawVecLine(L"Camera Position:", g_liveCamPosX, g_liveCamPosY, g_liveCamPosZ, 35, 125);
         drawVecLine(L"Focus:", g_liveCamFocX, g_liveCamFocY, g_liveCamFocZ, 50, 125);
         g.DrawString(L"FOV:", -1, &fontBody, PointF((REAL)(pad + 10), (REAL)(ui.rTelePanel.Y + 65)), &textBrush);
-        wchar_t fovb[32];
-        swprintf_s(fovb, L"%.2f\x00B0", g_liveCamFOV);
+        float fovVal = g_liveCamFOV;
+        if (std::isnan(fovVal) || std::isinf(fovVal) || fovVal < 0.0f || fovVal > 360.0f) fovVal = 0.0f;
+        wchar_t fovb[64];
+        swprintf_s(fovb, L"%.2f\x00B0", fovVal);
         g.DrawString(fovb, -1, &fontBody, PointF((REAL)(pad + 125), (REAL)(ui.rTelePanel.Y + 65)), &textBrush);
 
         float mX = 0, mY = 0, mZ = 0;

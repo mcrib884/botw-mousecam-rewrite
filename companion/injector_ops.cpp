@@ -197,7 +197,7 @@ void UpdateUiState() {
             SetStatus(L"Target process exited. Waiting...");
         } else {
             uint64_t now = GetTickCount64();
-            if (lastModuleCheckMs == 0 || now - lastModuleCheckMs >= 500) {
+            if (!g_targetInjected && (lastModuleCheckMs == 0 || now - lastModuleCheckMs >= 500)) {
                 lastModuleCheckMs = now;
                 g_targetInjected = Injector::IsModuleLoaded(g_targetPid, Injector::GetFileName(GetCompanionDllPath()));
             }
