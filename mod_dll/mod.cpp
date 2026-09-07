@@ -1700,437 +1700,87 @@ namespace Mod {
     }
 
     // -------------------------------------------------------------------------
-    // Hunter — Page-Guard VEH, mouse-gated, 250ms detect / 100ms catch
-    //   detect: every 250ms if mouse moved and cur != lastWritten → overwrite
-    //   catch:  arm guard for 100ms (25 frames @4ms) → VEH captures RIP
-    //   AOB:    dump RIP±32 like F5, test vs blacklist, NOP else pause 50ms
-    //   life:   F2 off restores (keeps list), F2 on re-NOPs; Reset forgets, Reset2 keeps
+    // Hardware Breakpoint Writer Hunt (Cheat Engine F6 Logic)
+    //   detect: when mouse moves, check if XYZ was overwritten by the game
+    //   catch:  arm hardware watchpoints on X (DR0), Y (DR1), Z (DR2)
+    //   trio:   capture the 3 MOVBE writers (disp 00, 04, 08) in the exact same frame
+    //   patch:  NOP all 3 writers (7 bytes each) and disarm watchpoints immediately
     // -------------------------------------------------------------------------
 
     struct WriterRecord {
         uintptr_t rip;
-        uint8_t   origBytes[16];
-        size_t    patchSize;
+        uint8_t   origBytes[7];
+        size_t    patchSize; // 7 bytes for MOVBE trio
         bool      nopActive;
     };
 
     static std::vector<WriterRecord> g_discoveredWriters; // protected by g_writerCS
-    static std::vector<uintptr_t>    g_pendingRips; // accumulated during 10-frame window, protected by g_writerCS
-    // Blacklist liveness probe (camera-thread only, no lock needed): a blacklisted writer's bytes
-    // do NOT change after the cutscene — its calls just stop. The release signal is therefore
-    // "camera stopped moving", sampled as position delta + FOV DR0 keeper count delta per 100ms.
-    static float  g_blLiveX = 0, g_blLiveY = 0, g_blLiveZ = 0;
-    static uint64_t g_blLiveFovCount = 0;
-    static bool   g_blLiveHasSample = false;
     static CRITICAL_SECTION          g_writerCS;
-    static CRITICAL_SECTION          g_guardTransitionCS; // serializes page-guard arm/disarm; VEH claims by published range
     static PVOID                     g_vehHandle = nullptr;
-    static std::atomic<bool>         g_guardArmed{false};
     static std::atomic<bool>         g_writerHuntActive{false};
-    static uintptr_t                 g_guardPage = 0;
-    static DWORD                     g_guardOldProtect = 0;
-    static std::atomic<uint64_t>     g_lastBlacklistedWriteTime{0};
+    static std::atomic<bool>         g_hwWatchArmed{false};
+    static std::atomic<int>          g_hwWatchFramesLeft{0};
     static std::atomic<int>          g_huntFramesLeft{0};
-    static std::atomic<bool>         g_blacklistedMode{false};
-    static std::atomic<bool>         g_hunterResetPending{false}; // explicit reset atomic: ScanAobThread sets on reset, CameraControlThread consumes after new GameRomCamera
+    static std::vector<uintptr_t>    g_pendingRips;
+    static std::atomic<uintptr_t>    g_detectedWriterX{0};
+    static std::atomic<uintptr_t>    g_detectedWriterY{0};
+    static std::atomic<uintptr_t>    g_detectedWriterZ{0};
 
-    // FOV level-change detector — counts actual writes to FOV via code hook (captured via one-shot data guard)
-    static uintptr_t                 g_fovGuardPage = 0;
-    static DWORD                     g_fovOldProtect = 0;
-    static std::atomic<bool>         g_fovGuardArmed{false};
+    // Forward compatibility / state
+    static std::atomic<bool>         g_blacklistedMode{false};
+    static std::atomic<uint64_t>     g_lastBlacklistedWriteTime{0};
+    static std::atomic<bool>         g_hunterResetPending{false};
+    static std::atomic<bool>         g_xyzHwActive{false};
+    static uintptr_t                 g_xyzHwBase = 0;
+    static CRITICAL_SECTION          g_guardTransitionCS;
+    static float                     g_blLiveX = 0, g_blLiveY = 0, g_blLiveZ = 0;
+    static uint64_t                  g_blLiveFovCount = 0;
+    static bool                      g_blLiveHasSample = false;
+
+    // FOV level-change detector — uses DR3 hardware breakpoint
+    static std::atomic<bool>         g_fovHwActive{false};
+    static uintptr_t                 g_fovHwAddr = 0;
     static std::atomic<uint64_t>     g_fovWriteCount{0};
     static std::atomic<uint64_t>     g_lastFovWriteTick{0};
-    static std::atomic<uintptr_t>    g_fovPendingRIP{0};
-    static CodePatch                 g_fovHookPatch = {};
-    static LPVOID                    g_fovTrampoline = nullptr;
-    static std::atomic<bool>         g_fovHookActive{false};
-    // FOV writer discovery — data guard for a few frames to log writer RIP (no hook yet)
     static std::atomic<bool>         g_fovHuntActive{false};
     static std::atomic<int>          g_fovHuntFramesLeft{0};
     static std::vector<uintptr_t>    g_fovHuntRips;
     static CRITICAL_SECTION          g_fovHuntCS;
     static bool                      g_fovHuntCSInit = false;
-    // DR0 hardware breakpoint for FOV (write-only, no PAGE_GUARD reads)
-    static std::atomic<bool>         g_fovHwActive{false};
-    static uintptr_t                 g_fovHwAddr = 0;
     static std::atomic<bool>         g_fovStallReenablePending{false};
     static std::atomic<bool>         g_forceShouldControlReset{false};
 
-    static size_t DetectWriteInstructionSize(const uint8_t* p) {
-        size_t off = 0;
-        // REX
-        bool hasRex = (p[off] >= 0x40 && p[off] <= 0x4F);
-        if (hasRex) off++;
-        // Prefixes: 66/F2/F3
-        bool has66 = false, hasF2 = false, hasF3 = false;
-        if (p[off] == 0x66) { has66 = true; off++; if (p[off] >= 0x40 && p[off] <= 0x4F) { hasRex = true; off++; } }
-        if (p[off] == 0xF2) { hasF2 = true; off++; }
-        if (p[off] == 0xF3) { hasF3 = true; off++; }
-        // MOVBE: 0F 38 F1
-        if (p[off] == 0x0F && p[off+1] == 0x38 && p[off+2] == 0xF1) {
-            off += 3;
-            uint8_t modrm = p[off++];
-            uint8_t mod = (modrm >> 6) & 3;
-            uint8_t rm  = modrm & 7;
-            bool hasSib = (rm == 4);
-            if (hasSib) off++;
-            if      (mod == 1) off += 1;
-            else if (mod == 2) off += 4;
-            else if (mod == 0 && rm == 5) off += 4;
-            return off;
-        }
-        // MOV r/m32, r32: 89 /r
-        if (p[off] == 0x89) {
-            off++;
-            uint8_t modrm = p[off++];
-            uint8_t mod = (modrm >> 6) & 3;
-            uint8_t rm  = modrm & 7;
-            bool hasSib = (rm == 4);
-            if (hasSib) off++;
-            if      (mod == 1) off += 1;
-            else if (mod == 2) off += 4;
-            else if (mod == 0 && rm == 5) off += 4;
-            return off;
-        }
-        // MOVSS m32, xmm: F3 0F 11 /r  and MOVUPS/SD variants: 0F 11, 66 0F 11, F2 0F 11
-        if (p[off] == 0x0F && (p[off+1] == 0x11 || p[off+1] == 0x29 || p[off+1] == 0x7F)) {
-            // 0F 11 = MOVUPS, 0F 29 = MOVAPS, 0F 7F = MOVQ
-            off += 2;
-            uint8_t modrm = p[off++];
-            uint8_t mod = (modrm >> 6) & 3;
-            uint8_t rm  = modrm & 7;
-            bool hasSib = (rm == 4);
-            if (hasSib) off++;
-            if      (mod == 1) off += 1;
-            else if (mod == 2) off += 4;
-            else if (mod == 0 && rm == 5) off += 4;
-            return off;
-        }
-        // With F3 prefix already consumed, check again
-        if (hasF3 && p[off] == 0x0F && p[off+1] == 0x11) {
-            off += 2;
-            uint8_t modrm = p[off++];
-            uint8_t mod = (modrm >> 6) & 3;
-            uint8_t rm  = modrm & 7;
-            bool hasSib = (rm == 4);
-            if (hasSib) off++;
-            if      (mod == 1) off += 1;
-            else if (mod == 2) off += 4;
-            else if (mod == 0 && rm == 5) off += 4;
-            return off;
-        }
-        return 0;
-    }
+    // Stubs for legacy guard calls so unrelated code remains binary-safe
+    static void DisarmPageGuard() {}
+    static void ArmPageGuard(uintptr_t) {}
+    static void DisarmFovGuard() {}
+    static void RemoveFovHook() {}
 
-    static bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out);
-
-    // Validate a cached writer record against the live code before ANY write to its address.
-    // The JIT recycles code blocks: an address that held a camera writer can later hold
-    // unrelated guest code, and blindly applying cached NOPs or restoring cached original
-    // bytes there corrupts that code. Returns:
-    //   2 = our NOPs sit at rip            — restoring the originals is safe
-    //   1 = the saved original bytes live  — NOP can be applied; no restore needed
-    //   0 = unreadable or unrelated bytes  — NEVER write through this record
-    static int ProbeWriterRecord(const WriterRecord& wr) {
-        if (wr.patchSize == 0 || wr.patchSize > 16) return 0;
-        uint8_t cur[16];
-        for (size_t i = 0; i < wr.patchSize; ++i) {
-            uint8_t b = 0;
-            if (!SafeReadU8_SEH(wr.rip + i, b)) return 0;
-            cur[i] = b;
-        }
-        if (memcmp(cur, wr.origBytes, wr.patchSize) == 0) return 1;
-        bool allNop = true;
-        for (size_t i = 0; i < wr.patchSize; ++i) if (cur[i] != 0x90) { allNop = false; break; }
-        return allNop ? 2 : 0;
-    }
-
-    // Caller holds g_writerCS. Re-NOP a cached record whose probe shows the original bytes
-    // are live again (JIT recompiled the same encoding at the same address).
-    // Suspends like every other executable write: stamping NOPs under a live fetch
-    // tears the instruction stream. Re-probes after suspend — the JIT was still
-    // running between the caller's probe and the suspend; on mismatch the record
-    // is stale, so mark it inactive and let the next probe prune it.
-    static bool ReapplyWriterNop(WriterRecord& wr) {
-        if (wr.patchSize == 0 || wr.patchSize > 16) return false;
-        EnterCriticalSection(&g_patchCS);
-        auto suspended = SuspendAllOtherThreads();
-        bool stillOrig = true;
-        for (size_t i = 0; i < wr.patchSize; ++i) {
-            uint8_t b = 0;
-            if (!SafeReadU8_SEH(wr.rip + i, b) || b != wr.origBytes[i]) { stillOrig = false; break; }
-        }
-        bool ok = false;
-        if (stillOrig) {
-            DWORD old = 0;
-            if (VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
-                memset((void*)wr.rip, 0x90, wr.patchSize);
-                FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
-                VirtualProtect((LPVOID)wr.rip, wr.patchSize, old, &old);
-                wr.nopActive = true;
-                ok = true;
-            }
-        } else {
-            wr.nopActive = false;
-        }
-        ResumeAllOtherThreads(suspended);
-        LeaveCriticalSection(&g_patchCS);
-        return ok;
-    }
-
-    static bool NopInstruction(uintptr_t rip, WriterRecord& rec) {
-        uint8_t buf[16] = {};
-        for (int i = 0; i < 16; ++i) { uint8_t b = 0; if (!SafeReadU8_SEH(rip + i, b)) return false; buf[i] = b; }
-        size_t sz = DetectWriteInstructionSize(buf);
-        if (sz == 0 || sz > 15) {
-            DllLog("[WARNING] Camera: could not determine instruction size at 0x%llX (%02X %02X %02X %02X) — using fallback size 7.", rip, buf[0], buf[1], buf[2], buf[3]);
-            sz = 7;
-        }
-        EnterCriticalSection(&g_patchCS);
-        auto suspended = SuspendAllOtherThreads();
-        DWORD old = 0;
-        bool ok = false;
-        if (VirtualProtect((LPVOID)rip, sz, PAGE_EXECUTE_READWRITE, &old)) {
-            memcpy(rec.origBytes, buf, sz);
-            rec.rip = rip;
-            rec.patchSize = sz;
-            rec.nopActive = true;
-            memset((void*)rip, 0x90, sz);
-            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rip, sz);
-            VirtualProtect((LPVOID)rip, sz, old, &old);
-            ok = true;
-        }
-        ResumeAllOtherThreads(suspended);
-        LeaveCriticalSection(&g_patchCS);
-        return ok;
-    }
-
-    static void RestoreInstruction(WriterRecord& rec) {
-        if (!rec.nopActive || rec.patchSize == 0) return;
-        // Never write cached bytes back blind: if the JIT reused this block, restoring the
-        // old originals corrupts unrelated guest code. Only touch the page when our NOPs are
-        // actually what sits there.
-        int probe = ProbeWriterRecord(rec);
-        if (probe == 0) {
-            DllLog("[WARNING] Camera: writer at 0x%llX no longer matches cached code — patch abandoned instead of restored.", (unsigned long long)rec.rip);
-            rec.nopActive = false;
-            return;
-        }
-        if (probe == 1) { rec.nopActive = false; return; } // page already holds the original bytes
-        EnterCriticalSection(&g_patchCS);
-        auto suspended = SuspendAllOtherThreads();
-        // Re-probe under suspension: the JIT was still running between the probe
-        // above and the suspend. Restoring cached bytes over recycled code corrupts it.
-        bool stillOurs = (ProbeWriterRecord(rec) == 2);
-        DWORD old = 0;
-        if (stillOurs && VirtualProtect((LPVOID)rec.rip, rec.patchSize, PAGE_EXECUTE_READWRITE, &old)) {
-            memcpy((void*)rec.rip, rec.origBytes, rec.patchSize);
-            FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rec.rip, rec.patchSize);
-            VirtualProtect((LPVOID)rec.rip, rec.patchSize, old, &old);
-        }
-        ResumeAllOtherThreads(suspended);
-        LeaveCriticalSection(&g_patchCS);
-        rec.nopActive = false;
-    }
-
-    // Guard transitions must be serialized AND the claimed page range must bracket the guard's
-    // physical lifetime: publish g_guardPage BEFORE the VirtualProtect that installs PAGE_GUARD,
-    // clear it only AFTER the VirtualProtect that removes it. The VEH handler claims faults by
-    // range (see CameraWriterVehHandler), so every fault the OS can raise on our page finds a
-    // matching claim — no window where the guard is live but the claim/flag says otherwise.
-    // Previously the flag was published after VP and read before it, letting a game-thread fault
-    // see armed=false, fall to CONTINUE_SEARCH, and kill Cemu as an unhandled
-    // STATUS_GUARD_PAGE_VIOLATION (crash on area load when the camera page moves and re-arms).
-    static void DisarmPageGuardLocked() {
-        if (g_guardPage != 0 && g_fovGuardArmed && g_fovGuardPage == g_guardPage) {
-            // Shared page with FOV — keep the guard; FOV owns the restore
-            g_guardArmed = false;
-            return;
-        }
-        if (g_guardPage != 0) {
-            DWORD old = 0;
-            VirtualProtect((LPVOID)g_guardPage, 0x1000, g_guardOldProtect & ~PAGE_GUARD, &old);
-        }
-        g_guardArmed = false;
-        g_guardPage = 0;
-        g_guardOldProtect = 0;
-    }
-
-    static void ArmPageGuardLocked(uintptr_t page) {
-        if (g_guardArmed && g_guardPage == page) return; // guard already live on this page
-        DisarmPageGuardLocked(); // restore any previous page (incl. different base after camera move)
-        g_guardPage = page;      // publish claim BEFORE the guard goes live
-        DWORD old = 0;
-        if (VirtualProtect((LPVOID)page, 0x1000, PAGE_READWRITE | PAGE_GUARD, &old)) {
-            g_guardOldProtect = old;
-            g_guardArmed = true;
-            // Per-frame guard churn — spam unrelated to camera recovery; gated by verbose switch
-            if (g_verboseCamDiag && g_huntFramesLeft.load() > 0) {
-                DllLog("[DIAG] Camera: armed watchpoint at page 0x%llX (%d frames remaining).", page, g_huntFramesLeft.load());
-            }
-        } else {
-            g_guardPage = 0;     // release the claim — no guard was installed
-            DllLog("[WARNING] Camera: failed to arm watchpoint at page 0x%llX (error %u).", page, GetLastError());
-        }
-    }
-
-    static void DisarmPageGuard() {
-        EnterCriticalSection(&g_guardTransitionCS);
-        DisarmPageGuardLocked();
-        LeaveCriticalSection(&g_guardTransitionCS);
-    }
-
-    static void ArmPageGuard(uintptr_t gc_addr) {
-        uintptr_t page = gc_addr & ~(uintptr_t)0xFFF;
-        EnterCriticalSection(&g_guardTransitionCS);
-        ArmPageGuardLocked(page);
-        LeaveCriticalSection(&g_guardTransitionCS);
-    }
-
-    static void DisarmFovGuardLocked() {
-        if (g_fovGuardPage != 0 && g_guardArmed && g_guardPage == g_fovGuardPage) {
-            // Shared page with hunter guard — don't unprotect while hunter still guards it
-            g_fovGuardArmed = false;
-            return;
-        }
-        if (g_fovGuardPage != 0) {
-            DWORD old = 0;
-            VirtualProtect((LPVOID)g_fovGuardPage, 0x1000, g_fovOldProtect & ~PAGE_GUARD, &old);
-        }
-        g_fovGuardArmed = false;
-        g_fovGuardPage = 0;
-        g_fovOldProtect = 0;
-    }
-
-    static void ArmFovGuardLocked(uintptr_t page) {
-        if (g_fovGuardArmed && g_fovGuardPage == page) return;
-        DisarmFovGuardLocked();
-        if (g_guardArmed && g_guardPage == page) {
-            // Hunter already guards this page — share its claim instead of re-arming
-            g_fovGuardPage = page;
-            g_fovOldProtect = g_guardOldProtect;
-            g_fovGuardArmed = true;
-            return;
-        }
-        g_fovGuardPage = page;   // publish claim BEFORE the guard goes live
-        DWORD old = 0;
-        if (VirtualProtect((LPVOID)page, 0x1000, PAGE_READWRITE | PAGE_GUARD, &old)) {
-            g_fovOldProtect = old;
-            g_fovGuardArmed = true;
-        } else {
-            g_fovGuardPage = 0;  // release the claim — no guard was installed
-            DllLog("[WARNING] Camera: failed to arm field-of-view watchpoint at page 0x%llX (error %u).", page, GetLastError());
-        }
-    }
-
-    static void DisarmFovGuard() {
-        EnterCriticalSection(&g_guardTransitionCS);
-        DisarmFovGuardLocked();
-        LeaveCriticalSection(&g_guardTransitionCS);
-    }
-
-    static void ArmFovGuard(uintptr_t fovAddr) {
-        uintptr_t page = fovAddr & ~(uintptr_t)0xFFF;
-        EnterCriticalSection(&g_guardTransitionCS);
-        ArmFovGuardLocked(page);
-        LeaveCriticalSection(&g_guardTransitionCS);
-    }
-
-    static bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out);
-    static void RemoveFovHook() {
-        if (!g_fovHookActive.load()) {
-            g_fovPendingRIP.store(0);
-            return;
-        }
-        g_fovHookPatch.Restore();
-        Sleep(50);
-        if (g_fovTrampoline) {
-            VirtualFree(g_fovTrampoline, 0, MEM_RELEASE);
-            g_fovTrampoline = nullptr;
-        }
-        g_fovHookActive.store(false);
-        g_fovPendingRIP.store(0);
-        DllLog("[INFO] Camera: field-of-view hook removed.");
-    }
-
-    static bool SetupFovHook(uintptr_t rip) {
-        if (g_fovHookActive.load()) return true;
-        if (rip == 0) return false;
-        uint8_t tmp[16] = {};
-        for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(rip + i, b); tmp[i] = b; }
-        size_t sz = DetectWriteInstructionSize(tmp);
-        if (sz == 0 || sz > 15) {
-            DllLog("[WARNING] Camera: could not determine field-of-view instruction size at 0x%llX (%02X %02X %02X %02X) — using fallback size 7.", rip, tmp[0], tmp[1], tmp[2], tmp[3]);
-            sz = 7;
-        }
-        MEMORY_BASIC_INFORMATION mbi = {};
-        if (!VirtualQuery((LPCVOID)rip, &mbi, sizeof(mbi))) return false;
-        if (!(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return false;
-        g_fovHookPatch.address = rip;
-        g_fovHookPatch.size = sz;
-        if (!g_fovHookPatch.Backup()) return false;
-        g_fovTrampoline = AllocateWithin2GB(rip, 64);
-        if (!g_fovTrampoline) {
-            g_fovHookPatch.Restore();
-            return false;
-        }
-        uint8_t code[64] = {};
-        size_t idx = 0;
-        code[idx++] = 0x9C; // pushf
-        code[idx++] = 0x50; // push rax
-        code[idx++] = 0x51; // push rcx
-        // mov rcx, &g_fovWriteCount
-        code[idx++] = 0x48; code[idx++] = 0xB9;
-        uintptr_t cntAddr = (uintptr_t)&g_fovWriteCount;
-        memcpy(&code[idx], &cntAddr, 8); idx += 8;
-        // lock inc qword ptr [rcx]
-        code[idx++] = 0xF0; code[idx++] = 0x48; code[idx++] = 0xFF; code[idx++] = 0x01;
-        code[idx++] = 0x59; // pop rcx
-        code[idx++] = 0x58; // pop rax
-        code[idx++] = 0x9D; // popf
-        // original instruction
-        memcpy(&code[idx], (void*)rip, sz); idx += sz;
-        // jmp [rip+0]
-        code[idx++] = 0xFF; code[idx++] = 0x25; code[idx++] = 0x00; code[idx++] = 0x00; code[idx++] = 0x00; code[idx++] = 0x00;
-        uintptr_t retAddr = rip + sz;
-        memcpy(&code[idx], &retAddr, 8); idx += 8;
-        memcpy(g_fovTrampoline, code, idx);
-        std::vector<uint8_t> patchBytes(sz, 0x90);
-        patchBytes[0] = 0xE9;
-        intptr_t diff = (intptr_t)g_fovTrampoline - (intptr_t)(rip + 5);
-        *(int32_t*)(&patchBytes[1]) = (int32_t)diff;
-        if (!g_fovHookPatch.ApplyBytes(patchBytes.data(), sz)) {
-            VirtualFree(g_fovTrampoline, 0, MEM_RELEASE);
-            g_fovTrampoline = nullptr;
-            return false;
-        }
-        g_fovHookActive.store(true);
-        DllLog("[SUCCESS] Camera: field-of-view hook installed at 0x%llX (size %zu).", rip, sz);
-        return true;
+    static inline bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out) {
+        __try { out = *(const uint8_t*)addr; return true; } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
     static void SetFovHwBreakpoint(uintptr_t addr) {
+        if (addr == 0) return;
         g_fovHwAddr = addr;
         g_fovHwActive.store(true);
         DWORD currentTid = GetCurrentThreadId();
+        DWORD pid = GetCurrentProcessId();
+
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if (snap != INVALID_HANDLE_VALUE) {
             THREADENTRY32 te; te.dwSize = sizeof(te);
-            DWORD pid = GetCurrentProcessId();
             if (Thread32First(snap, &te)) {
                 do {
                     if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
                         HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
                         if (hThread) {
                             SuspendThread(hThread);
-                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                            CONTEXT ctx = {};
                             ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
                             if (GetThreadContext(hThread, &ctx)) {
-                                ctx.Dr0 = addr;
-                                ctx.Dr7 &= ~0xF0001ULL;
-                                ctx.Dr7 |= 0x1ULL; // L0
-                                ctx.Dr7 |= (0x1ULL << 16); // type 01 = write
-                                ctx.Dr7 |= (0x3ULL << 18); // len 11 = 4 bytes
+                                ctx.Dr3 = addr;
+                                ctx.Dr7 |= (1ULL << 6) | (1ULL << 10) | (1ULL << 28) | (3ULL << 30); // DR3: write, 4 bytes
                                 ctx.Dr6 = 0;
                                 SetThreadContext(hThread, &ctx);
                             }
@@ -2142,44 +1792,30 @@ namespace Mod {
             }
             CloseHandle(snap);
         }
-        // Current thread — don't suspend self
-        {
-            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
-            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-            // GetThreadContext on pseudo handle works without suspend for current thread
-            HANDLE hSelf = GetCurrentThread();
-            if (GetThreadContext(hSelf, &ctx)) {
-                ctx.Dr0 = addr;
-                ctx.Dr7 &= ~0xF0001ULL;
-                ctx.Dr7 |= 0x1ULL;
-                ctx.Dr7 |= (0x1ULL << 16);
-                ctx.Dr7 |= (0x3ULL << 18);
-                ctx.Dr6 = 0;
-                SetThreadContext(hSelf, &ctx);
-            }
-        }
-        DllLog("[INFO] Camera: watchpoint set for field-of-view at 0x%llX.", addr);
+        DllLog("[INFO] Camera: watchpoint set for field-of-view at 0x%llX (DR3).", addr);
     }
+
     static void ClearFovHwBreakpoint() {
         if (!g_fovHwActive.load() && g_fovHwAddr == 0) return;
         g_fovHwActive.store(false);
         g_fovHwAddr = 0;
         DWORD currentTid = GetCurrentThreadId();
+        DWORD pid = GetCurrentProcessId();
+
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if (snap != INVALID_HANDLE_VALUE) {
             THREADENTRY32 te; te.dwSize = sizeof(te);
-            DWORD pid = GetCurrentProcessId();
             if (Thread32First(snap, &te)) {
                 do {
                     if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
                         HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
                         if (hThread) {
                             SuspendThread(hThread);
-                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
+                            CONTEXT ctx = {};
                             ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
                             if (GetThreadContext(hThread, &ctx)) {
-                                ctx.Dr0 = 0;
-                                ctx.Dr7 &= ~0xF0001ULL;
+                                ctx.Dr3 = 0;
+                                ctx.Dr7 &= ~((1ULL << 6) | (0xFFULL << 28));
                                 ctx.Dr6 = 0;
                                 SetThreadContext(hThread, &ctx);
                             }
@@ -2191,146 +1827,156 @@ namespace Mod {
             }
             CloseHandle(snap);
         }
-        {
-            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
-            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-            HANDLE hSelf = GetCurrentThread();
-            if (GetThreadContext(hSelf, &ctx)) {
-                ctx.Dr0 = 0;
-                ctx.Dr7 &= ~0xF0001ULL;
-                ctx.Dr6 = 0;
-                SetThreadContext(hSelf, &ctx);
-            }
-        }
-        DllLog("[INFO] Camera: watchpoint cleared.");
+        DllLog("[INFO] Camera: field-of-view watchpoint cleared.");
     }
 
-    static thread_local bool t_isSingleStepping = false;
-    static thread_local bool t_lastFovWasWrite = false;
+    static void ArmXyzHwBreakpoints(uintptr_t base) {
+        if (base == 0) return;
+        uintptr_t xAddr = base + 0x550;
+        uintptr_t yAddr = base + 0x554;
+        uintptr_t zAddr = base + 0x558;
 
-    // ---- XYZ hardware write watch (DR1/DR2): guard-free writer collection for blacklist recovery ----
-    // The page guard CANNOT be armed while a blacklisted cutscene writer is running: every camera-page
-    // access (game writes XYZ+FOV each frame, renderer threads READ the same page each frame) faults,
-    // and between Windows clearing the guard on fault and our single-step handler re-arming it, another
-    // thread's fault finds isHunterPage=false and is passed to Cemu's own handler as an unhandled
-    // guard-page violation -> crash. A DR write watch only fires on WRITES to the watched bytes, needs
-    // no per-frame re-arm, and never traps the readers. DR1: 8B @ base+0x550 (X,Y). DR2: 4B @ base+0x558 (Z).
-    static std::atomic<bool>         g_xyzHwActive{false};
-    static uintptr_t                 g_xyzHwBase = 0;
+        g_detectedWriterX.store(0);
+        g_detectedWriterY.store(0);
+        g_detectedWriterZ.store(0);
+        g_hwWatchArmed.store(true);
+        g_hwWatchFramesLeft.store(10);
+        g_xyzHwActive.store(true);
+        g_xyzHwBase = base;
 
-    static void ApplyXyzHwWatch(CONTEXT& ctx, uintptr_t base) {
-        ctx.Dr7 &= ~((1ULL << 2) | (1ULL << 4) | (0xFULL << 20) | (0xFULL << 24));
-        if (base != 0) {
-            ctx.Dr1 = base + 0x550;
-            ctx.Dr7 |= (1ULL << 2);
-            ctx.Dr7 |= (0x1ULL << 20);
-            ctx.Dr7 |= (0x2ULL << 22);
-            ctx.Dr2 = base + 0x558;
-            ctx.Dr7 |= (1ULL << 4);
-            ctx.Dr7 |= (0x1ULL << 24);
-            ctx.Dr7 |= (0x3ULL << 26);
-        } else {
-            ctx.Dr1 = 0;
-            ctx.Dr2 = 0;
+        DWORD currentTid = GetCurrentThreadId();
+        DWORD pid = GetCurrentProcessId();
+
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                        if (hThread) {
+                            SuspendThread(hThread);
+                            CONTEXT ctx = {};
+                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(hThread, &ctx)) {
+                                ctx.Dr0 = xAddr;
+                                ctx.Dr1 = yAddr;
+                                ctx.Dr2 = zAddr;
+                                ctx.Dr7 &= ~((1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (0xFFULL << 16) | (0xFFULL << 20) | (0xFFULL << 24));
+                                ctx.Dr7 |= (1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (1ULL << 10);
+                                ctx.Dr7 |= (1ULL << 16) | (3ULL << 18); // DR0: write, 4B (X)
+                                ctx.Dr7 |= (1ULL << 20) | (3ULL << 22); // DR1: write, 4B (Y)
+                                ctx.Dr7 |= (1ULL << 24) | (3ULL << 26); // DR2: write, 4B (Z)
+                                if (g_fovHwActive.load() && g_fovHwAddr != 0) {
+                                    ctx.Dr3 = g_fovHwAddr;
+                                    ctx.Dr7 |= (1ULL << 6) | (1ULL << 28) | (3ULL << 30);
+                                }
+                                ctx.Dr6 = 0;
+                                SetThreadContext(hThread, &ctx);
+                            }
+                            ResumeThread(hThread);
+                            CloseHandle(hThread);
+                        }
+                    }
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+    }
+
+    static void DisarmXyzHwBreakpoints() {
+        if (!g_hwWatchArmed.load()) return;
+        g_hwWatchArmed.store(false);
+        g_hwWatchFramesLeft.store(0);
+        g_detectedWriterX.store(0);
+        g_detectedWriterY.store(0);
+        g_detectedWriterZ.store(0);
+        g_xyzHwActive.store(false);
+        g_xyzHwBase = 0;
+
+        DWORD currentTid = GetCurrentThreadId();
+        DWORD pid = GetCurrentProcessId();
+
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                        if (hThread) {
+                            SuspendThread(hThread);
+                            CONTEXT ctx = {};
+                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(hThread, &ctx)) {
+                                ctx.Dr0 = 0;
+                                ctx.Dr1 = 0;
+                                ctx.Dr2 = 0;
+                                ctx.Dr7 &= ~((1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (0xFFULL << 16) | (0xFFULL << 20) | (0xFFULL << 24));
+                                ctx.Dr6 = 0;
+                                SetThreadContext(hThread, &ctx);
+                            }
+                            ResumeThread(hThread);
+                            CloseHandle(hThread);
+                        }
+                    }
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
         }
     }
 
     static void SetXyzHwWatch(uintptr_t base) {
-        if (base == 0) return;
-        if (g_xyzHwActive.load() && g_xyzHwBase == base) return;
-        g_xyzHwBase = base;
-        g_xyzHwActive.store(true);
-        DWORD currentTid = GetCurrentThreadId();
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap != INVALID_HANDLE_VALUE) {
-            THREADENTRY32 te; te.dwSize = sizeof(te);
-            DWORD pid = GetCurrentProcessId();
-            if (Thread32First(snap, &te)) {
-                do {
-                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
-                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
-                        if (hThread) {
-                            SuspendThread(hThread);
-                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
-                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                            if (GetThreadContext(hThread, &ctx)) {
-                                ApplyXyzHwWatch(ctx, base);
-                                ctx.Dr6 = 0;
-                                SetThreadContext(hThread, &ctx);
-                            }
-                            ResumeThread(hThread);
-                            CloseHandle(hThread);
-                        }
-                    }
-                } while (Thread32Next(snap, &te));
-            }
-            CloseHandle(snap);
-        }
-        {
-            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
-            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-            HANDLE hSelf = GetCurrentThread();
-            if (GetThreadContext(hSelf, &ctx)) {
-                ApplyXyzHwWatch(ctx, base);
-                ctx.Dr6 = 0;
-                SetThreadContext(hSelf, &ctx);
-            }
-        }
+        ArmXyzHwBreakpoints(base);
     }
-
     static void ClearXyzHwWatch() {
-        if (!g_xyzHwActive.load()) return;
-        g_xyzHwActive.store(false);
-        g_xyzHwBase = 0;
-        DWORD currentTid = GetCurrentThreadId();
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap != INVALID_HANDLE_VALUE) {
-            THREADENTRY32 te; te.dwSize = sizeof(te);
-            DWORD pid = GetCurrentProcessId();
-            if (Thread32First(snap, &te)) {
-                do {
-                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
-                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
-                        if (hThread) {
-                            SuspendThread(hThread);
-                            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
-                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                            if (GetThreadContext(hThread, &ctx)) {
-                                ApplyXyzHwWatch(ctx, 0);
-                                ctx.Dr6 = 0;
-                                SetThreadContext(hThread, &ctx);
-                            }
-                            ResumeThread(hThread);
-                            CloseHandle(hThread);
-                        }
-                    }
-                } while (Thread32Next(snap, &te));
-            }
-            CloseHandle(snap);
-        }
-        {
-            CONTEXT ctx; memset(&ctx, 0, sizeof(ctx));
-            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-            HANDLE hSelf = GetCurrentThread();
-            if (GetThreadContext(hSelf, &ctx)) {
-                ApplyXyzHwWatch(ctx, 0);
-                ctx.Dr6 = 0;
-                SetThreadContext(hSelf, &ctx);
-            }
-        }
+        DisarmXyzHwBreakpoints();
     }
 
-    static inline bool SafeReadU8_SEH(uintptr_t addr, uint8_t& out) {
-        __try { out = *(const uint8_t*)addr; return true; } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    static int ProbeWriterRecord(const WriterRecord& wr) {
+        if (wr.rip == 0 || wr.patchSize == 0) return 0;
+        uint8_t cur[7] = {};
+        for (size_t i = 0; i < wr.patchSize; ++i) {
+            if (!SafeReadU8_SEH(wr.rip + i, cur[i])) return 0;
+        }
+        bool allNop = true;
+        for (size_t i = 0; i < wr.patchSize; ++i) {
+            if (cur[i] != 0x90) { allNop = false; break; }
+        }
+        if (allNop) return 2; // already NOP'd
+        if (memcmp(cur, wr.origBytes, wr.patchSize) == 0) return 1; // original code present
+        return 0; // neither NOP nor orig — code was modified/recompiled
+    }
+
+    static bool ReapplyWriterNop(WriterRecord& wr) {
+        if (wr.rip == 0 || wr.patchSize == 0) return false;
+        DWORD oldProt = 0;
+        if (!VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &oldProt)) return false;
+        memset((void*)wr.rip, 0x90, wr.patchSize);
+        VirtualProtect((LPVOID)wr.rip, wr.patchSize, oldProt, &oldProt);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
+        wr.nopActive = true;
+        return true;
+    }
+
+    static bool RestoreInstruction(WriterRecord& wr) {
+        if (wr.rip == 0 || wr.patchSize == 0 || !wr.nopActive) return false;
+        DWORD oldProt = 0;
+        if (!VirtualProtect((LPVOID)wr.rip, wr.patchSize, PAGE_EXECUTE_READWRITE, &oldProt)) return false;
+        memcpy((void*)wr.rip, wr.origBytes, wr.patchSize);
+        VirtualProtect((LPVOID)wr.rip, wr.patchSize, oldProt, &oldProt);
+        FlushInstructionCache(GetCurrentProcess(), (LPCVOID)wr.rip, wr.patchSize);
+        wr.nopActive = false;
+        return true;
     }
 
     static void WaitForHunterQuiesce(int timeoutMs) {
         uint64_t deadline = GetTickCount64() + (uint64_t)timeoutMs;
         while (GetTickCount64() < deadline) {
             bool active = g_writerHuntActive.load() || g_fovHuntActive.load();
-            bool frames = g_huntFramesLeft.load() != 0 || g_fovHuntFramesLeft.load() != 0;
-            bool guards = g_guardArmed.load() || g_fovGuardArmed.load() || g_xyzHwActive.load() || g_fovHwActive.load();
-            if (!active && !frames && !guards) break;
+            bool frames = g_hwWatchFramesLeft.load() != 0 || g_fovHuntFramesLeft.load() != 0;
+            bool armed = g_hwWatchArmed.load() || g_fovHwActive.load();
+            if (!active && !frames && !armed) break;
             Sleep(10);
         }
     }
@@ -2352,430 +1998,181 @@ namespace Mod {
     }
 
     static uintptr_t FindFovWriterFromHwRip(uintptr_t nextRip) {
-        // Like Cheat Engine F6: DR0 fires at nextRip — the writer is the instruction that ends at nextRip, prefer longest (with REX)
-        uintptr_t best = 0;
-        size_t bestSize = 0;
-        for (int back = 1; back <= 15; ++back) {
-            uintptr_t cand = nextRip - back;
-            uint8_t tmp[16] = {};
-            for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(cand + i, b); tmp[i] = b; }
-            size_t sz = DetectWriteInstructionSize(tmp);
-            if (sz == 0 || sz > 15) continue;
-            if (cand + sz == nextRip) {
-                if (sz > bestSize) { best = cand; bestSize = sz; }
-            }
+        uint8_t b[7] = {};
+        bool ok = true;
+        for (int i = 0; i < 7; ++i) {
+            if (!SafeReadU8_SEH(nextRip - 7 + i, b[i])) { ok = false; break; }
         }
-        if (best != 0) return best;
+        if (ok && b[0] == 0x45 && b[1] == 0x0F && b[2] == 0x38 && b[3] == 0xF1) {
+            return nextRip - 7;
+        }
         return nextRip;
     }
 
-    static bool IsWriterBlacklisted(uintptr_t rip, size_t margin = 32) {
-        // Snapshot the blacklist under the leaf lock, then match lock-free — the reload during a
-        // scanner reset can otherwise free pattern buffers mid-iteration (use-after-free).
-        std::vector<Pattern> blacklist;
-        EnterCriticalSection(&g_blacklistCS);
-        blacklist = g_writerBlacklist;
-        LeaveCriticalSection(&g_blacklistCS);
-        if (blacklist.empty()) return false;
-        // Generate writer AOB like F5 does (RIP-margin .. RIP+size+margin), then see if any blacklist
-        // pattern lives inside that AOB. margin=224 is used for per-writer containment so that a
-        // multi-writer block pattern (≈190B captured with its inter-writer gaps) is found even when
-        // only ONE writer of the block was collected this round.
-        uint8_t tmp[16] = {};
-        for (int i = 0; i < 16; ++i) { uint8_t b = 0; if (!SafeReadU8_SEH(rip + i, b)) break; tmp[i] = b; }
-        size_t patchSize = DetectWriteInstructionSize(tmp);
-        if (patchSize == 0 || patchSize > 15) patchSize = 7;
-        uintptr_t start = rip >= margin ? rip - margin : 0;
-        uintptr_t end = rip + patchSize + margin;
-        size_t bufLen = (size_t)(end - start);
-        if (bufLen == 0 || bufLen > 2 * margin + 32) return false;
-        std::vector<uint8_t> buf(bufLen);
-        for (size_t i = 0; i < bufLen; ++i) { uint8_t b = 0; SafeReadU8_SEH(start + i, b); buf[i] = b; }
-        // Un-NOP writers we already patched (in-window) so the stored block pattern can match
-        // even when parts of the block are currently replaced by 0x90.
+    static bool ValidateAndNopWriterTrio(uintptr_t wX, uintptr_t wY, uintptr_t wZ) {
+        if (wX == 0 || wY == 0 || wZ == 0) return false;
+
+        uintptr_t rips[3] = { wX, wY, wZ };
+        for (int i = 0; i < 3; ++i) {
+            MEMORY_BASIC_INFORMATION mbi = {};
+            if (!VirtualQuery((LPCVOID)rips[i], &mbi, sizeof(mbi))) return false;
+            bool isExec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+            if (!isExec || mbi.Type != MEM_PRIVATE) return false;
+        }
+
+        uintptr_t minRip = (wX < wY) ? ((wX < wZ) ? wX : wZ) : ((wY < wZ) ? wY : wZ);
+        uintptr_t maxRip = (wX > wY) ? ((wX > wZ) ? wX : wZ) : ((wY > wZ) ? wY : wZ);
+        if (maxRip - minRip > 4096) return false;
+
+        uint8_t bX[7] = {}, bY[7] = {}, bZ[7] = {};
+        for (int i = 0; i < 7; ++i) {
+            if (!SafeReadU8_SEH(wX + i, bX[i])) return false;
+            if (!SafeReadU8_SEH(wY + i, bY[i])) return false;
+            if (!SafeReadU8_SEH(wZ + i, bZ[i])) return false;
+        }
+
+        if (bX[0] != 0x45 || bX[1] != 0x0F || bX[2] != 0x38 || bX[3] != 0xF1 || bX[4] != 0x74) return false;
+        if (bY[0] != 0x45 || bY[1] != 0x0F || bY[2] != 0x38 || bY[3] != 0xF1 || bY[4] != 0x74) return false;
+        if (bZ[0] != 0x45 || bZ[1] != 0x0F || bZ[2] != 0x38 || bZ[3] != 0xF1 || bZ[4] != 0x74) return false;
+
+        if (bX[6] != 0x00 || bY[6] != 0x04 || bZ[6] != 0x08) return false;
+        if (bX[5] != bY[5] || bY[5] != bZ[5]) return false;
+
         EnterCriticalSection(&g_writerCS);
-        for (auto& wr : g_discoveredWriters) {
-            if (wr.rip >= start && wr.rip + wr.patchSize <= end) {
-                for (size_t k = 0; k < wr.patchSize; ++k) buf[wr.rip - start + k] = wr.origBytes[k];
-            }
-        }
-        LeaveCriticalSection(&g_writerCS);
-        for (const auto& pat : blacklist) {
-            size_t patLen = pat.bytes.size();
-            if (patLen == 0 || patLen > bufLen) continue;
-            for (size_t off = 0; off + patLen <= bufLen; ++off) {
-                bool match = true;
-                for (size_t j = 0; j < patLen; ++j) {
-                    if (!pat.isWildcard[j] && buf[off + j] != pat.bytes[j]) { match = false; break; }
+        for (int i = 0; i < 3; ++i) {
+            uintptr_t rip = rips[i];
+            const uint8_t* orig = (i == 0) ? bX : ((i == 1) ? bY : bZ);
+
+            bool alreadyKnown = false;
+            for (size_t wi = 0; wi < g_discoveredWriters.size(); ++wi) {
+                if (g_discoveredWriters[wi].rip == rip) {
+                    alreadyKnown = true;
+                    int probe = ProbeWriterRecord(g_discoveredWriters[wi]);
+                    if (probe == 1) {
+                        ReapplyWriterNop(g_discoveredWriters[wi]);
+                    }
+                    break;
                 }
-                if (match) return true;
+            }
+
+            if (!alreadyKnown) {
+                WriterRecord rec = {};
+                rec.rip = rip;
+                memcpy(rec.origBytes, orig, 7);
+                rec.patchSize = 7;
+                DWORD oldProt = 0;
+                if (VirtualProtect((LPVOID)rip, 7, PAGE_EXECUTE_READWRITE, &oldProt)) {
+                    memset((void*)rip, 0x90, 7);
+                    VirtualProtect((LPVOID)rip, 7, oldProt, &oldProt);
+                    FlushInstructionCache(GetCurrentProcess(), (LPCVOID)rip, 7);
+                    rec.nopActive = true;
+                    g_discoveredWriters.push_back(rec);
+                    std::string aob = GenerateWriterAob(rip, 7);
+                    DllLog("[SUCCESS] Camera: writer at 0x%llX paused (size 7, pattern %s) — total %zu.",
+                           (unsigned long long)rip, aob.c_str(), g_discoveredWriters.size());
+                }
             }
         }
-        return false;
+        if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
+        LeaveCriticalSection(&g_writerCS);
+        return true;
     }
 
     static LONG NTAPI CameraWriterVehHandler(PEXCEPTION_POINTERS ep) {
         if (ep->ExceptionRecord->ExceptionCode == STATUS_SINGLE_STEP) {
-            // A #DB can merge several causes into one event: our TF software-step completing on
-            // the same instruction where a DR watch also fires. Each branch below handles its own
-            // cause and marks the event claimed — a watch hit must NEVER early-return past the
-            // step handling, or t_isSingleStepping strands true and the guard stays disarmed for
-            // the rest of the window (silent writer escape + a false claim on the next unrelated #DB).
+            DWORD64 dr6 = ep->ContextRecord->Dr6;
             bool claimed = false;
-            // DR0 hardware breakpoint for FOV (write-only) — must be checked before software single-step
-            if (ep->ContextRecord->Dr6 & 0x1) {
-                if (g_fovHwActive.load()) {
+
+            // DR0: X coordinate write (+0x550)
+            if (dr6 & 0x1) {
+                if (g_hwWatchArmed.load()) {
                     uintptr_t nextRip = (uintptr_t)ep->ContextRecord->Rip;
-                    uintptr_t writer = FindFovWriterFromHwRip(nextRip);
+                    uintptr_t cand = nextRip - 7;
+                    uint8_t b[7] = {};
+                    bool ok = true;
+                    for (int i = 0; i < 7; ++i) {
+                        if (!SafeReadU8_SEH(cand + i, b[i])) { ok = false; break; }
+                    }
+                    if (ok && b[0] == 0x45 && b[1] == 0x0F && b[2] == 0x38 && b[3] == 0xF1 && b[4] == 0x74 && b[6] == 0x00) {
+                        g_detectedWriterX.store(cand);
+                    }
+                }
+                claimed = true;
+            }
+
+            // DR1: Y coordinate write (+0x554)
+            if (dr6 & 0x2) {
+                if (g_hwWatchArmed.load()) {
+                    uintptr_t nextRip = (uintptr_t)ep->ContextRecord->Rip;
+                    uintptr_t cand = nextRip - 7;
+                    uint8_t b[7] = {};
+                    bool ok = true;
+                    for (int i = 0; i < 7; ++i) {
+                        if (!SafeReadU8_SEH(cand + i, b[i])) { ok = false; break; }
+                    }
+                    if (ok && b[0] == 0x45 && b[1] == 0x0F && b[2] == 0x38 && b[3] == 0xF1 && b[4] == 0x74 && b[6] == 0x04) {
+                        g_detectedWriterY.store(cand);
+                    }
+                }
+                claimed = true;
+            }
+
+            // DR2: Z coordinate write (+0x558)
+            if (dr6 & 0x4) {
+                if (g_hwWatchArmed.load()) {
+                    uintptr_t nextRip = (uintptr_t)ep->ContextRecord->Rip;
+                    uintptr_t cand = nextRip - 7;
+                    uint8_t b[7] = {};
+                    bool ok = true;
+                    for (int i = 0; i < 7; ++i) {
+                        if (!SafeReadU8_SEH(cand + i, b[i])) { ok = false; break; }
+                    }
+                    if (ok && b[0] == 0x45 && b[1] == 0x0F && b[2] == 0x38 && b[3] == 0xF1 && b[4] == 0x74 && b[6] == 0x08) {
+                        g_detectedWriterZ.store(cand);
+                    }
+                }
+                claimed = true;
+            }
+
+            // DR3: FOV write (+0x68C)
+            if (dr6 & 0x8) {
+                if (g_fovHwActive.load()) {
+                    g_fovWriteCount.fetch_add(1);
+                    g_lastFovWriteTick.store(GetTickCount64());
                     if (g_fovHuntActive.load()) {
+                        uintptr_t nextRip = (uintptr_t)ep->ContextRecord->Rip;
+                        uintptr_t writer = FindFovWriterFromHwRip(nextRip);
                         if (TryEnterCriticalSection(&g_fovHuntCS)) {
                             bool already = false;
                             for (auto r : g_fovHuntRips) if (r == writer) already = true;
                             if (!already) g_fovHuntRips.push_back(writer);
                             LeaveCriticalSection(&g_fovHuntCS);
                         }
-                    } else {
-                        // Stall counting via DR0 — no hook, just count writes
-                        g_fovWriteCount.fetch_add(1);
-                        g_lastFovWriteTick.store(GetTickCount64());
-                    }
-                }
-                // B0 events are ours whether or not the keeper is active — an inactive-but-stale
-                // B0 #DB passed to CONTINUE_SEARCH would crash the process the same way B1/B2 does.
-                claimed = true;
-            }
-            // DR1/DR2 XYZ write watch: claim a #DB ONLY when its B1/B2 status bits are genuinely
-            // set — those bits are raised exactly by our watchpoint firing, and nothing else in this
-            // process owns DR1/DR2. Passing such an event down CONTINUE_SEARCH would hand an
-            // unhandled STATUS_SINGLE_STEP to Cemu's SEH chain and kill the process. We must NOT
-            // claim on Dr6==0: that also matches legitimate TF/CPU single-steps (the page-guard hunt
-            // sets EFLAGS.TF), and swallowing those breaks the guard machinery and can crash Cemu.
-            if (ep->ContextRecord->Dr6 & (0x2 | 0x4)) {
-                uintptr_t writer = FindFovWriterFromHwRip((uintptr_t)ep->ContextRecord->Rip);
-                if (g_xyzHwActive.load() && g_writerHuntActive.load()) {
-                    MEMORY_BASIC_INFORMATION mbi = {};
-                    if (VirtualQuery((LPCVOID)writer, &mbi, sizeof(mbi))) {
-                        bool isExec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
-                        bool isJit = (mbi.Type == MEM_PRIVATE) && isExec;
-                        if (isJit) {
-                            if (TryEnterCriticalSection(&g_writerCS)) {
-                                bool alreadyPending = false, alreadyDiscovered = false;
-                                for (auto r : g_pendingRips) if (r == writer) alreadyPending = true;
-                                for (auto& wr : g_discoveredWriters) if (wr.rip == writer) alreadyDiscovered = true;
-                                if (!alreadyPending && !alreadyDiscovered) {
-                                    g_pendingRips.push_back(writer);
-                                    if (g_pendingRips.size() >= 3) g_huntFramesLeft.store(1);
-                                }
-                                LeaveCriticalSection(&g_writerCS);
-                            }
-                        }
                     }
                 }
                 claimed = true;
             }
-            if (t_isSingleStepping) {
-                // Our TF step completed (possibly merged with a watch above): finish its job —
-                // clear the flag and re-arm the guard while the hunt window is open.
-                t_isSingleStepping = false;
-                if (g_huntFramesLeft.load() > 0) {
-                    uintptr_t base = g_addrGameRomCamera.load();
-                    if (base != 0) ArmPageGuard(base + 0x550);
-                }
-                // FOV hunter per-frame only — single-step re-arm crashes on this page
-                t_lastFovWasWrite = false;
-                claimed = true;
-            }
+
             if (claimed) {
                 ep->ContextRecord->Dr6 = 0;
                 ep->ContextRecord->EFlags &= ~0x100ULL;
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
+
             return EXCEPTION_CONTINUE_SEARCH;
         }
-        if (ep->ExceptionRecord->ExceptionCode != STATUS_GUARD_PAGE_VIOLATION)
-            return EXCEPTION_CONTINUE_SEARCH;
-        uintptr_t faultAddr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
-        // Ownership is the PUBLISHED RANGE, not the armed flag: the claim brackets the guard's
-        // physical lifetime (published before PAGE_GUARD is installed, cleared after it is removed),
-        // so any guard fault on our page is claimed here even mid-transition. Claiming on the flag
-        // let a fault race arm/disarm, fall to CONTINUE_SEARCH, and kill Cemu as an unhandled
-        // STATUS_GUARD_PAGE_VIOLATION.
-        bool isFovPage = g_fovGuardPage != 0 && faultAddr >= g_fovGuardPage && faultAddr < g_fovGuardPage + 0x1000;
-        bool isHunterPage = g_guardPage != 0 && faultAddr >= g_guardPage && faultAddr < g_guardPage + 0x1000;
-        if (!isFovPage && !isHunterPage)
-            return EXCEPTION_CONTINUE_SEARCH;
-        // Windows clears PAGE_GUARD on fault — the guard is spent. Mark disarmed (under the
-        // transition lock, same-page re-arms would otherwise early-return and stall the hunt);
-        // the page claim stays published so follow-up faults on this page remain ours.
-        EnterCriticalSection(&g_guardTransitionCS);
-        if (isHunterPage) g_guardArmed = false;
-        if (isFovPage) g_fovGuardArmed = false;
-        LeaveCriticalSection(&g_guardTransitionCS);
-        bool isWrite = (ep->ExceptionRecord->ExceptionInformation[0] == 1);
-        uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
-        t_lastFovWasWrite = false;
-        // FOV hunter — collect writer RIP for a few frames after GameRomCamera found (no hook, just log)
-        // FOV shares page with XYZ (0x550) so hunter guard also traps FOV writes — check either guard
-        // Diagnostic: log any guard fault while FOV hunt active (even not FOV) to see if guard fires
-        if (g_fovHuntActive.load() && (isFovPage || isHunterPage)) {
-            static uint64_t lastAnyDbg = 0;
-            uint64_t nowAny = GetTickCount64();
-            if (nowAny - lastAnyDbg > 1000) {
-                lastAnyDbg = nowAny;
-                DllLog("[DIAG] Camera: field-of-view fault at 0x%llX (fault 0x%llX, write %d, field-of-view page %d, camera page %d, base 0x%llX).", rip, faultAddr, isWrite?1:0, isFovPage?1:0, isHunterPage?1:0, g_addrGameRomCamera.load());
-            }
-        }
-        if (isWrite && (isFovPage || isHunterPage)) {
-            uintptr_t baseFov = g_addrGameRomCamera.load();
-            if (baseFov != 0 && faultAddr == baseFov + 0x68C) {
-                t_lastFovWasWrite = true;
-                if (g_fovHuntActive.load()) {
-                    // Use TryEnter to avoid blocking game thread if CameraControl holds CS
-                    if (TryEnterCriticalSection(&g_fovHuntCS)) {
-                        bool already = false;
-                        for (auto r : g_fovHuntRips) if (r == rip) already = true;
-                        if (!already) {
-                            g_fovHuntRips.push_back(rip);
-                        }
-                        LeaveCriticalSection(&g_fovHuntCS);
-                    }
-                }
-                else if (g_verboseCamDiag) {
-                    static uint64_t lastFovDbg = 0;
-                    uint64_t nowFov = GetTickCount64();
-                    if (nowFov - lastFovDbg > 1000) {
-                        lastFovDbg = nowFov;
-                        DllLog("[DIAG] Camera: field-of-view write at 0x%llX (fault 0x%llX) — no hunt active.", rip, faultAddr);
-                    }
-                }
-            }
-        }
-        // Log every guard fault for diagnostics (even if not collected)
-        bool shouldCollect = false;
-        if (isWrite && g_writerHuntActive.load() && isHunterPage) {
-            uintptr_t base = g_addrGameRomCamera.load();
-            if (base != 0 && (faultAddr == base + 0x550 || faultAddr == base + 0x554 || faultAddr == base + 0x558)) {
-                MEMORY_BASIC_INFORMATION mbi = {};
-                VirtualQuery((LPCVOID)rip, &mbi, sizeof(mbi));
-                bool isExec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
-                bool isJit = (mbi.Type == MEM_PRIVATE) && isExec;
-                if (!isJit) {
-                    // Strict: only JIT (MEM_PRIVATE + exec) is a real camera writer; our own writes are MEM_IMAGE and must be single-stepped
-                    // Don't log MEM_IMAGE faults at high frequency to avoid spam, but log once per burst
-                    static uint64_t lastLogMs = 0;
-                    uint64_t nowDbg = GetTickCount64();
-                    if (g_verboseCamDiag && nowDbg - lastLogMs > 500) {
-                        lastLogMs = nowDbg;
-                        DllLog("[DIAG] Camera: guard fault at 0x%llX (fault 0x%llX, type %u, protect 0x%X) — not a game writer, single-stepping.", rip, faultAddr, mbi.Type, mbi.Protect);
-                    }
-                } else {
-                    shouldCollect = true;
-                }
-            } else {
-                // Not XYZ — page guard hit for other var on same 4KB page, just single-step, no log to avoid flood
-            }
-        } else if (g_writerHuntActive.load() && isWrite && isHunterPage) {
-            // Write fault outside our XYZ — single-step, no log unless verbose
-            if (g_verboseCamDiag) {
-                DllLog("[DIAG] Camera: guard write fault at 0x%llX (fault 0x%llX) — not a camera writer or hunt not active.", rip, faultAddr);
-            }
-        }
-        if (shouldCollect) {
-            EnterCriticalSection(&g_writerCS);
-            bool alreadyPending = false, alreadyDiscovered = false;
-            for (auto r : g_pendingRips) if (r == rip) alreadyPending = true;
-            for (auto &wr : g_discoveredWriters) if (wr.rip == rip) alreadyDiscovered = true;
-            if (!alreadyPending && !alreadyDiscovered) {
-                g_pendingRips.push_back(rip);
-                if (g_verboseCamDiag) {
-                    DllLog("[DIAG] Camera: collected writer at 0x%llX (fault 0x%llX) — %zu pending, accumulating over 10 frames.", rip, faultAddr, g_pendingRips.size());
-                }
-                if (g_pendingRips.size() >= 3) {
-                    // Got X/Y/Z — stop immediately, don't wait full 10 frames
-                    g_huntFramesLeft.store(1);
-                }
-            }
-            LeaveCriticalSection(&g_writerCS);
-        }
-        ep->ContextRecord->EFlags |= 0x100;
-        t_isSingleStepping = true;
-        return EXCEPTION_CONTINUE_EXECUTION;
+
+        return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Called after 10-frame window closes — classify each pending writer PER-WRITER vs the blacklist
-    // (full block pattern must be resident within ±224B of the writer), NOP the clean ones, hold the
-    // blacklisted ones (never patched) and latch blacklistedMode until they go quiet.
     static void ProcessPendingWriters() {
-        std::vector<uintptr_t> toProcess;
-        EnterCriticalSection(&g_writerCS);
-        if (g_pendingRips.empty()) {
-            LeaveCriticalSection(&g_writerCS);
-            // No release-on-emptiness here: while blacklisted the pending set is deliberately
-            // empty (writes are no longer being faulted/collected). The camera-thread liveness
-            // probe owns the release, keyed on "is the camera still being moved".
-            // Throttled witness: a window ran but the VEH/DR watch delivered nothing —
-            // distinguishes "no window opened" from "window opened, collection starved".
-            static uint64_t lastEmptyWindowLogMs = 0;
-            uint64_t nowEmptyMs = GetTickCount64();
-            if (nowEmptyMs - lastEmptyWindowLogMs >= 5000) {
-                lastEmptyWindowLogMs = nowEmptyMs;
-                DllLog("[INFO] Camera: writer window closed with no writers seen.");
-            }
-            return;
-        }
-        toProcess.swap(g_pendingRips);
-        LeaveCriticalSection(&g_writerCS);
-        std::sort(toProcess.begin(), toProcess.end());
-        // PER-WRITER blacklist containment. The stored patterns are whole multi-writer cutscene
-        // blocks (~190B, including the inter-writer gap bytes). The old check matched one combined
-        // window of whatever happened to be collected — a single-writer or differently-shaped set
-        // missed the block and the blacklisted writer got NOP'd (see 17:38:05/17:40:45 crash logs:
-        // NOP'd cutscene writers corrupt the game's camera state at the next cinematic). Now each
-        // writer is judged alone: if a full block pattern is resident anywhere within ±224B of it,
-        // that writer is HELD (never patched), everything else is still NOP'd normally.
-        std::vector<uintptr_t> held, clean;
-        for (uintptr_t rip : toProcess) {
-            if (IsWriterBlacklisted(rip, 224)) held.push_back(rip);
-            else clean.push_back(rip);
-        }
-        if (g_verboseCamDiag) {
-            DllLog("[DIAG] Camera: processing writers — %zu held, %zu ready (of %zu total).", held.size(), clean.size(), toProcess.size());
-        }
-        DllLog("[INFO] Camera: writer window closed — %zu candidate(s) (%zu held, %zu clean).", toProcess.size(), held.size(), clean.size());
-        if (!held.empty()) {
-            bool was = g_blacklistedMode.exchange(true);
-            g_lastBlacklistedWriteTime.store(GetTickCount64());
-            // Go QUIET: disarm the guard and drop pending so the game thread stops faulting.
-            // The old design re-armed the guard every 100ms, re-faulting, re-collecting the SAME
-            // rips and re-logging the full AOB at ~10Hz — a guard-fault + single-step storm on
-            // the game thread that crashed Cemu. Release is decided on the camera thread: path A
-            // liveness (camera frozen 2.5s) or path B gameplay re-hunt via the guard-free XYZ write
-            // watch. NOT byte changes: a dead cutscene writer's bytes stay in the JIT block untouched.
-            EnterCriticalSection(&g_writerCS);
-            g_pendingRips.clear();
-            LeaveCriticalSection(&g_writerCS);
-            g_huntFramesLeft.store(0);
-            DisarmPageGuard();
-            ClearXyzHwWatch();
-            g_blLiveHasSample = false; // force a fresh sample for the liveness probe
-            if (!was) {
-                uint8_t tmpH[16] = {};
-                for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(held[0] + i, b); tmpH[i] = b; }
-                size_t szH = DetectWriteInstructionSize(tmpH);
-                if (szH == 0 || szH > 15) szH = 7;
-                std::string aobH = GenerateWriterAob(held[0], szH);
-                DllLog("[INFO] Camera control paused — game is moving the camera. Holding %zu writer(s) (first at 0x%llX: %s), %zu other(s) also held. Will resume when the game releases the camera.",
-                       held.size(), (unsigned long long)held[0], aobH.c_str(), clean.size());
-            }
-        }
-        // Release edge only when NOTHING is held anymore — the camera thread's release branch
-        // logs the resume and re-captures the orbit; just clear the flag here.
-        if (held.empty() && g_blacklistedMode.load()) {
-            g_blacklistedMode.store(false);
-        }
-        // ---- XYZ TRIO SET RULE ----
-        // Never patch anything that is not a complete X/Y/Z writer set in this collection.
-        // Every camera position block in this game is a triple of identical encodings
-        // ("45 0F 38 F1 74 <sib> <disp>") with disp8 = 0x00, 0x04, 0x08. Cutscene blocks ALSO
-        // carry sibling stores at disp 0x0C (4th field) — no stored blacklist pattern contains
-        // them, so lone 0C orphans were being classified clean and NOP'd, half-patching the
-        // blacklisted function (20:58:41: held the 05-trio, NOP'd 74 35 0C at 0x2DE89981344).
-        // A writer is NOP-eligible ONLY if its full trio {00,04,08} (same 6-byte prefix, same
-        // address cluster) is present in this round. Anything else — orphans, partial trios,
-        // non-conforming encodings — is ignored (and simply re-collected next window).
-        std::vector<uintptr_t> toNop;
-        {
-            struct MW { uintptr_t rip; uint8_t pre[6]; uint8_t disp; bool trioFormed; };
-            std::vector<MW> mws;
-            for (uintptr_t rip : clean) {
-                MW m{}; m.rip = rip; m.trioFormed = false;
-                uint8_t b[7] = {};
-                bool ok = true;
-                for (int i = 0; i < 7; ++i) { uint8_t v = 0; if (!SafeReadU8_SEH(rip + i, v)) { ok = false; break; } b[i] = v; }
-                if (ok && b[0] == 0x45 && b[1] == 0x0F && b[2] == 0x38 && b[3] == 0xF1 && b[4] == 0x74 &&
-                    (b[6] == 0x00 || b[6] == 0x04 || b[6] == 0x08)) {
-                    memcpy(m.pre, b, 6); m.disp = b[6];
-                } else {
-                    continue; // not an X/Y/Z member (orphan 0C/7C/unknown shape) — ignore, never NOP
-                }
-                mws.push_back(m);
-            }
-            std::sort(mws.begin(), mws.end(), [](const MW& a, const MW& b2) {
-                int c = memcmp(a.pre, b2.pre, 6);
-                return c != 0 ? c < 0 : a.rip < b2.rip;
-            });
-            size_t i = 0;
-            while (i < mws.size()) {
-                size_t j = i;
-                while (j < mws.size() && memcmp(mws[j].pre, mws[i].pre, 6) == 0) ++j;
-                // same-prefix members [i,j): split into address clusters (gap > 4096 = new block)
-                size_t k = i;
-                while (k < j) {
-                    size_t e = k + 1;
-                    while (e < j && (mws[e].rip - mws[e - 1].rip) <= 4096) ++e;
-                    bool has00 = false, has04 = false, has08 = false;
-                    for (size_t t = k; t < e; ++t) {
-                        if (mws[t].disp == 0x00) has00 = true;
-                        else if (mws[t].disp == 0x04) has04 = true;
-                        else if (mws[t].disp == 0x08) has08 = true;
-                    }
-                    if (has00 && has04 && has08) {
-                        for (size_t t = k; t < e; ++t) toNop.push_back(mws[t].rip);
-                    } else if (g_verboseCamDiag) {
-                        DllLog("[DIAG] Camera: incomplete writer set (prefix %02X %02X, offsets %s%s%s) — ignoring %zu writer(s).",
-                               mws[k].pre[4], mws[k].pre[5], has00 ? "00 " : "", has04 ? "04 " : "", has08 ? "08" : "", e - k);
-                    }
-                    k = e;
-                }
-                i = j;
-            }
-        }
-        size_t setRuleDropped = clean.size() - toNop.size();
-        if (setRuleDropped > 0) {
-            DllLog("[INFO] Camera: ignored %zu incomplete writer(s) — waiting for a complete camera update.", setRuleDropped);
-        }
-        // NOP only the writers that form complete XYZ trios
-        for (uintptr_t rip : toNop) {
-            EnterCriticalSection(&g_writerCS);
-            bool alreadyKnown = false;
-            for (size_t wi = 0; wi < g_discoveredWriters.size(); ++wi) {
-                if (g_discoveredWriters[wi].rip != rip) continue;
-                int probe = ProbeWriterRecord(g_discoveredWriters[wi]);
-                if (probe == 0) {
-                    // Cached record points at recycled code — drop it and rediscover fresh below.
-                    DllLog("[INFO] Camera: writer at 0x%llX no longer matches cached code — replaced by fresh detection.", (unsigned long long)rip);
-                    g_discoveredWriters.erase(g_discoveredWriters.begin() + wi);
-                    if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
-                    break;
-                }
-                alreadyKnown = true;
-                if (probe == 1 && ReapplyWriterNop(g_discoveredWriters[wi])) {
-                    DllLog("[INFO] Camera: writer at 0x%llX re-paused — code recompiled at the cached address.", (unsigned long long)rip);
-                }
-                break;
-            }
-            if (!alreadyKnown) {
-                WriterRecord rec={};
-                size_t sz = 0;
-                // Safe size detect without SEH objects
-                {
-                    uint8_t tmp[16] = {};
-                    for (int i = 0; i < 16; ++i) { uint8_t b = 0; SafeReadU8_SEH(rip + i, b); tmp[i] = b; }
-                    sz = DetectWriteInstructionSize(tmp);
-                    if (sz == 0 || sz > 15) sz = 7;
-                }
-                std::string aob = GenerateWriterAob(rip, sz);
-                if (rip == 0 || sz == 0) {
-                    DllLog("[WARNING] Camera: writer at 0x%llX is invalid — skipping.", rip);
-                } else if (NopInstruction(rip, rec)) {
-                    DllLog("[SUCCESS] Camera: writer at 0x%llX paused (size %zu, pattern %s) — total %zu.", rip, rec.patchSize, aob.c_str(), g_discoveredWriters.size()+1);
-                    g_discoveredWriters.push_back(rec);
-                    if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
-                } else {
-                    DllLog("[WARNING] Camera: writer at 0x%llX not recognized — skipping.", rip);
-                }
-            }
-            LeaveCriticalSection(&g_writerCS);
+        if (!g_hwWatchArmed.load()) return;
+        uintptr_t wX = g_detectedWriterX.load();
+        uintptr_t wY = g_detectedWriterY.load();
+        uintptr_t wZ = g_detectedWriterZ.load();
+        if (wX != 0 && wY != 0 && wZ != 0) {
+            ValidateAndNopWriterTrio(wX, wY, wZ);
+            DisarmXyzHwBreakpoints();
         }
     }
 
@@ -2786,15 +2183,13 @@ namespace Mod {
             WriterRecord& wr = g_discoveredWriters[wi];
             int probe = ProbeWriterRecord(wr);
             if (probe == 0) {
-                // Stale: this address no longer holds the writer's code — forget it rather
-                // than stamping NOPs into whatever the JIT placed there.
                 DllLog("[INFO] Camera: forgetting stale writer at 0x%llX — cached code no longer present.", (unsigned long long)wr.rip);
                 g_discoveredWriters.erase(g_discoveredWriters.begin() + wi);
                 pruned = true;
                 continue;
             }
-            if (probe == 2) wr.nopActive = true;      // our NOPs already sit there — nothing to write
-            else ReapplyWriterNop(wr);                // probe==1: original bytes live — pause the writer again
+            if (probe == 2) wr.nopActive = true;
+            else ReapplyWriterNop(wr);
             ++wi;
         }
         if (pruned && g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = (uint32_t)g_discoveredWriters.size();
@@ -2811,15 +2206,13 @@ namespace Mod {
         ApplyAllWriterNops();
         if (!g_vehHandle) g_vehHandle = AddVectoredExceptionHandler(1, CameraWriterVehHandler);
         g_writerHuntActive = true;
-        // Do not arm immediately — arm only on overwrite detection (250ms gate)
         DllLog("[INFO] Camera: writer search started (cached %zu).", g_discoveredWriters.size());
     }
 
     static void StopWriterHunt() {
         g_writerHuntActive = false;
         g_huntFramesLeft.store(0);
-        DisarmPageGuard();
-        ClearXyzHwWatch();
+        DisarmXyzHwBreakpoints();
         RestoreAllWriterNops();
         EnterCriticalSection(&g_writerCS);
         g_pendingRips.clear();
@@ -4915,57 +4308,51 @@ namespace Mod {
                     // blacklist is clear (blacklisted frames skip the whole else-if below).
 
                     if ((!magnesis_mode || fps_magne_active) && !menu_active) {
-                        // 250ms overwrite check — FIX wrap guard
-                        uint64_t nowMs = GetTickCount64();
-                        bool shouldCheck = hunter_hasWritten && g_writerHuntActive.load() && nowMs >= hunter_lastCheckMs && (nowMs - hunter_lastCheckMs >= 250);
-                        if (shouldCheck) {
-                            hunter_lastCheckMs = nowMs;
-                            if (hunter_mouseMovedSinceLastCheck) {
-                                float curX = ReadFloatBE(g_addrGameRomCamera + 0x550);
-                                float curY = ReadFloatBE(g_addrGameRomCamera + 0x554);
-                                float curZ = ReadFloatBE(g_addrGameRomCamera + 0x558);
-                                if (curX != hunter_lastWrittenX || curY != hunter_lastWrittenY || curZ != hunter_lastWrittenZ) {
-                                    if (g_verboseCamDiag) {
-                                        DllLog("[DIAG] Camera: game overwrote position ([%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]) — watching for writers for 10 frames.", hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
-                                    }
-                                    DllLog("[INFO] Camera: game overwrote position — watching for writers (10 frames).");
-                                    g_huntFramesLeft.store(10); // 10 frames
-                                    if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
-                                } else {
-                                    // Heartbeat: the gate is alive and checking, but the game is not
-                                    // driving the camera right now — distinguishes "gate dead" from
-                                    // "no mismatch to catch" when a later failure is diagnosed.
-                                    static uint64_t lastNoOverwriteLogMs = 0;
-                                    if (nowMs - lastNoOverwriteLogMs >= 5000) {
-                                        lastNoOverwriteLogMs = nowMs;
-                                        DllLog("[INFO] Camera: watching for writers — check ran, no game overwrite seen.");
-                                    }
+                        uintptr_t camAddr = g_addrGameRomCamera.load();
+                        if (hunter_hasWritten && g_writerHuntActive.load() && hunter_mouseMovedSinceLastCheck && camAddr != 0) {
+                            float curX = ReadFloatBE(camAddr + 0x550);
+                            float curY = ReadFloatBE(camAddr + 0x554);
+                            float curZ = ReadFloatBE(camAddr + 0x558);
+                            if (curX != hunter_lastWrittenX || curY != hunter_lastWrittenY || curZ != hunter_lastWrittenZ) {
+                                if (!g_hwWatchArmed.load()) {
+                                    DllLog("[INFO] Camera: game overwrote position ([%.2f,%.2f,%.2f] -> [%.2f,%.2f,%.2f]) — watching XYZ writers via hardware breakpoints.",
+                                           hunter_lastWrittenX, hunter_lastWrittenY, hunter_lastWrittenZ, curX, curY, curZ);
+                                    ArmXyzHwBreakpoints(camAddr);
                                 }
-                                hunter_mouseMovedSinceLastCheck = false;
+                            }
+                            hunter_mouseMovedSinceLastCheck = false;
+                        }
+
+                        // Evaluate detected writers if hardware watch is armed
+                        if (g_hwWatchArmed.load()) {
+                            uintptr_t wX = g_detectedWriterX.load();
+                            uintptr_t wY = g_detectedWriterY.load();
+                            uintptr_t wZ = g_detectedWriterZ.load();
+                            if (wX != 0 && wY != 0 && wZ != 0) {
+                                ValidateAndNopWriterTrio(wX, wY, wZ);
+                                DisarmXyzHwBreakpoints();
+                            } else {
+                                int prev = g_hwWatchFramesLeft.fetch_sub(1);
+                                if (prev <= 1) {
+                                    DisarmXyzHwBreakpoints();
+                                }
                             }
                         }
-                        // Reaching here proves the blacklist is clear — the blacklisted state is handled
-                        // (suppression + recovery) in its own branch above the dx/dy capture.
-                        WriteFloatBE(g_addrGameRomCamera + 0x550, vcam_pos_x);
-                        WriteFloatBE(g_addrGameRomCamera + 0x554, vcam_pos_y);
-                        WriteFloatBE(g_addrGameRomCamera + 0x558, vcam_pos_z);
-                        hunter_lastWrittenX = vcam_pos_x;
-                        hunter_lastWrittenY = vcam_pos_y;
-                        hunter_lastWrittenZ = vcam_pos_z;
-                        hunter_hasWritten = true;
-                        if (g_writerHuntActive.load() && g_huntFramesLeft.load() > 0) {
-                            if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
-                            int prev = g_huntFramesLeft.fetch_sub(1);
-                            if (prev == 1) ProcessPendingWriters();
+
+                        if (camAddr != 0) {
+                            WriteFloatBE(camAddr + 0x550, vcam_pos_x);
+                            WriteFloatBE(camAddr + 0x554, vcam_pos_y);
+                            WriteFloatBE(camAddr + 0x558, vcam_pos_z);
+                            hunter_lastWrittenX = vcam_pos_x;
+                            hunter_lastWrittenY = vcam_pos_y;
+                            hunter_lastWrittenZ = vcam_pos_z;
+                            hunter_hasWritten = true;
                         }
                     } else {
-                        if (g_huntFramesLeft.load() > 0) {
-                            int prev = g_huntFramesLeft.fetch_sub(1);
-                            if (g_addrGameRomCamera.load() != 0 && g_writerHuntActive.load()) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
-                            if (prev == 1) ProcessPendingWriters();
-                        } else {
-                            hunter_hasWritten = false;
+                        if (g_hwWatchArmed.load()) {
+                            DisarmXyzHwBreakpoints();
                         }
+                        hunter_hasWritten = false;
                     }
                 }
             }
@@ -5011,7 +4398,7 @@ namespace Mod {
                         DllLog("[INFO] Debug: no writers yet — watching for 500ms then saving dump.");
                         hunter_aobDumpCountdown = 125;
                         g_huntFramesLeft.store(125);
-                        if (g_addrGameRomCamera.load() != 0) ArmPageGuard(g_addrGameRomCamera.load() + 0x550);
+                        if (g_addrGameRomCamera.load() != 0) ArmXyzHwBreakpoints(g_addrGameRomCamera.load());
                     }
                 } else {
                     DllLog("[WARNING] Debug: dump ignored — mouse camera must be on and magnesis off.");
