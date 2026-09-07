@@ -1760,10 +1760,42 @@ namespace Mod {
         __try { out = *(const uint8_t*)addr; return true; } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
 
-    static void SetFovHwBreakpoint(uintptr_t addr) {
-        if (addr == 0) return;
-        g_fovHwAddr = addr;
-        g_fovHwActive.store(true);
+    // -------------------------------------------------------------------------
+    // Hardware Breakpoint Engine (Cheat Engine Architecture)
+    // -------------------------------------------------------------------------
+    static inline void SetDrSlot(CONTEXT& ctx, int slot, uintptr_t addr) {
+        switch (slot) {
+            case 0: ctx.Dr0 = addr; break;
+            case 1: ctx.Dr1 = addr; break;
+            case 2: ctx.Dr2 = addr; break;
+            case 3: ctx.Dr3 = addr; break;
+        }
+        // Mask out enable bits (bits slot*2 .. slot*2+1) and type/len bits (bits 16+slot*4 .. 19+slot*4)
+        ctx.Dr7 &= ~((3ULL << (slot * 2)) | (0xFULL << (16 + slot * 4)));
+        if (addr != 0) {
+            ctx.Dr7 |= (1ULL << (slot * 2));            // Local enable
+            ctx.Dr7 |= (1ULL << 8) | (1ULL << 10);      // Local Exact (LE) + bit 10 reserved
+            ctx.Dr7 |= (1ULL << (16 + slot * 4));       // Break on write (type 01)
+            ctx.Dr7 |= (3ULL << (18 + slot * 4));       // 4 bytes length (len 11)
+        }
+    }
+
+    static void ApplyThreadDebugRegisters(CONTEXT& ctx) {
+        uintptr_t base = g_xyzHwBase;
+        bool xyzArmed = g_hwWatchArmed.load() && (base != 0);
+        uintptr_t dr0 = xyzArmed ? (base + 0x550) : 0;
+        uintptr_t dr1 = xyzArmed ? (base + 0x554) : 0;
+        uintptr_t dr2 = xyzArmed ? (base + 0x558) : 0;
+        uintptr_t dr3 = (g_fovHwActive.load() && g_fovHwAddr != 0) ? g_fovHwAddr : 0;
+
+        SetDrSlot(ctx, 0, dr0);
+        SetDrSlot(ctx, 1, dr1);
+        SetDrSlot(ctx, 2, dr2);
+        SetDrSlot(ctx, 3, dr3);
+        ctx.Dr6 = 0;
+    }
+
+    static void SyncAllThreadDebugRegisters() {
         DWORD currentTid = GetCurrentThreadId();
         DWORD pid = GetCurrentProcessId();
 
@@ -1779,9 +1811,7 @@ namespace Mod {
                             CONTEXT ctx = {};
                             ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
                             if (GetThreadContext(hThread, &ctx)) {
-                                ctx.Dr3 = addr;
-                                ctx.Dr7 |= (1ULL << 6) | (1ULL << 10) | (1ULL << 28) | (3ULL << 30); // DR3: write, 4 bytes
-                                ctx.Dr6 = 0;
+                                ApplyThreadDebugRegisters(ctx);
                                 SetThreadContext(hThread, &ctx);
                             }
                             ResumeThread(hThread);
@@ -1792,6 +1822,13 @@ namespace Mod {
             }
             CloseHandle(snap);
         }
+    }
+
+    static void SetFovHwBreakpoint(uintptr_t addr) {
+        if (addr == 0) return;
+        g_fovHwAddr = addr;
+        g_fovHwActive.store(true);
+        SyncAllThreadDebugRegisters();
         DllLog("[INFO] Camera: watchpoint set for field-of-view at 0x%llX (DR3).", addr);
     }
 
@@ -1799,43 +1836,12 @@ namespace Mod {
         if (!g_fovHwActive.load() && g_fovHwAddr == 0) return;
         g_fovHwActive.store(false);
         g_fovHwAddr = 0;
-        DWORD currentTid = GetCurrentThreadId();
-        DWORD pid = GetCurrentProcessId();
-
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap != INVALID_HANDLE_VALUE) {
-            THREADENTRY32 te; te.dwSize = sizeof(te);
-            if (Thread32First(snap, &te)) {
-                do {
-                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
-                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
-                        if (hThread) {
-                            SuspendThread(hThread);
-                            CONTEXT ctx = {};
-                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                            if (GetThreadContext(hThread, &ctx)) {
-                                ctx.Dr3 = 0;
-                                ctx.Dr7 &= ~((1ULL << 6) | (0xFFULL << 28));
-                                ctx.Dr6 = 0;
-                                SetThreadContext(hThread, &ctx);
-                            }
-                            ResumeThread(hThread);
-                            CloseHandle(hThread);
-                        }
-                    }
-                } while (Thread32Next(snap, &te));
-            }
-            CloseHandle(snap);
-        }
+        SyncAllThreadDebugRegisters();
         DllLog("[INFO] Camera: field-of-view watchpoint cleared.");
     }
 
     static void ArmXyzHwBreakpoints(uintptr_t base) {
         if (base == 0) return;
-        uintptr_t xAddr = base + 0x550;
-        uintptr_t yAddr = base + 0x554;
-        uintptr_t zAddr = base + 0x558;
-
         g_detectedWriterX.store(0);
         g_detectedWriterY.store(0);
         g_detectedWriterZ.store(0);
@@ -1843,45 +1849,7 @@ namespace Mod {
         g_hwWatchFramesLeft.store(10);
         g_xyzHwActive.store(true);
         g_xyzHwBase = base;
-
-        DWORD currentTid = GetCurrentThreadId();
-        DWORD pid = GetCurrentProcessId();
-
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap != INVALID_HANDLE_VALUE) {
-            THREADENTRY32 te; te.dwSize = sizeof(te);
-            if (Thread32First(snap, &te)) {
-                do {
-                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
-                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
-                        if (hThread) {
-                            SuspendThread(hThread);
-                            CONTEXT ctx = {};
-                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                            if (GetThreadContext(hThread, &ctx)) {
-                                ctx.Dr0 = xAddr;
-                                ctx.Dr1 = yAddr;
-                                ctx.Dr2 = zAddr;
-                                ctx.Dr7 &= ~((1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (0xFFULL << 16) | (0xFFULL << 20) | (0xFFULL << 24));
-                                ctx.Dr7 |= (1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (1ULL << 10);
-                                ctx.Dr7 |= (1ULL << 16) | (3ULL << 18); // DR0: write, 4B (X)
-                                ctx.Dr7 |= (1ULL << 20) | (3ULL << 22); // DR1: write, 4B (Y)
-                                ctx.Dr7 |= (1ULL << 24) | (3ULL << 26); // DR2: write, 4B (Z)
-                                if (g_fovHwActive.load() && g_fovHwAddr != 0) {
-                                    ctx.Dr3 = g_fovHwAddr;
-                                    ctx.Dr7 |= (1ULL << 6) | (1ULL << 28) | (3ULL << 30);
-                                }
-                                ctx.Dr6 = 0;
-                                SetThreadContext(hThread, &ctx);
-                            }
-                            ResumeThread(hThread);
-                            CloseHandle(hThread);
-                        }
-                    }
-                } while (Thread32Next(snap, &te));
-            }
-            CloseHandle(snap);
-        }
+        SyncAllThreadDebugRegisters();
     }
 
     static void DisarmXyzHwBreakpoints() {
@@ -1893,37 +1861,7 @@ namespace Mod {
         g_detectedWriterZ.store(0);
         g_xyzHwActive.store(false);
         g_xyzHwBase = 0;
-
-        DWORD currentTid = GetCurrentThreadId();
-        DWORD pid = GetCurrentProcessId();
-
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap != INVALID_HANDLE_VALUE) {
-            THREADENTRY32 te; te.dwSize = sizeof(te);
-            if (Thread32First(snap, &te)) {
-                do {
-                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
-                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
-                        if (hThread) {
-                            SuspendThread(hThread);
-                            CONTEXT ctx = {};
-                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                            if (GetThreadContext(hThread, &ctx)) {
-                                ctx.Dr0 = 0;
-                                ctx.Dr1 = 0;
-                                ctx.Dr2 = 0;
-                                ctx.Dr7 &= ~((1ULL << 0) | (1ULL << 2) | (1ULL << 4) | (0xFFULL << 16) | (0xFFULL << 20) | (0xFFULL << 24));
-                                ctx.Dr6 = 0;
-                                SetThreadContext(hThread, &ctx);
-                            }
-                            ResumeThread(hThread);
-                            CloseHandle(hThread);
-                        }
-                    }
-                } while (Thread32Next(snap, &te));
-            }
-            CloseHandle(snap);
-        }
+        SyncAllThreadDebugRegisters();
     }
 
     static void SetXyzHwWatch(uintptr_t base) {
@@ -3137,7 +3075,11 @@ namespace Mod {
                 g_pSharedMemory->m_telePivotZ = ReadFloatBE(g_addrGameRomCamera + 0x67C);
             }
             static uintptr_t last_gc_addr = 0;
+            static uint64_t lastSeenFovCnt = 0;
+            static uint64_t lastSeenFovTick = 0;
             if (gc_addr != last_gc_addr) {
+                lastSeenFovCnt = 0;
+                lastSeenFovTick = 0;
                 uintptr_t baseForFov = g_addrGameRomCamera.load();
                 if (baseForFov != 0 && gc_addr != 0) {
                     EnterCriticalSection(&g_fovHuntCS);
@@ -3155,7 +3097,7 @@ namespace Mod {
                 }
                 last_gc_addr = gc_addr;
             }
-            // FOV hunter DR0 — write-only, no PAGE_GUARD, re-arms if 90 expire empty
+            // FOV hunter DR3 — write-only, re-arms if 90 expire empty
             if (g_fovHuntActive.load()) {
                 // Immediate log for new RIPs (like Cheat Engine F6) — don't wait 90 frames
                 {
@@ -3182,7 +3124,7 @@ namespace Mod {
                         if (found) {
                             fovRearmCount = 0;
                             g_fovHuntActive.store(false);
-                            // Keep DR0 for stall counting — don't clear, don't hook (hook crashes JIT)
+                            // Keep DR3 for stall counting
                             EnterCriticalSection(&g_fovHuntCS);
                             DllLog("[INFO] Camera: field-of-view check complete — %zu writer(s) found.", g_fovHuntRips.size());
                             for (uintptr_t r : g_fovHuntRips) {
@@ -3190,9 +3132,11 @@ namespace Mod {
                             }
                             LeaveCriticalSection(&g_fovHuntCS);
                             g_fovWriteCount.store(0);
-                            g_lastFovWriteTick.store(GetTickCount64());
+                            lastSeenFovCnt = 0;
+                            lastSeenFovTick = GetTickCount64();
+                            g_lastFovWriteTick.store(lastSeenFovTick);
                             DllLog("[INFO] Camera: watching field-of-view for stalls and address changes.");
-                            // DR0 stays armed — VEH will now count writes via g_fovWriteCount
+                            // DR3 stays armed — VEH will now count writes via g_fovWriteCount
                         } else {
                             fovRearmCount++;
                             DllLog("[INFO] Camera: no field-of-view writer in 90 frames — re-arming (%d/3).", fovRearmCount);
@@ -3228,18 +3172,16 @@ namespace Mod {
                 }
             }
 
-            // FOV DR0 watcher — stall 1.5s -> reset2, new-addr via re-hunt after stall
+            // FOV DR3 watcher — stall 3.0s -> reset, new-addr via re-hunt after stall
             if (g_fovHwActive.load() && !g_fovHuntActive.load()) {
                 uint64_t cnt = g_fovWriteCount.load();
-                static uint64_t lastSeenCnt = 0;
-                static uint64_t lastSeenTick = 0;
                 uint64_t now = GetTickCount64();
-                if (cnt != lastSeenCnt) {
-                    lastSeenCnt = cnt;
-                    lastSeenTick = now;
+                if (cnt != lastSeenFovCnt) {
+                    lastSeenFovCnt = cnt;
+                    lastSeenFovTick = now;
                     g_lastFovWriteTick.store(now);
-                } else if (cnt > 3 && lastSeenTick != 0 && now - lastSeenTick >= 3000) {
-                    DllLog("[INFO] Camera: field-of-view stalled for %.1fs (%llu writes) — level change detected, resetting.", (now - lastSeenTick) / 1000.0, cnt);
+                } else if (cnt > 3 && lastSeenFovTick != 0 && now - lastSeenFovTick >= 3000) {
+                    DllLog("[INFO] Camera: field-of-view writes stopped for %.1fs (%llu writes) — camera dropped, resetting.", (now - lastSeenFovTick) / 1000.0, cnt);
                     if (g_mousecamActive) g_fovStallReenablePending.store(true);
                     uintptr_t stallCam = g_addrGameRomCamera.load();
                     if (stallCam != 0) {
@@ -3254,11 +3196,10 @@ namespace Mod {
                         g_pSharedMemory->m_reqResetPreserveMenu = false;
                     }
                     g_fovWriteCount.store(0);
-                    lastSeenCnt = 0;
-                    lastSeenTick = now;
+                    lastSeenFovCnt = 0;
+                    lastSeenFovTick = now;
                     g_lastFovWriteTick.store(now);
                 }
-                // New-addr is handled via stall->reset2->re-hunt DR0
             }
             // Auto re-enable mousecam after FOV stall reset — must re-capture mouse even before writers found
             // FIX thrash: was firing every 4ms while pending, causing SHOULD_CTRL thrash (14:40:02 spam)
@@ -3600,6 +3541,8 @@ namespace Mod {
                         g_fovHuntActive.store(true);
                         SetFovHwBreakpoint(baseForFov + 0x68C);
                         last_gc_addr = gc_addr;
+                        lastSeenFovCnt = 0;
+                        lastSeenFovTick = 0;
                     }
                     if (isFovStall) g_fovStallReenablePending.store(false);
                     if (g_fovStallReenablePending.load()) g_fovStallReenablePending.store(false);
