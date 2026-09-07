@@ -315,18 +315,66 @@ namespace Mod {
         }
     }
 
-    static bool SearchPatternAVX512(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
+    struct SimdPatternKeys {
+        size_t idx1;
+        size_t idx2;
+        unsigned char b1;
+        unsigned char b2;
+    };
+
+    static SimdPatternKeys ExtractSimdPatternKeys(const Pattern& pattern) {
+        SimdPatternKeys keys = { 0, 0, 0, 0 };
+        size_t patternLen = pattern.bytes.size();
+        if (patternLen == 0) return keys;
+
+        size_t idx1 = 0;
+        while (idx1 < patternLen && pattern.isWildcard[idx1]) {
+            idx1++;
+        }
+        if (idx1 == patternLen) {
+            return keys;
+        }
+
+        size_t idx2 = patternLen - 1;
+        while (idx2 > idx1 && pattern.isWildcard[idx2]) {
+            idx2--;
+        }
+
+        if (idx2 > idx1 && pattern.bytes[idx2] == 0) {
+            for (size_t k = idx2 - 1; k > idx1; --k) {
+                if (!pattern.isWildcard[k] && pattern.bytes[k] != 0) {
+                    idx2 = k;
+                    break;
+                }
+            }
+        }
+
+        keys.idx1 = idx1;
+        keys.idx2 = idx2;
+        keys.b1 = pattern.bytes[idx1];
+        keys.b2 = pattern.bytes[idx2];
+        return keys;
+    }
+
+    static bool SearchPatternAVX512(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern,
+                                    size_t idx1, size_t idx2, unsigned char b1, unsigned char b2, size_t& foundOffset) {
         size_t patternLen = pattern.bytes.size();
         if (bufferSize < patternLen) return false;
         size_t limit = bufferSize - patternLen;
 
-        __m512i firstByteVec = _mm512_set1_epi8(firstByte);
+        __m512i b1Vec = _mm512_set1_epi8(static_cast<char>(b1));
+        __m512i b2Vec = _mm512_set1_epi8(static_cast<char>(b2));
 
         size_t i = 0;
-        size_t maxSimdIndex = (bufferSize >= firstNonWildcard + 64) ? (bufferSize - firstNonWildcard - 64) : 0;
+        size_t maxSimdIndex = (bufferSize >= idx2 + 64) ? (bufferSize - idx2 - 64) : 0;
         for (; i <= limit && i <= maxSimdIndex; i += 64) {
-            __m512i data = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(buffer + i + firstNonWildcard));
-            uint64_t mask = _mm512_cmpeq_epi8_mask(data, firstByteVec);
+            __m512i d1 = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(buffer + i + idx1));
+            uint64_t mask1 = _mm512_cmpeq_epi8_mask(d1, b1Vec);
+
+            __m512i d2 = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(buffer + i + idx2));
+            uint64_t mask2 = _mm512_cmpeq_epi8_mask(d2, b2Vec);
+
+            uint64_t mask = mask1 & mask2;
 
             while (mask != 0) {
                 unsigned long bitIdx;
@@ -356,7 +404,7 @@ namespace Mod {
         }
 
         for (; i <= limit; ++i) {
-            if (buffer[i + firstNonWildcard] == firstByte) {
+            if (buffer[i + idx1] == b1 && buffer[i + idx2] == b2) {
                 bool match = true;
                 for (size_t j = 0; j < patternLen; ++j) {
                     if (!pattern.isWildcard[j] && buffer[i + j] != pattern.bytes[j]) {
@@ -379,19 +427,26 @@ namespace Mod {
         return false;
     }
 
-    static bool SearchPatternAVX2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
+    static bool SearchPatternAVX2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern,
+                                  size_t idx1, size_t idx2, unsigned char b1, unsigned char b2, size_t& foundOffset) {
         size_t patternLen = pattern.bytes.size();
         if (bufferSize < patternLen) return false;
         size_t limit = bufferSize - patternLen;
         
-        __m256i firstByteVec = _mm256_set1_epi8(firstByte);
+        __m256i b1Vec = _mm256_set1_epi8(static_cast<char>(b1));
+        __m256i b2Vec = _mm256_set1_epi8(static_cast<char>(b2));
         
         size_t i = 0;
-        size_t maxSimdIndex = (bufferSize >= firstNonWildcard + 32) ? (bufferSize - firstNonWildcard - 32) : 0;
+        size_t maxSimdIndex = (bufferSize >= idx2 + 32) ? (bufferSize - idx2 - 32) : 0;
         for (; i <= limit && i <= maxSimdIndex; i += 32) {
-            __m256i data = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(buffer + i + firstNonWildcard));
-            __m256i cmp = _mm256_cmpeq_epi8(data, firstByteVec);
-            unsigned int mask = _mm256_movemask_epi8(cmp);
+            __m256i d1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(buffer + i + idx1));
+            __m256i cmp1 = _mm256_cmpeq_epi8(d1, b1Vec);
+
+            __m256i d2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(buffer + i + idx2));
+            __m256i cmp2 = _mm256_cmpeq_epi8(d2, b2Vec);
+
+            __m256i combined = _mm256_and_si256(cmp1, cmp2);
+            unsigned int mask = _mm256_movemask_epi8(combined);
             
             while (mask != 0) {
                 unsigned long bitIdx;
@@ -421,7 +476,7 @@ namespace Mod {
         }
         
         for (; i <= limit; ++i) {
-            if (buffer[i + firstNonWildcard] == firstByte) {
+            if (buffer[i + idx1] == b1 && buffer[i + idx2] == b2) {
                 bool match = true;
                 for (size_t j = 0; j < patternLen; ++j) {
                     if (!pattern.isWildcard[j] && buffer[i + j] != pattern.bytes[j]) {
@@ -444,19 +499,26 @@ namespace Mod {
         return false;
     }
 
-    static bool SearchPatternSSE2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern, size_t firstNonWildcard, unsigned char firstByte, size_t& foundOffset) {
+    static bool SearchPatternSSE2(const unsigned char* buffer, size_t bufferSize, const Pattern& pattern,
+                                  size_t idx1, size_t idx2, unsigned char b1, unsigned char b2, size_t& foundOffset) {
         size_t patternLen = pattern.bytes.size();
         if (bufferSize < patternLen) return false;
         size_t limit = bufferSize - patternLen;
         
-        __m128i firstByteVec = _mm_set1_epi8(firstByte);
+        __m128i b1Vec = _mm_set1_epi8(static_cast<char>(b1));
+        __m128i b2Vec = _mm_set1_epi8(static_cast<char>(b2));
         
         size_t i = 0;
-        size_t maxSimdIndex = (bufferSize >= firstNonWildcard + 16) ? (bufferSize - firstNonWildcard - 16) : 0;
+        size_t maxSimdIndex = (bufferSize >= idx2 + 16) ? (bufferSize - idx2 - 16) : 0;
         for (; i <= limit && i <= maxSimdIndex; i += 16) {
-            __m128i data = _mm_loadu_si128(reinterpret_cast<const __m128i*>(buffer + i + firstNonWildcard));
-            __m128i cmp = _mm_cmpeq_epi8(data, firstByteVec);
-            unsigned int mask = _mm_movemask_epi8(cmp);
+            __m128i d1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(buffer + i + idx1));
+            __m128i cmp1 = _mm_cmpeq_epi8(d1, b1Vec);
+
+            __m128i d2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(buffer + i + idx2));
+            __m128i cmp2 = _mm_cmpeq_epi8(d2, b2Vec);
+
+            __m128i combined = _mm_and_si128(cmp1, cmp2);
+            unsigned int mask = _mm_movemask_epi8(combined);
             
             while (mask != 0) {
                 unsigned long bitIdx;
@@ -486,7 +548,7 @@ namespace Mod {
         }
         
         for (; i <= limit; ++i) {
-            if (buffer[i + firstNonWildcard] == firstByte) {
+            if (buffer[i + idx1] == b1 && buffer[i + idx2] == b2) {
                 bool match = true;
                 for (size_t j = 0; j < patternLen; ++j) {
                     if (!pattern.isWildcard[j] && buffer[i + j] != pattern.bytes[j]) {
@@ -514,25 +576,19 @@ namespace Mod {
             return false;
         }
 
-        size_t firstNonWildcard = 0;
-        while (firstNonWildcard < pattern.bytes.size() && pattern.isWildcard[firstNonWildcard]) {
-            firstNonWildcard++;
-        }
-
-        if (firstNonWildcard == pattern.bytes.size()) {
+        SimdPatternKeys keys = ExtractSimdPatternKeys(pattern);
+        if (keys.idx1 >= pattern.bytes.size()) {
             foundOffset = 0;
             return true;
         }
 
-        unsigned char firstByte = pattern.bytes[firstNonWildcard];
-        
         CpuSimdTier tier = GetCpuSimdTier();
         if (tier == CpuSimdTier::AVX512) {
-            return SearchPatternAVX512(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
+            return SearchPatternAVX512(buffer, bufferSize, pattern, keys.idx1, keys.idx2, keys.b1, keys.b2, foundOffset);
         } else if (tier == CpuSimdTier::AVX2) {
-            return SearchPatternAVX2(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
+            return SearchPatternAVX2(buffer, bufferSize, pattern, keys.idx1, keys.idx2, keys.b1, keys.b2, foundOffset);
         } else {
-            return SearchPatternSSE2(buffer, bufferSize, pattern, firstNonWildcard, firstByte, foundOffset);
+            return SearchPatternSSE2(buffer, bufferSize, pattern, keys.idx1, keys.idx2, keys.b1, keys.b2, foundOffset);
         }
     }
 
@@ -661,7 +717,7 @@ namespace Mod {
             current += mbi.RegionSize;
         }
 
-        // Pass 2: Fallback to original AllocationBase logic
+        // Pass 2: Search contiguous committed regions by AllocationBase
         current = start;
         while (current < end) {
             if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) {
@@ -681,7 +737,9 @@ namespace Mod {
                     if (subMbi.AllocationBase != mbi.AllocationBase) {
                         break;
                     }
-                    totalSize += subMbi.RegionSize;
+                    if (subMbi.State == MEM_COMMIT && (subMbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) && !(subMbi.Protect & PAGE_GUARD)) {
+                        totalSize += subMbi.RegionSize;
+                    }
                     checkAddr += subMbi.RegionSize;
                 }
 
@@ -709,7 +767,7 @@ namespace Mod {
         return g_pSharedMemory && (g_pSharedMemory->m_reqResetScan || g_pSharedMemory->m_reqResetPreserveMenu);
     }
 
-    static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress) {
+    static bool ScanProcessAOB(const Pattern& pattern, uintptr_t& foundAddress, bool executableOnly = true) {
         SYSTEM_INFO si;
         GetSystemInfo(&si);
         uintptr_t start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
@@ -749,10 +807,24 @@ namespace Mod {
                                (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
 
             bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
-                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED) &&
                                 (mbi.Protect != 0) &&
                                 !(mbi.Protect & PAGE_NOACCESS) &&
                                 !(mbi.Protect & PAGE_GUARD);
+
+            if (scanThisPage) {
+                if (executableOnly) {
+                    bool isExec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+                    bool isCodeType = (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE);
+                    if (!isExec || !isCodeType) {
+                        scanThisPage = false;
+                    }
+                } else {
+                    bool isValidType = (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED);
+                    if (!isValidType) {
+                        scanThisPage = false;
+                    }
+                }
+            }
 
             if (scanThisPage) {
                 uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -782,7 +854,7 @@ namespace Mod {
         return false;
     }
 
-    static bool ScanProcessAOBAll(const Pattern& pattern, std::vector<uintptr_t>& foundAddresses) {
+    static bool ScanProcessAOBAll(const Pattern& pattern, std::vector<uintptr_t>& foundAddresses, bool executableOnly = true) {
         foundAddresses.clear();
         SYSTEM_INFO si;
         GetSystemInfo(&si);
@@ -821,10 +893,24 @@ namespace Mod {
                                (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
 
             bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
-                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED) &&
                                 (mbi.Protect != 0) &&
                                 !(mbi.Protect & PAGE_NOACCESS) &&
                                 !(mbi.Protect & PAGE_GUARD);
+
+            if (scanThisPage) {
+                if (executableOnly) {
+                    bool isExec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+                    bool isCodeType = (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE);
+                    if (!isExec || !isCodeType) {
+                        scanThisPage = false;
+                    }
+                } else {
+                    bool isValidType = (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED);
+                    if (!isValidType) {
+                        scanThisPage = false;
+                    }
+                }
+            }
 
             if (scanThisPage) {
                 uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
@@ -973,108 +1059,85 @@ namespace Mod {
 
         if (pat.bytes.empty()) return;
 
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        uintptr_t start = reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress);
-        uintptr_t end = reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress);
-        uintptr_t current = start;
+        if (g_emulatedRamBase == 0 || g_emulatedRamSize == 0) {
+            FindEmulatedRam(g_emulatedRamBase, g_emulatedRamSize);
+            if (g_emulatedRamBase != 0) {
+                DllLog("[INFO] Scanner: located emulated RAM at 0x%llX (size %zu MB).",
+                       (unsigned long long)g_emulatedRamBase, g_emulatedRamSize / (1024 * 1024));
+            }
+        }
+
+        if (g_emulatedRamBase == 0 || g_emulatedRamSize == 0) {
+            return;
+        }
+
+        MEMORY_BASIC_INFORMATION ramMbi;
+        if (!VirtualQuery(reinterpret_cast<LPCVOID>(g_emulatedRamBase), &ramMbi, sizeof(ramMbi)) ||
+            ramMbi.State != MEM_COMMIT ||
+            !(ramMbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) {
+            g_emulatedRamBase = 0;
+            g_emulatedRamSize = 0;
+            FindEmulatedRam(g_emulatedRamBase, g_emulatedRamSize);
+            if (g_emulatedRamBase == 0) return;
+        }
+
+        uintptr_t regionAddress = g_emulatedRamBase;
+        size_t regionSize = g_emulatedRamSize;
         size_t chunkSize = 2 * 1024 * 1024;
         size_t overlap = pat.bytes.size();
 
-        uintptr_t ourAllocBase = 0;
-        MEMORY_BASIC_INFORMATION ourMbi;
-        if (VirtualQuery(reinterpret_cast<LPCVOID>(g_hModule), &ourMbi, sizeof(ourMbi))) {
-            ourAllocBase = reinterpret_cast<uintptr_t>(ourMbi.AllocationBase);
-        }
-        uintptr_t stackAllocBase = 0;
-        MEMORY_BASIC_INFORMATION stackMbi;
-        int stackVar = 0;
-        if (VirtualQuery(&stackVar, &stackMbi, sizeof(stackMbi))) {
-            stackAllocBase = reinterpret_cast<uintptr_t>(stackMbi.AllocationBase);
-        }
-
-        MEMORY_BASIC_INFORMATION mbi;
-        // Heartbeat: a full walk takes ~10s when no camera is valid yet (e.g. right after the
-        // zombie rejection on death). Emit one line per second so the log shows progress.
-        uint64_t lastBeatMs = GetTickCount64();
-        while (current < end) {
+        for (size_t offset = 0; offset < regionSize; offset += (chunkSize > overlap ? chunkSize - overlap : chunkSize)) {
             if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
             if (IsResetRequested()) return;
-            if (!VirtualQuery(reinterpret_cast<LPCVOID>(current), &mbi, sizeof(mbi))) break;
 
-            uintptr_t pageAllocBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
-            bool isOurMemory = (ourAllocBase != 0 && pageAllocBase == ourAllocBase) ||
-                               (stackAllocBase != 0 && pageAllocBase == stackAllocBase);
-            bool scanThisPage = !isOurMemory && (mbi.State == MEM_COMMIT) &&
-                                (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED) &&
-                                (mbi.Protect != 0) &&
-                                !(mbi.Protect & PAGE_NOACCESS) &&
-                                !(mbi.Protect & PAGE_GUARD);
-
-            if (scanThisPage) {
-                uintptr_t regionAddress = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-                size_t regionSize = mbi.RegionSize;
-                for (size_t offset = 0; offset < regionSize; offset += (chunkSize > overlap ? chunkSize - overlap : chunkSize)) {
-                    if (g_pSharedMemory && g_pSharedMemory->m_reqShutdown) break;
-                    if (IsResetRequested()) return;
-                    {
-                        uint64_t nowBeat = GetTickCount64();
-                        if (nowBeat - lastBeatMs >= 1000) {
-                            lastBeatMs = nowBeat;
-                            DllLog("[INFO] Scanner: still looking for game camera... (%zu candidates checked).", outTotal);
+            PollHooksAndSyncSharedMemory();
+            size_t toRead = (std::min)(chunkSize, regionSize - offset);
+            __try {
+                size_t searchPos = 0;
+                while (searchPos + pat.bytes.size() <= toRead) {
+                    size_t matchOffset = 0;
+                    if (SearchPattern(reinterpret_cast<const unsigned char*>(regionAddress + offset + searchPos), toRead - searchPos, pat, matchOffset)) {
+                        uintptr_t rawAddr = regionAddress + offset + searchPos + matchOffset;
+                        uintptr_t cand = rawAddr - 0x10;
+                        outTotal++;
+                        uintptr_t rej = g_rejectCamAddr.load();
+                        if (rej != 0 && cand == rej) {
+                            int rejScore = 0;
+                            if (VerifyGameRomCamera(cand, rejScore)) outRejectedWasValid = 1;
+                            DllLog("[INFO] Camera: skipping previous address at 0x%llX (score %d) — waiting for new address.", (unsigned long long)cand, rejScore);
+                            searchPos += matchOffset + 1;
+                            continue;
                         }
-                    }
-                    PollHooksAndSyncSharedMemory();
-                    size_t toRead = (std::min)(chunkSize, regionSize - offset);
-                    __try {
-                        size_t searchPos = 0;
-                        while (searchPos + pat.bytes.size() <= toRead) {
-                            size_t matchOffset = 0;
-                            if (SearchPattern(reinterpret_cast<const unsigned char*>(regionAddress + offset + searchPos), toRead - searchPos, pat, matchOffset)) {
-                                uintptr_t rawAddr = regionAddress + offset + searchPos + matchOffset;
-                                uintptr_t cand = rawAddr - 0x10;
-                                outTotal++;
-                                uintptr_t rej = g_rejectCamAddr.load();
-                                if (rej != 0 && cand == rej) {
-                                    int rejScore = 0;
-                                    if (VerifyGameRomCamera(cand, rejScore)) outRejectedWasValid = 1;
-                                    DllLog("[INFO] Camera: skipping previous address at 0x%llX (score %d) — waiting for new address.", (unsigned long long)cand, rejScore);
-                                    searchPos += matchOffset + 1;
-                                    continue;
-                                }
-                                if (outFallback == 0) outFallback = cand;
-                                int score = 0;
-                                bool valid = VerifyGameRomCamera(cand, score);
-                                if (g_verboseCamDiag) {
-                                    float fov = ReadFloatBE(cand + 0x654);
-                                    float posX = ReadFloatBE(cand + 0x550);
-                                    float posY = ReadFloatBE(cand + 0x554);
-                                    float posZ = ReadFloatBE(cand + 0x558);
-                                    float focX = ReadFloatBE(cand + 0x63C);
-                                    float focY = ReadFloatBE(cand + 0x640);
-                                    float focZ = ReadFloatBE(cand + 0x644);
-                                    DllLog("[DIAG] Camera: candidate %zu at 0x%llX — score %d, field-of-view %.2f, position [%.1f, %.1f, %.1f], focus [%.1f, %.1f, %.1f] -> %s.",
-                                           outTotal, cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
-                                }
-                                if (valid) {
-                                    if (score > outBestScore) {
-                                        outBestScore = score;
-                                        outBest = cand;
-                                    }
-                                    // Stop scanning immediately once a valid candidate is verified
-                                    return;
-                                }
-                                searchPos += matchOffset + 1;
-                            } else {
-                                break;
+                        if (outFallback == 0) outFallback = cand;
+                        int score = 0;
+                        bool valid = VerifyGameRomCamera(cand, score);
+                        if (g_verboseCamDiag) {
+                            float fov = ReadFloatBE(cand + 0x654);
+                            float posX = ReadFloatBE(cand + 0x550);
+                            float posY = ReadFloatBE(cand + 0x554);
+                            float posZ = ReadFloatBE(cand + 0x558);
+                            float focX = ReadFloatBE(cand + 0x63C);
+                            float focY = ReadFloatBE(cand + 0x640);
+                            float focZ = ReadFloatBE(cand + 0x644);
+                            DllLog("[DIAG] Camera: candidate %zu at 0x%llX — score %d, field-of-view %.2f, position [%.1f, %.1f, %.1f], focus [%.1f, %.1f, %.1f] -> %s.",
+                                   outTotal, cand, score, fov, posX, posY, posZ, focX, focY, focZ, valid ? "VALID" : "REJECTED");
+                        }
+                        if (valid) {
+                            if (score > outBestScore) {
+                                outBestScore = score;
+                                outBest = cand;
                             }
+                            // Stop scanning immediately once a valid candidate is verified
+                            return;
                         }
-                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        searchPos += matchOffset + 1;
+                    } else {
+                        break;
                     }
-                    if (toRead < chunkSize) break;
                 }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
             }
-            current += mbi.RegionSize;
+            if (toRead < chunkSize) break;
         }
     }
 
@@ -2387,7 +2450,7 @@ namespace Mod {
     }
 
         static DWORD WINAPI ScanAobThread(LPVOID lpParam) {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
         LoadWriterBlacklist();
 
         struct AobTask {
