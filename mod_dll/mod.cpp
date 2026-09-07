@@ -1871,6 +1871,62 @@ namespace Mod {
         DisarmXyzHwBreakpoints();
     }
 
+    static void ClearAllThreadDebugRegisters() {
+        g_fovHwActive.store(false);
+        g_fovHwAddr = 0;
+        g_hwWatchArmed.store(false);
+        g_xyzHwActive.store(false);
+        g_xyzHwBase = 0;
+        g_hwWatchFramesLeft.store(0);
+        g_detectedWriterX.store(0);
+        g_detectedWriterY.store(0);
+        g_detectedWriterZ.store(0);
+
+        DWORD currentTid = GetCurrentThreadId();
+        DWORD pid = GetCurrentProcessId();
+
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te; te.dwSize = sizeof(te);
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid && te.th32ThreadID != currentTid) {
+                        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                        if (hThread) {
+                            SuspendThread(hThread);
+                            CONTEXT ctx = {};
+                            ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(hThread, &ctx)) {
+                                ctx.Dr0 = 0;
+                                ctx.Dr1 = 0;
+                                ctx.Dr2 = 0;
+                                ctx.Dr3 = 0;
+                                ctx.Dr6 = 0;
+                                ctx.Dr7 = 0;
+                                SetThreadContext(hThread, &ctx);
+                            }
+                            ResumeThread(hThread);
+                            CloseHandle(hThread);
+                        }
+                    }
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+
+        CONTEXT selfCtx = {};
+        selfCtx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        if (GetThreadContext(GetCurrentThread(), &selfCtx)) {
+            selfCtx.Dr0 = 0;
+            selfCtx.Dr1 = 0;
+            selfCtx.Dr2 = 0;
+            selfCtx.Dr3 = 0;
+            selfCtx.Dr6 = 0;
+            selfCtx.Dr7 = 0;
+            SetThreadContext(GetCurrentThread(), &selfCtx);
+        }
+    }
+
     static int ProbeWriterRecord(const WriterRecord& wr) {
         if (wr.rip == 0 || wr.patchSize == 0) return 0;
         uint8_t cur[7] = {};
@@ -2223,6 +2279,8 @@ namespace Mod {
     static void OnThreadExit() {
         if (--g_runningThreads == 0) {
             DllLog("[INFO] System: all threads exited cleanly.");
+            ClearAllThreadDebugRegisters();
+            RestoreAllWriterNops();
             if (g_pSharedMemory) {
                 g_pSharedMemory->m_statusScanning = false;
                 g_pSharedMemory->m_statusShutdownDone = true;
@@ -2378,10 +2436,8 @@ namespace Mod {
                         WaitForHunterQuiesce(800);
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
-                        ClearXyzHwWatch();
+                        ClearAllThreadDebugRegisters();
                         RemoveFovHook();
-                        ClearFovHwBreakpoint();
-                        ClearXyzHwWatch();
                         DisarmFovGuard();
                         g_fovWriteCount.store(0);
                         g_lastFovWriteTick.store(0);
@@ -2403,10 +2459,8 @@ namespace Mod {
                         WaitForHunterQuiesce(500);
                         g_huntFramesLeft.store(0);
                         DisarmPageGuard();
-                        ClearXyzHwWatch();
+                        ClearAllThreadDebugRegisters();
                         RemoveFovHook();
-                        ClearFovHwBreakpoint();
-                        ClearXyzHwWatch();
                         DisarmFovGuard();
                         g_fovWriteCount.store(0);
                         g_lastFovWriteTick.store(0);
@@ -4473,19 +4527,25 @@ namespace Mod {
             g_hCameraControlThread = nullptr;
         }
 
+        StopMouseHook();
+        SetGlobalCursorVisibility(true);
+
         RemoveShortcutHook();
         RemoveMenuStateHooks();
 
         RestoreAllPatches();
 
         g_writerHuntActive.store(false);
+        g_fovHuntActive.store(false);
         g_huntFramesLeft.store(0);
+        g_fovHuntFramesLeft.store(0);
         DisarmPageGuard();
-        ClearXyzHwWatch();
-        RemoveFovHook();
         DisarmFovGuard();
-        g_fovWriteCount.store(0);
-        g_lastFovWriteTick.store(0);
+        RemoveFovHook();
+
+        ClearAllThreadDebugRegisters();
+        Sleep(50);
+
         EnterCriticalSection(&g_writerCS);
         for (auto& wr : g_discoveredWriters) RestoreInstruction(wr);
         g_discoveredWriters.clear();
@@ -4494,14 +4554,24 @@ namespace Mod {
         g_lastBlacklistedWriteTime.store(0);
         if (g_pSharedMemory) g_pSharedMemory->m_statusWritersFound = 0;
         LeaveCriticalSection(&g_writerCS);
-        if (g_vehHandle) { RemoveVectoredExceptionHandler(g_vehHandle); g_vehHandle = nullptr; }
+
+        g_fovWriteCount.store(0);
+        g_lastFovWriteTick.store(0);
+
+        if (g_vehHandle) {
+            RemoveVectoredExceptionHandler(g_vehHandle);
+            g_vehHandle = nullptr;
+        }
 
         DeleteCriticalSection(&g_patchCS);
         DeleteCriticalSection(&g_writerCS);
         DeleteCriticalSection(&g_guardTransitionCS);
         DeleteCriticalSection(&g_blacklistCS);
         DeleteCriticalSection(&g_menuCandidateCS);
-        if (g_fovHuntCSInit) DeleteCriticalSection(&g_fovHuntCS);
+        if (g_fovHuntCSInit) {
+            DeleteCriticalSection(&g_fovHuntCS);
+            g_fovHuntCSInit = false;
+        }
 
         g_sharedMemory.Close();
     }
